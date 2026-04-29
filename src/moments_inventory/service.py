@@ -1,0 +1,65 @@
+from __future__ import annotations
+
+from datetime import datetime, timedelta
+
+from moments_inventory.config import Settings
+from moments_inventory.logging_utils import get_logger
+from moments_inventory.matcher import deduplicate_and_merge
+from moments_inventory.storage import InventoryStore
+from moments_inventory.weflow_client import WeFlowClient
+
+
+LOGGER = get_logger(__name__)
+
+
+class SyncService:
+    def __init__(self, settings: Settings, client: WeFlowClient | None = None) -> None:
+        self._settings = settings
+        self._client = client or WeFlowClient(settings)
+        self._store = InventoryStore(settings.paths.sqlite_db)
+
+    @staticmethod
+    def _is_relevant_record(record) -> bool:
+        return bool(record.model)
+
+    def sync(self, now: datetime | None = None):
+        current_time = now or datetime.now().astimezone()
+        start_time = current_time - timedelta(days=self._settings.task.days)
+        LOGGER.info(
+            "sync started",
+            extra={"target_count": len(self._settings.targets), "days": self._settings.task.days},
+        )
+        usernames = self._client.resolve_usernames(self._settings.targets)
+        moments = []
+        for username in usernames:
+            moments.extend(
+                self._client.fetch_timeline(
+                    usernames=[username],
+                    start=start_time.isoformat(),
+                    end=current_time.isoformat(),
+                )
+            )
+        records = deduplicate_and_merge(
+            moments,
+            model_keywords=self._settings.model_keywords,
+            merge_minutes=self._settings.task.merge_window_minutes,
+        )
+        records = [record for record in records if self._is_relevant_record(record)]
+        fetched_moment_ids = {moment.moment_id for moment in moments}
+        self._store.upsert_records(
+            records=records,
+            fetched_moment_ids=fetched_moment_ids,
+            sync_started_at=current_time.isoformat(),
+        )
+        LOGGER.info(
+            "sync completed",
+            extra={
+                "username_count": len(usernames),
+                "moment_count": len(moments),
+                "record_count": len(records),
+            },
+        )
+        return records
+
+    def load_records(self):
+        return self._store.list_all_records()

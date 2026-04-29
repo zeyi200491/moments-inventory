@@ -1,0 +1,22 @@
+{
+  "data": [
+    {
+      "id": "sns_001",
+      "username": "wxid_123",
+      "nickname": "张三",
+      "content": "ixus 95 850元 编号A12",
+      "create_time": "2026-04-20T10:00:00+08:00",
+      "images": ["https://example.com/a.jpg"],
+      "videos": []
+    },
+    {
+      "id": "sns_002",
+      "username": "wxid_123",
+      "nickname": "张三",
+      "content": "验机视频如下",
+      "create_time": "2026-04-20T10:10:00+08:00",
+      "images": [],
+      "videos": ["https://example.com/video.mp4"]
+    }
+  ]
+}

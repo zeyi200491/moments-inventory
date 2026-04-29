@@ -1,0 +1,37 @@
+# Build / runtime
+__pycache__/
+*.pyc
+*.pyo
+.ruff_cache/
+.pytest-cache/
+.venv/
+venv/
+.rtk/
+*.egg-info/
+dist/
+build/
+
+# Local config / data
+.claude/
+.codex/
+AGENTS.md
+RTK.md
+rtk.cmd
+third_party/rtk/
+config/config.yaml
+config/models.txt
+config/output*/
+data/*.db
+media/
+docs/superpowers/
+
+# Test / probe temp dirs
+.pytest-*/
+.probe-*/
+pytest-cache-*/
+
+# Pip temp dirs
+pip-*/
+
+# Generic temp dirs
+tmp*/

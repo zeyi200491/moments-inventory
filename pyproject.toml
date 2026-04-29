@@ -1,0 +1,32 @@
+[build-system]
+requires = ["setuptools>=61"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "moments-inventory"
+dynamic = ["version"]
+description = "微信朋友圈内容盘点工具。"
+readme = "README.md"
+requires-python = ">=3.11"
+authors = [
+  { name = "AIkefu" },
+]
+dependencies = [
+  "PyYAML>=6.0.1",
+]
+
+[project.scripts]
+moments-inventory = "moments_inventory:main"
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+addopts = "-ra -p no:cacheprovider"
+
+[tool.setuptools]
+package-dir = {"" = "src"}
+
+[tool.setuptools.dynamic]
+version = { attr = "moments_inventory.__version__" }
+
+[tool.setuptools.packages.find]
+where = ["src"]

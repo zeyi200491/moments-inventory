@@ -1,0 +1,25 @@
+weflow:
+  base_url: "http://127.0.0.1:5030"
+  timeout_seconds: 20
+  access_token: ""
+
+task:
+  days: 30
+  merge_window_minutes: 10
+  output_dir: "./output"
+
+targets:
+  - remark_name: "张三"
+    wxid: "wxid_123"
+  - remark_name: "李四"
+    wxid: "wxid_456"
+
+rules:
+  required_fields:
+    - model
+    - price
+    - serial_no
+
+paths:
+  sqlite_db: "../data/inventory.db"
+  model_dict: "./models.txt"
