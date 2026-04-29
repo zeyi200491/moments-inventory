@@ -5,7 +5,7 @@ build-backend = "setuptools.build_meta"
 [project]
 name = "moments-inventory"
 dynamic = ["version"]
-description = "微信朋友圈内容盘点工具。"
+description = "微信朋友圈 CCD 商品信息整理与导出工具。"
 readme = "README.md"
 requires-python = ">=3.11"
 authors = [
