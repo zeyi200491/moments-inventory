@@ -1,0 +1,125 @@
+from pathlib import Path
+import shutil
+import tempfile
+import uuid
+
+import pytest
+
+from moments_inventory.config import ConfigError, load_settings
+
+
+def _make_temp_root(prefix: str) -> Path:
+    return Path(tempfile.mkdtemp(prefix=prefix))
+
+
+def _write_config_file(temp_root: Path, warmup_yaml: str = "") -> Path:
+    config_file = temp_root / "config.yaml"
+    model_file = temp_root / "models.txt"
+    model_file.write_text("ixus 95\n", encoding="utf-8")
+    config_file.write_text(
+        """
+weflow:
+  base_url: "http://127.0.0.1:5030"
+  timeout_seconds: 20
+task:
+  days: 30
+  merge_window_minutes: 10
+  output_dir: "./output"
+targets:
+  - remark_name: "user-a"
+    wxid: "wxid_123"
+rules:
+  required_fields:
+    - model
+    - price
+    - serial_no
+paths:
+  sqlite_db: "./data/inventory.db"
+  model_dict: "MODELS_FILE"
+WARMUP_BLOCK
+        """
+        .replace("MODELS_FILE", str(model_file).replace("\\", "/"))
+        .replace("WARMUP_BLOCK", warmup_yaml),
+        encoding="utf-8",
+    )
+    return config_file
+
+
+def test_load_settings_reads_warmup_config():
+    temp_root = _make_temp_root(f"pytest-warmup-{uuid.uuid4().hex}-")
+
+    try:
+        config_file = _write_config_file(
+            temp_root,
+            """
+warmup:
+  enabled: true
+  start_page: "chat_list"
+  search_delay_ms: 900
+  open_profile_delay_ms: 1100
+  open_timeline_delay_ms: 1300
+  scroll_count: 5
+  scroll_delay_ms: 950
+  back_delay_ms: 700
+  max_consecutive_failures: 4
+  min_success_count: 2
+  auto_export_on_success: false
+            """,
+        )
+
+        settings = load_settings(config_file)
+
+        assert settings.warmup.enabled is True
+        assert settings.warmup.start_page == "chat_list"
+        assert settings.warmup.search_delay_ms == 900
+        assert settings.warmup.open_profile_delay_ms == 1100
+        assert settings.warmup.open_timeline_delay_ms == 1300
+        assert settings.warmup.scroll_count == 5
+        assert settings.warmup.scroll_delay_ms == 950
+        assert settings.warmup.back_delay_ms == 700
+        assert settings.warmup.max_consecutive_failures == 4
+        assert settings.warmup.min_success_count == 2
+        assert settings.warmup.auto_export_on_success is False
+    finally:
+        shutil.rmtree(temp_root, ignore_errors=True)
+
+
+def test_load_settings_rejects_invalid_warmup_start_page():
+    temp_root = _make_temp_root(f"pytest-warmup-invalid-{uuid.uuid4().hex}-")
+
+    try:
+        config_file = _write_config_file(
+            temp_root,
+            """
+warmup:
+  start_page: "timeline"
+            """,
+        )
+
+        with pytest.raises(ConfigError, match="warmup.start_page"):
+            load_settings(config_file)
+    finally:
+        shutil.rmtree(temp_root, ignore_errors=True)
+
+
+def test_load_settings_uses_default_warmup_when_section_missing():
+    temp_root = _make_temp_root(f"pytest-warmup-default-{uuid.uuid4().hex}-")
+
+    try:
+        config_file = _write_config_file(temp_root)
+
+        settings = load_settings(config_file)
+
+        assert settings.warmup.enabled is False
+        assert settings.warmup.start_page == "contacts"
+        assert settings.warmup.search_delay_ms == 800
+        assert settings.warmup.open_profile_delay_ms == 1000
+        assert settings.warmup.open_timeline_delay_ms == 1200
+        assert settings.warmup.scroll_count == 4
+        assert settings.warmup.scroll_delay_ms == 900
+        assert settings.warmup.back_delay_ms == 600
+        assert settings.warmup.max_consecutive_failures == 3
+        assert settings.warmup.min_success_count == 1
+        assert settings.warmup.auto_export_on_success is True
+    finally:
+        shutil.rmtree(temp_root, ignore_errors=True)

@@ -1,5 +1,5 @@
 weflow:
-  base_url: "http://127.0.0.1:5030"
+  base_url: "http://127.0.0.1:5031"
   timeout_seconds: 20
   access_token: ""
 
@@ -23,3 +23,16 @@ rules:
 paths:
   sqlite_db: "../data/inventory.db"
   model_dict: "./models.txt"
+
+warmup:
+  enabled: false
+  start_page: "contacts"
+  search_delay_ms: 800
+  open_profile_delay_ms: 1000
+  open_timeline_delay_ms: 1200
+  scroll_count: 4
+  scroll_delay_ms: 900
+  back_delay_ms: 600
+  max_consecutive_failures: 3
+  min_success_count: 1
+  auto_export_on_success: true

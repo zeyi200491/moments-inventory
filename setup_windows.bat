@@ -67,13 +67,21 @@ if not exist "config\models.txt" (
     echo [INFO] config\models.txt already exists. Skip copy.
 )
 
+if not exist "config\ai_kefu.yaml" (
+    copy /Y "config\ai_kefu.example.yaml" "config\ai_kefu.yaml" >nul
+    echo [INFO] Created config\ai_kefu.yaml from config\ai_kefu.example.yaml
+) else (
+    echo [INFO] config\ai_kefu.yaml already exists. Skip copy.
+)
+
 echo.
 echo [OK] Setup completed.
 echo [NEXT] Open README.md and complete these steps:
 echo [NEXT] 1. Fill config\config.yaml
 echo [NEXT] 2. Fill config\models.txt
-echo [NEXT] 3. Set WEFLOW_ACCESS_TOKEN in Windows environment variables
-echo [NEXT] 4. Run run_export.bat
+echo [NEXT] 3. Fill config\ai_kefu.yaml if you plan to use AI Kefu workbench
+echo [NEXT] 4. Set WEFLOW_ACCESS_TOKEN in Windows environment variables
+echo [NEXT] 5. Run run_export.bat or AI Kefu workbench
 goto :end
 
 :fail

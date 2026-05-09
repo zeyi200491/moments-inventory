@@ -10,18 +10,28 @@ venv/
 *.egg-info/
 dist/
 build/
+node_modules/
+frontend/workbench/dist/
+frontend/workbench/node_modules/
 
 # Local config / data
 .claude/
 .codex/
+.playwright-mcp/
+.test-tmp/
+.probe-temp-hidden/
+probe_temp_visible/
+github_release/
 AGENTS.md
 RTK.md
 rtk.cmd
 third_party/rtk/
 config/config.yaml
+config/ai_kefu.yaml
 config/models.txt
+config/data/
 config/output*/
-data/*.db
+data/
 media/
 docs/superpowers/
 

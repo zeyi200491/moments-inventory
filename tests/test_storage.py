@@ -4,6 +4,8 @@ import shutil
 import tempfile
 import uuid
 
+import pytest
+
 from moments_inventory.models import InventoryRecord
 from moments_inventory.storage import InventoryStore
 
@@ -156,5 +158,29 @@ def test_store_supports_querying_records_by_media_and_source_ids():
         assert store.list_record_keys_by_image_url("shared.jpg") == ["record-1"]
         assert store.list_record_keys_by_video_url("clip.mp4") == ["record-1"]
         assert store.list_record_keys_by_source_moment_id("sns_002") == ["record-1"]
+    finally:
+        shutil.rmtree(temp_root, ignore_errors=True)
+
+
+def test_store_rejects_unknown_detail_table_or_column():
+    temp_root = _make_temp_root(f"pytest-storage-whitelist-{uuid.uuid4().hex}-")
+
+    try:
+        store = InventoryStore(temp_root / "inventory.db")
+        store.initialize()
+
+        with pytest.raises(ValueError):
+            store._list_record_keys_by_detail(
+                "record_images; drop table inventory_records; --",
+                "url",
+                "x",
+            )
+
+        with pytest.raises(ValueError):
+            store._list_record_keys_by_detail(
+                "record_images",
+                "url; drop table inventory_records; --",
+                "x",
+            )
     finally:
         shutil.rmtree(temp_root, ignore_errors=True)

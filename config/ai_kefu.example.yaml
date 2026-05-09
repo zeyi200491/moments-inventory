@@ -1,0 +1,21 @@
+workspace_dir: "./data/ai_kefu_workspace"
+database_path: "./data/ai_kefu/ai-kefu.db"
+embedding_provider: "openai"
+embedding_model: "text-embedding-3-small"
+chat_provider: "openai_compatible"
+chat_model: "gpt-4.1-mini"
+chat_provider_options:
+  api_base: "https://api.openai.com/v1"
+  api_key_env: "AI_KEFU_OPENAI_API_KEY"
+  timeout_seconds: 30
+api_auth:
+  api_key_env: "AI_KEFU_BACKEND_API_KEY"
+chat_sync:
+  enabled: true
+  weflow_base_url: "http://127.0.0.1:5031"
+  weflow_access_token_env: "WEFLOW_ACCESS_TOKEN"
+  session_poll_limit: 100
+  merge_window_seconds: 8
+retrieval:
+  chunk_size: 600
+  chunk_overlap: 120

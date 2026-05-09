@@ -26,6 +26,7 @@ HEADERS = [
 ]
 
 CURRENT_STATUSES = {"未售出", "未售卖"}
+_XML_CONTROL_CHARACTER_PATTERN = re.compile(r"[\x00-\x08\x0b\x0c\x0e-\x1f]")
 
 
 def _column_name(index: int) -> str:
@@ -42,7 +43,8 @@ def _cell_xml(ref: str, value: str | int | None) -> str:
         return f'<c r="{ref}"/>'
     if isinstance(value, int):
         return f'<c r="{ref}"><v>{value}</v></c>'
-    return f'<c r="{ref}" t="inlineStr"><is><t>{escape(str(value))}</t></is></c>'
+    sanitized = _XML_CONTROL_CHARACTER_PATTERN.sub("", str(value))
+    return f'<c r="{ref}" t="inlineStr"><is><t>{escape(sanitized)}</t></is></c>'
 
 
 def _sheet_xml(rows: list[list[str | int | None]]) -> str:

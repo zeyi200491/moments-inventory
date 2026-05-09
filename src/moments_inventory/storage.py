@@ -12,6 +12,11 @@ from moments_inventory.models import InventoryRecord
 LOGGER = get_logger(__name__)
 DEFAULT_ACTIVE_STATUS = "未售出"
 DEFAULT_SOLD_STATUS = "已售"
+_DETAIL_TABLE_COLUMNS: dict[str, frozenset[str]] = {
+    "record_images": frozenset({"url"}),
+    "record_videos": frozenset({"url"}),
+    "record_source_moments": frozenset({"moment_id"}),
+}
 
 
 class InventoryStore:
@@ -260,6 +265,11 @@ class InventoryStore:
         column_name: str,
         value: str,
     ) -> list[str]:
+        allowed_columns = _DETAIL_TABLE_COLUMNS.get(table_name)
+        if allowed_columns is None:
+            raise ValueError(f"unsupported detail table: {table_name}")
+        if column_name not in allowed_columns:
+            raise ValueError(f"unsupported detail column for {table_name}: {column_name}")
         self.initialize()
         query = (
             f"select record_key from {table_name} where {column_name} = ? "

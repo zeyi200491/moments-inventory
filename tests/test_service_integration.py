@@ -662,3 +662,65 @@ paths:
         assert "sync completed" in caplog.text
     finally:
         shutil.rmtree(temp_root, ignore_errors=True)
+
+
+def test_sync_service_continues_when_single_username_fetch_fails():
+    temp_root = _make_temp_root("pytest-service-continue-temp-")
+
+    try:
+        model_file = temp_root / "models.txt"
+        model_file.write_text("canon ixus95\n", encoding="utf-8")
+        config_file = temp_root / "config.yaml"
+        config_file.write_text(
+            f"""
+weflow:
+  base_url: "http://127.0.0.1:5030"
+  timeout_seconds: 20
+task:
+  days: 30
+  merge_window_minutes: 10
+  output_dir: "{(temp_root / 'output').as_posix()}"
+targets:
+  - remark_name: "user-1"
+    wxid: "wxid_1"
+  - remark_name: "user-2"
+    wxid: "wxid_2"
+rules:
+  required_fields:
+    - model
+    - price
+    - serial_no
+paths:
+  sqlite_db: "{(temp_root / 'inventory.db').as_posix()}"
+  model_dict: "{model_file.as_posix()}"
+""",
+            encoding="utf-8",
+        )
+        settings = load_settings(config_file)
+
+        class PartiallyFailingClient:
+            def resolve_usernames(self, targets):
+                return ["wxid_1", "wxid_2"]
+
+            def fetch_timeline(self, usernames, start, end):
+                if usernames == ["wxid_1"]:
+                    raise RuntimeError("temporary fetch failure")
+                return [
+                    RawMoment(
+                        "m3",
+                        "user-2",
+                        "wxid_2",
+                        datetime.fromisoformat("2026-04-26T10:00:00+08:00"),
+                        "568 canon ixus95 A12",
+                        ["b.jpg"],
+                        [],
+                    )
+                ]
+
+        service = SyncService(settings=settings, client=PartiallyFailingClient())
+        records = service.sync(now=datetime.fromisoformat("2026-04-27T12:00:00+08:00"))
+
+        assert len(records) == 1
+        assert records[0].wxid == "wxid_2"
+    finally:
+        shutil.rmtree(temp_root, ignore_errors=True)

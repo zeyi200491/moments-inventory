@@ -61,3 +61,14 @@ def test_parse_content_supports_minolta_and_prairie_brands():
     assert minolta.price == 228
     assert prairie.model == "prairie ts-4"
     assert prairie.price == 128
+
+
+def test_parse_content_does_not_treat_date_as_price():
+    parsed = parse_content(
+        "5月18日 canon ixus 95 A12",
+        model_keywords=["canon ixus 95"],
+    )
+
+    assert parsed.model == "canon ixus 95"
+    assert parsed.price is None
+    assert parsed.needs_manual is True

@@ -34,15 +34,45 @@ def _pick_model(text: str, model_keywords: list[str]) -> str | None:
     return f"{match.group(1)}{match.group(2)}"
 
 
-def _pick_price(text: str) -> int | None:
+def _pick_price(text: str, model: str | None) -> int | None:
     for index, pattern in enumerate(PRICE_PATTERNS):
         matches = pattern.findall(text)
         if not matches:
             continue
         if index == len(PRICE_PATTERNS) - 1:
-            return max(int(item) for item in matches)
+            filtered_matches = [
+                int(item)
+                for item in matches
+                if not _looks_like_date_number(text, item)
+                and not _is_model_number(text, model, item)
+            ]
+            if not filtered_matches:
+                continue
+            return max(filtered_matches)
         return int(matches[0])
     return None
+
+
+def _looks_like_date_number(text: str, raw_number: str) -> bool:
+    for match in re.finditer(re.escape(raw_number), text):
+        before = text[max(0, match.start() - 2) : match.start()]
+        after = text[match.end() : match.end() + 2]
+        if ("月" in before and "日" in after) or after.startswith("日"):
+            return True
+    return False
+
+
+def _is_model_number(text: str, model: str | None, raw_number: str) -> bool:
+    if not model:
+        return False
+    model_spans = [match.span() for match in re.finditer(re.escape(model), text, re.IGNORECASE)]
+    if not model_spans:
+        return False
+    for match in re.finditer(re.escape(raw_number), text):
+        for start, end in model_spans:
+            if start <= match.start() and match.end() <= end:
+                return True
+    return False
 
 
 def _pick_serial(text: str) -> str | None:
@@ -57,7 +87,7 @@ def _pick_serial(text: str) -> str | None:
 def parse_content(content: str, model_keywords: list[str]) -> ParsedFields:
     normalized = normalize_text(content)
     model = _pick_model(normalized, model_keywords)
-    price = _pick_price(normalized)
+    price = _pick_price(normalized, model)
     serial_no = _pick_serial(content)
     needs_manual = any(value is None for value in (model, price, serial_no))
     return ParsedFields(

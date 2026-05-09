@@ -220,3 +220,35 @@ def test_export_records_uses_fixed_failure_text_when_media_download_fails():
     finally:
         exporter.urlopen = original_urlopen
         shutil.rmtree(temp_root, ignore_errors=True)
+
+
+def test_export_records_filters_xml_control_characters():
+    temp_root = _make_temp_root(f"pytest-export-xml-{uuid.uuid4().hex}-")
+
+    try:
+        records = [
+            InventoryRecord(
+                record_key="record-xml",
+                remark_name="user-a",
+                wxid="wxid_123",
+                published_at=datetime.fromisoformat("2026-04-20T10:00:00+08:00"),
+                model="ixus 95",
+                price=850,
+                serial_no="A12",
+                status=next(iter(exporter.CURRENT_STATUSES)),
+                image_urls=[],
+                video_urls=[],
+                content_text="hello\x01world",
+                note="bad\x02note",
+                needs_manual=False,
+                source_moment_ids=["sns_001"],
+            )
+        ]
+
+        current_path, _ = export_records(records, temp_root)
+        rows = _read_sheet_rows(current_path)
+
+        assert rows[1][9] == "helloworld"
+        assert rows[1][10] == "badnote"
+    finally:
+        shutil.rmtree(temp_root, ignore_errors=True)

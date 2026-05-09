@@ -39,6 +39,23 @@ def _venv_script(venv_dir: Path) -> Path:
     return venv_dir / "bin" / "moments-inventory"
 
 
+def _subprocess_tempfile_is_writable() -> bool:
+    probe = subprocess.run(
+        [
+            sys.executable,
+            "-c",
+            (
+                "import pathlib, tempfile; "
+                "root = pathlib.Path(tempfile.mkdtemp()); "
+                "(root / 'probe.txt').write_text('ok', encoding='utf-8')"
+            ),
+        ],
+        capture_output=True,
+        text=True,
+    )
+    return probe.returncode == 0
+
+
 def test_pyproject_uses_single_version_source_and_src_layout():
     pyproject = tomllib.loads((PROJECT_ROOT / "pyproject.toml").read_text(encoding="utf-8"))
 
@@ -217,6 +234,9 @@ paths:
 
 
 def test_editable_install_exposes_import_and_console_script():
+    if not _subprocess_tempfile_is_writable():
+        pytest.skip("当前环境的标准库 tempfile/ensurepip 不可写，跳过 editable install 烟雾测试")
+
     temp_path = _make_temp_root(f"pytest-smoke-{uuid.uuid4().hex}-")
     venv_dir = temp_path / "venv"
 

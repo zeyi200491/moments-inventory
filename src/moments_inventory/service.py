@@ -23,7 +23,12 @@ class SyncService:
         return bool(record.model)
 
     def sync(self, now: datetime | None = None):
-        current_time = now or datetime.now().astimezone()
+        if now is None:
+            current_time = datetime.now().astimezone()
+        elif now.tzinfo is None:
+            current_time = now.astimezone()
+        else:
+            current_time = now
         start_time = current_time - timedelta(days=self._settings.task.days)
         LOGGER.info(
             "sync started",
@@ -32,13 +37,16 @@ class SyncService:
         usernames = self._client.resolve_usernames(self._settings.targets)
         moments = []
         for username in usernames:
-            moments.extend(
-                self._client.fetch_timeline(
-                    usernames=[username],
-                    start=start_time.isoformat(),
-                    end=current_time.isoformat(),
+            try:
+                moments.extend(
+                    self._client.fetch_timeline(
+                        usernames=[username],
+                        start=start_time.isoformat(),
+                        end=current_time.isoformat(),
+                    )
                 )
-            )
+            except Exception:
+                LOGGER.exception("sync fetch failed", extra={"username": username})
         records = deduplicate_and_merge(
             moments,
             model_keywords=self._settings.model_keywords,

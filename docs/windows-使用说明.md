@@ -1,7 +1,7 @@
 # Windows 使用说明
 
 这份文档给“拿到项目后直接使用”的同事或客户看。  
-首次配置完成后，后面只需要运行 `run_export.bat`。
+首次配置完成后，后面通常运行 `run_export.bat`；如果需要先做朋友圈预刷新，再运行 `run_warmup_and_export.bat`。
 
 ## 1. 这个工具做什么
 
@@ -149,7 +149,29 @@ setx WEFLOW_ACCESS_TOKEN "你的实际token"
 4. 变量名填 `WEFLOW_ACCESS_TOKEN`
 5. 变量值填你的实际 token
 
-## 5. 日常怎么运行
+## 5. 预刷新导出
+
+如果你的 WeFlow 流程需要先在微信里打开朋友圈，再继续抓取和导出，建议使用预刷新脚本。
+
+运行前，请先把微信停在通讯录或聊天列表，也就是微信先停在通讯录或聊天列表。第一版脚本依赖这个起始位置去执行固定路径操作，避免从未知页面开始导致流程走偏。
+
+另外，`config/config.yaml` 里的 `warmup.enabled` 默认是 `false`。要使用 `run_warmup_and_export.bat`，必须先把它改成 `true`，否则即使运行了脚本，也不会按预期进入预刷新流程。
+
+然后在项目根目录运行：
+
+```bat
+run_warmup_and_export.bat
+```
+
+这个脚本会按 `config/config.yaml` 里的 `targets` 顺序逐个执行预刷新。虽然平时建议优先填写 `wxid`，但在 warmup 场景下，`targets[].remark_name` 实际上应视为必填，因为当前版本是按备注名搜索联系人；只有 `wxid` 而没有 `remark_name`，预刷新阶段无法可靠定位联系人。达到程序设定的阈值后，会继续执行同步与导出，不需要再手动补跑一次 `run_export.bat`。
+
+第一版限制如下：
+
+- 仅支持 Windows
+- 仅支持微信桌面端固定操作路径
+- warmup 场景下联系人按 `targets[].remark_name` 搜索，因此 `remark_name` 应填写并视为必填
+
+## 6. 日常怎么运行
 
 配置完成后，平时只需要运行：
 
@@ -171,7 +193,7 @@ python -m moments_inventory.cli sync --export
 
 它们都在 `config/config.yaml` 里 `task.output_dir` 指定的目录下。
 
-## 6. 常见问题
+## 7. 常见问题
 
 ### 提示找不到 `.venv\Scripts\python.exe`
 
@@ -209,7 +231,7 @@ setx WEFLOW_ACCESS_TOKEN "你的实际token"
 - `weflow.base_url` 是否指向正确的 WeFlow 服务
 - `config/models.txt` 是否覆盖了你实际售卖的型号
 
-## 7. 推荐交付方式
+## 8. 推荐交付方式
 
 如果你要把这个项目交给别人，建议一起提供：
 

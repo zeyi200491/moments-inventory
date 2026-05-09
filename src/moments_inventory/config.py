@@ -41,13 +41,44 @@ class PathSettings:
 
 
 @dataclass(slots=True)
+class WarmupSettings:
+    enabled: bool = False
+    start_page: str = "contacts"
+    search_delay_ms: int = 800
+    open_profile_delay_ms: int = 1000
+    open_timeline_delay_ms: int = 1200
+    scroll_count: int = 4
+    scroll_delay_ms: int = 900
+    back_delay_ms: int = 600
+    max_consecutive_failures: int = 3
+    min_success_count: int = 1
+    auto_export_on_success: bool = True
+
+
+@dataclass(slots=True)
 class Settings:
     weflow: WeFlowSettings
     task: TaskSettings
     targets: list[TargetContact]
     rules: RuleSettings
     paths: PathSettings
+    warmup: WarmupSettings = field(default_factory=WarmupSettings)
     model_keywords: list[str] = field(default_factory=list)
+
+
+_WARMUP_BOOL_FIELDS = {"enabled", "auto_export_on_success"}
+_WARMUP_INT_FIELDS = {
+    "search_delay_ms",
+    "open_profile_delay_ms",
+    "open_timeline_delay_ms",
+    "scroll_count",
+    "scroll_delay_ms",
+    "back_delay_ms",
+    "max_consecutive_failures",
+    "min_success_count",
+}
+_WARMUP_ALLOWED_KEYS = _WARMUP_BOOL_FIELDS | _WARMUP_INT_FIELDS | {"start_page"}
+_WARMUP_ALLOWED_START_PAGES = {"contacts", "chat_list"}
 
 
 def _expect_mapping(value: object, path: str) -> dict:
@@ -86,6 +117,12 @@ def _expect_non_empty_string(value: object, path: str) -> str:
 def _expect_positive_int(value: object, path: str) -> int:
     if not isinstance(value, int) or isinstance(value, bool) or value <= 0:
         raise ConfigError(f"{path} 必须是正整数")
+    return value
+
+
+def _expect_bool(value: object, path: str) -> bool:
+    if not isinstance(value, bool):
+        raise ConfigError(f"{path} 必须是布尔值")
     return value
 
 
@@ -141,11 +178,45 @@ def _validate_targets(raw_targets: object) -> list[TargetContact]:
     return normalized
 
 
+def _parse_warmup_settings(raw_warmup: object | None) -> WarmupSettings:
+    defaults = WarmupSettings()
+    warmup_raw = _expect_mapping({} if raw_warmup is None else raw_warmup, "warmup")
+    _validate_keys("warmup", warmup_raw, set(), _WARMUP_ALLOWED_KEYS)
+
+    start_page = _expect_non_empty_string(
+        warmup_raw.get("start_page", defaults.start_page),
+        "warmup.start_page",
+    )
+    if start_page not in _WARMUP_ALLOWED_START_PAGES:
+        raise ConfigError("warmup.start_page 只能是 contacts 或 chat_list")
+
+    parsed_values: dict[str, object] = {"start_page": start_page}
+
+    for field_name in sorted(_WARMUP_BOOL_FIELDS):
+        parsed_values[field_name] = _expect_bool(
+            warmup_raw.get(field_name, getattr(defaults, field_name)),
+            f"warmup.{field_name}",
+        )
+
+    for field_name in sorted(_WARMUP_INT_FIELDS):
+        parsed_values[field_name] = _expect_positive_int(
+            warmup_raw.get(field_name, getattr(defaults, field_name)),
+            f"warmup.{field_name}",
+        )
+
+    return WarmupSettings(**parsed_values)
+
+
 def load_settings(path: str | Path) -> Settings:
     config_path = Path(path)
     raw = yaml.safe_load(config_path.read_text(encoding="utf-8"))
     raw = _expect_mapping(raw, "config")
-    _validate_keys(raw_path := "config", raw, {"weflow", "task", "targets", "rules", "paths"})
+    _validate_keys(
+        raw_path := "config",
+        raw,
+        {"weflow", "task", "targets", "rules", "paths"},
+        {"warmup"},
+    )
     base_dir = config_path.parent.resolve()
 
     weflow_raw = _expect_mapping(raw["weflow"], "weflow")
@@ -189,5 +260,6 @@ def load_settings(path: str | Path) -> Settings:
             )
         ),
         paths=PathSettings(sqlite_db=sqlite_db, model_dict=str(model_path)),
+        warmup=_parse_warmup_settings(raw.get("warmup")),
         model_keywords=_read_model_keywords(model_path),
     )
