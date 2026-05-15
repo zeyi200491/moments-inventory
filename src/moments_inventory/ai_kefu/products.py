@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from dataclasses import replace
+from io import BytesIO
 from pathlib import Path
 from xml.etree import ElementTree as ET
 import re
@@ -33,7 +34,19 @@ _FAILED_MEDIA_TEXT = ("未成功下载", "下载失败")
 
 
 def import_products_from_xlsx(xlsx_path: str | Path) -> list[ProductRecord]:
-    rows = _read_workbook_rows(xlsx_path)
+    return import_products_from_xlsx_bytes(Path(xlsx_path).read_bytes())
+
+
+def import_products_from_xlsx_bytes(xlsx_bytes: bytes) -> list[ProductRecord]:
+    rows = read_xlsx_rows_from_bytes(xlsx_bytes)
+    return _build_products_from_rows(rows)
+
+
+def read_xlsx_rows_from_bytes(xlsx_bytes: bytes) -> list[list[object]]:
+    return _read_workbook_rows(BytesIO(xlsx_bytes))
+
+
+def _build_products_from_rows(rows: list[list[object]]) -> list[ProductRecord]:
     if not rows:
         return []
 
@@ -86,7 +99,6 @@ def import_products_from_xlsx(xlsx_path: str | Path) -> list[ProductRecord]:
                 manual_review_needed=_is_true_value(_get_cell(row, header_map, HEADERS[11])),
             )
         )
-
     return _apply_pricing_recommendations(products)
 
 
