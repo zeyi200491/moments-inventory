@@ -1,16 +1,29 @@
 from __future__ import annotations
 
+import zipfile
+from typing import Callable, TypeVar
+from xml.etree.ElementTree import ParseError
+
 from moments_inventory.ai_kefu.models import KnowledgeChunk, ProductRecord
 from moments_inventory.ai_kefu.products import import_products_from_xlsx_bytes, read_xlsx_rows_from_bytes
 from moments_inventory.ai_kefu.structured_imports import build_structured_import_content
 
 
+T = TypeVar("T")
+
+
 def ingest_product_inventory_excel(payload: bytes) -> list[ProductRecord]:
-    return import_products_from_xlsx_bytes(payload)
+    return _load_xlsx_rows(
+        payload=payload,
+        loader=import_products_from_xlsx_bytes,
+    )
 
 
 def ingest_product_material_excel(payload: bytes) -> list[KnowledgeChunk]:
-    rows = read_xlsx_rows_from_bytes(payload)
+    rows = _load_xlsx_rows(
+        payload=payload,
+        loader=read_xlsx_rows_from_bytes,
+    )
     if not rows:
         return []
 
@@ -67,3 +80,10 @@ def _get_cell(row: list[object], header_map: dict[str, int], header_name: str) -
     if value is None:
         return ""
     return str(value).strip()
+
+
+def _load_xlsx_rows(payload: bytes, loader: Callable[[bytes], T]) -> T:
+    try:
+        return loader(payload)
+    except (IndexError, KeyError, ParseError, ValueError, zipfile.BadZipFile) as exc:
+        raise ValueError("xlsx 文件无法解析，请重新导出后再上传") from exc

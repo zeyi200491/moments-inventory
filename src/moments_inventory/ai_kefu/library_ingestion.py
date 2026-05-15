@@ -56,6 +56,6 @@ def ingest_library_bytes(
         )
 
     if library_type in {"shipping_info_excel", "style_sample_md"}:
-        return LibraryImportResult(library_type=library_type)
+        raise NotImplementedError(f"业务库类型 {library_type} 暂未实现解析，无法导入文件 {filename}")
 
     raise ValueError(f"不支持的业务库类型: {library_type} ({filename})")

@@ -1,6 +1,9 @@
 from __future__ import annotations
 
+from io import BytesIO
+from pathlib import Path
 from types import SimpleNamespace
+import zipfile
 
 from fastapi.testclient import TestClient
 import pytest
@@ -9,11 +12,12 @@ import yaml
 import moments_inventory.cli as cli_module
 from moments_inventory.ai_kefu.app import build_default_service, create_app
 from moments_inventory.ai_kefu.chat_sync import ChatSyncBridge
-from moments_inventory.ai_kefu.models import KnowledgeChunk
+from moments_inventory.ai_kefu.models import KnowledgeChunk, LibraryStateRecord, ProductRecord
 from moments_inventory.ai_kefu.risk import RiskDecision
 from moments_inventory.ai_kefu.service import DraftResult
 from moments_inventory.ai_kefu.settings import RetrievalSettings
 from moments_inventory.ai_kefu.storage import SQLiteKefuRepository
+from moments_inventory.exporter import HEADERS
 from moments_inventory.weflow_client import WeFlowSession
 
 
@@ -158,6 +162,387 @@ def test_list_knowledge_sources_endpoint_returns_explicit_knowledge_tier(tmp_pat
     ]
 
 
+def test_list_knowledge_libraries_endpoint_returns_library_states(tmp_path):
+    repository = SQLiteKefuRepository(tmp_path / "ai-kefu.db")
+    repository.initialize()
+    repository.save_library_state(
+        LibraryStateRecord(
+            library_type="master_rule_bundle",
+            source_name="library:master_rule_bundle",
+            original_filename="master-rule.md",
+            imported_count=2,
+            skipped_count=0,
+            status="active",
+            uploaded_at="2026-05-15T18:00:00+08:00",
+        )
+    )
+    client = TestClient(
+        create_app(
+            service=RecordingDraftService(),
+            repository=repository,
+            retrieval_settings=RetrievalSettings(chunk_size=20, chunk_overlap=5),
+        )
+    )
+
+    response = client.get("/api/knowledge/libraries")
+
+    assert response.status_code == 200
+    assert response.json() == [
+        {
+            "library_type": "master_rule_bundle",
+            "source_name": "library:master_rule_bundle",
+            "original_filename": "master-rule.md",
+            "imported_count": 2,
+            "skipped_count": 0,
+            "status": "active",
+            "uploaded_at": "2026-05-15T18:00:00+08:00",
+        }
+    ]
+
+
+def test_knowledge_upload_endpoint_ingests_master_rule_bundle(tmp_path):
+    repository = SQLiteKefuRepository(tmp_path / "ai-kefu.db")
+    repository.initialize()
+    client = TestClient(
+        create_app(
+            service=RecordingDraftService(),
+            repository=repository,
+            retrieval_settings=RetrievalSettings(chunk_size=200, chunk_overlap=20),
+        )
+    )
+
+    response = client.post(
+        "/api/knowledge/uploads",
+        data={"library_type": "master_rule_bundle"},
+        files={
+            "file": (
+                "master-rule.md",
+                (
+                    "# 售前总规则\n\n"
+                    "客服先确认商品成色，再报价。\n\n"
+                    "## 常见问题\n\n"
+                    "Q：支持退货吗？\n"
+                    "A：按售后规则执行。\n"
+                ).encode("utf-8"),
+                "text/markdown",
+            )
+        },
+    )
+
+    assert response.status_code == 200
+    assert response.json()["library_type"] == "master_rule_bundle"
+    assert response.json()["status"] == "active"
+    assert response.json()["replaced"] is False
+    assert response.json()["imported_count"] == 2
+    assert response.json()["skipped_count"] == 0
+    assert response.json()["message"] == "上传成功"
+    assert response.json()["uploaded_at"]
+    assert repository.get_library_state("master_rule_bundle") == LibraryStateRecord(
+        library_type="master_rule_bundle",
+        source_name="library:master_rule_bundle",
+        original_filename="master-rule.md",
+        imported_count=2,
+        skipped_count=0,
+        status="active",
+        uploaded_at=response.json()["uploaded_at"],
+    )
+    assert sorted(chunk.source_name for chunk in repository.list_knowledge_chunks()) == [
+        "library:master_rule_bundle:faq",
+        "library:master_rule_bundle:master_rule",
+    ]
+
+
+def test_knowledge_upload_endpoint_replaces_existing_library_state_and_chunks(tmp_path):
+    repository = SQLiteKefuRepository(tmp_path / "ai-kefu.db")
+    repository.initialize()
+    client = TestClient(
+        create_app(
+            service=RecordingDraftService(),
+            repository=repository,
+            retrieval_settings=RetrievalSettings(chunk_size=200, chunk_overlap=20),
+        )
+    )
+
+    first_response = client.post(
+        "/api/knowledge/uploads",
+        data={"library_type": "master_rule_bundle"},
+        files={
+            "file": (
+                "rules-v1.md",
+                (
+                    "# Rules\n\n"
+                    "Old rule.\n\n"
+                    "## FAQ\n\n"
+                    "Q: old?\n"
+                    "A: old.\n"
+                ).encode("utf-8"),
+                "text/markdown",
+            )
+        },
+    )
+    second_response = client.post(
+        "/api/knowledge/uploads",
+        data={"library_type": "master_rule_bundle"},
+        files={
+            "file": (
+                "rules-v2.md",
+                (
+                    "# Rules\n\n"
+                    "New rule.\n\n"
+                    "## FAQ\n\n"
+                    "Q: new?\n"
+                    "A: new.\n"
+                ).encode("utf-8"),
+                "text/markdown",
+            )
+        },
+    )
+
+    assert first_response.status_code == 200
+    assert second_response.status_code == 200
+    assert second_response.json()["replaced"] is True
+    assert repository.get_library_state("master_rule_bundle") == LibraryStateRecord(
+        library_type="master_rule_bundle",
+        source_name="library:master_rule_bundle",
+        original_filename="rules-v2.md",
+        imported_count=2,
+        skipped_count=0,
+        status="active",
+        uploaded_at=second_response.json()["uploaded_at"],
+    )
+    chunk_texts = [chunk.text for chunk in repository.list_knowledge_chunks()]
+    assert any("New rule." in text for text in chunk_texts)
+    assert all("Old rule." not in text for text in chunk_texts)
+
+
+def test_knowledge_upload_endpoint_replaces_products_with_empty_inventory(tmp_path):
+    repository = SQLiteKefuRepository(tmp_path / "ai-kefu.db")
+    repository.initialize()
+    repository.save_products(
+        [
+            ProductRecord(
+                product_id="legacy-1",
+                source_record_id="legacy-1",
+                brand="Canon",
+                model_std="IXUS 95",
+                sale_status="在售",
+                is_functional=True,
+                has_inspection_video=False,
+                has_sample_output=False,
+                cost_price=500,
+                sale_price=650,
+                profit_amount=150,
+                source_name="legacy",
+                source_wxid="wxid-legacy",
+                published_at="2026-05-15T10:00:00+08:00",
+                image_path="",
+                video_path="",
+                raw_copy="legacy",
+                manual_review_needed=False,
+            )
+        ]
+    )
+    client = TestClient(
+        create_app(
+            service=RecordingDraftService(),
+            repository=repository,
+            retrieval_settings=RetrievalSettings(chunk_size=200, chunk_overlap=20),
+        )
+    )
+
+    response = client.post(
+        "/api/knowledge/uploads",
+        data={"library_type": "product_inventory_excel"},
+        files={
+            "file": (
+                "inventory-empty.xlsx",
+                build_products_workbook_bytes([HEADERS]),
+                "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+            )
+        },
+    )
+
+    assert response.status_code == 200
+    assert response.json()["imported_count"] == 0
+    assert response.json()["replaced"] is False
+    assert repository.list_products() == []
+
+
+def test_knowledge_upload_endpoint_rejects_broken_product_inventory_excel(tmp_path):
+    repository = SQLiteKefuRepository(tmp_path / "ai-kefu.db")
+    repository.initialize()
+    client = TestClient(
+        create_app(
+            service=RecordingDraftService(),
+            repository=repository,
+            retrieval_settings=RetrievalSettings(chunk_size=200, chunk_overlap=20),
+        )
+    )
+
+    response = client.post(
+        "/api/knowledge/uploads",
+        data={"library_type": "product_inventory_excel"},
+        files={
+            "file": (
+                "broken.xlsx",
+                b"not-a-real-xlsx",
+                "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+            )
+        },
+    )
+
+    assert response.status_code == 400
+    assert "xlsx" in response.json()["detail"]
+
+
+def test_knowledge_upload_endpoint_rejects_malformed_product_inventory_excel(tmp_path):
+    repository = SQLiteKefuRepository(tmp_path / "ai-kefu.db")
+    repository.initialize()
+    client = TestClient(
+        create_app(
+            service=RecordingDraftService(),
+            repository=repository,
+            retrieval_settings=RetrievalSettings(chunk_size=200, chunk_overlap=20),
+        )
+    )
+
+    response = client.post(
+        "/api/knowledge/uploads",
+        data={"library_type": "product_inventory_excel"},
+        files={
+            "file": (
+                "broken-shared-strings.xlsx",
+                build_malformed_xlsx_bytes(),
+                "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+            )
+        },
+    )
+
+    assert response.status_code == 400
+    assert "xlsx" in response.json()["detail"]
+
+
+def test_knowledge_upload_endpoint_rejects_malformed_product_material_excel(tmp_path):
+    repository = SQLiteKefuRepository(tmp_path / "ai-kefu.db")
+    repository.initialize()
+    client = TestClient(
+        create_app(
+            service=RecordingDraftService(),
+            repository=repository,
+            retrieval_settings=RetrievalSettings(chunk_size=200, chunk_overlap=20),
+        )
+    )
+
+    response = client.post(
+        "/api/knowledge/uploads",
+        data={"library_type": "product_material_excel"},
+        files={
+            "file": (
+                "broken-shared-strings.xlsx",
+                build_malformed_xlsx_bytes(),
+                "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+            )
+        },
+    )
+
+    assert response.status_code == 400
+    assert "xlsx" in response.json()["detail"]
+
+
+def test_knowledge_upload_endpoint_persists_embeddings_when_provider_available(tmp_path):
+    repository = SQLiteKefuRepository(tmp_path / "ai-kefu.db")
+    repository.initialize()
+
+    class FakeEmbeddingProvider:
+        def embed_texts(self, texts: list[str]) -> list[list[float]]:
+            return [[0.11, 0.22] for _ in texts]
+
+    client = TestClient(
+        create_app(
+            service=RecordingDraftService(),
+            repository=repository,
+            retrieval_settings=RetrievalSettings(chunk_size=200, chunk_overlap=20),
+            embedding_provider=FakeEmbeddingProvider(),
+        )
+    )
+
+    response = client.post(
+        "/api/knowledge/uploads",
+        data={"library_type": "master_rule_bundle"},
+        files={
+            "file": (
+                "master-rule.md",
+                (
+                    "# Rules\n\n"
+                    "Upload rule.\n\n"
+                    "## FAQ\n\n"
+                    "Q: upload?\n"
+                    "A: yes.\n"
+                ).encode("utf-8"),
+                "text/markdown",
+            )
+        },
+    )
+
+    assert response.status_code == 200
+    chunks = repository.list_knowledge_chunks()
+    assert len(chunks) == 2
+    assert all(chunk.embedding == [0.11, 0.22] for chunk in chunks)
+
+
+def test_knowledge_upload_endpoint_rejects_unimplemented_library_type(tmp_path):
+    repository = SQLiteKefuRepository(tmp_path / "ai-kefu.db")
+    repository.initialize()
+    client = TestClient(
+        create_app(
+            service=RecordingDraftService(),
+            repository=repository,
+            retrieval_settings=RetrievalSettings(chunk_size=200, chunk_overlap=20),
+        )
+    )
+
+    response = client.post(
+        "/api/knowledge/uploads",
+        data={"library_type": "shipping_info_excel"},
+        files={
+            "file": (
+                "shipping-info.xlsx",
+                b"placeholder",
+                "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+            )
+        },
+    )
+
+    assert response.status_code == 501
+    assert "shipping_info_excel" in response.json()["detail"]
+
+
+def test_knowledge_import_endpoint_remains_available_after_upload_api_added(tmp_path):
+    repository = SQLiteKefuRepository(tmp_path / "ai-kefu.db")
+    repository.initialize()
+    client = TestClient(
+        create_app(
+            service=RecordingDraftService(),
+            repository=repository,
+            retrieval_settings=RetrievalSettings(chunk_size=20, chunk_overlap=5),
+        )
+    )
+
+    response = client.post(
+        "/api/knowledge/imports",
+        json={
+            "source_name": "faq.txt",
+            "category": "售后",
+            "knowledge_tier": "faq",
+            "content": "退款到账通常需要一到三个工作日。",
+            "tags": ["退款"],
+        },
+    )
+
+    assert response.status_code == 200
+    assert response.json()["source_name"] == "faq.txt"
+
+
 class RecordingDraftService:
     def __init__(self) -> None:
         self.calls: list[dict[str, object]] = []
@@ -199,6 +584,70 @@ class RecordingDraftService:
                 required_data=["库存", "预算"],
             ),
         )
+
+
+def build_products_workbook_bytes(rows: list[list[object]]) -> bytes:
+    workbook_path = Path.cwd() / "_tmp_test_inventory.xlsx"
+    try:
+        from moments_inventory.exporter import _write_workbook
+
+        _write_workbook(workbook_path, rows)
+        return workbook_path.read_bytes()
+    finally:
+        if workbook_path.exists():
+            workbook_path.unlink()
+
+
+def build_malformed_xlsx_bytes() -> bytes:
+    buffer = BytesIO()
+    with zipfile.ZipFile(buffer, "w") as archive:
+        archive.writestr(
+            "[Content_Types].xml",
+            """<?xml version="1.0" encoding="UTF-8"?>
+<Types xmlns="http://schemas.openxmlformats.org/package/2006/content-types">
+  <Default Extension="rels" ContentType="application/vnd.openxmlformats-package.relationships+xml"/>
+  <Default Extension="xml" ContentType="application/xml"/>
+  <Override PartName="/xl/workbook.xml" ContentType="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet.main+xml"/>
+  <Override PartName="/xl/worksheets/sheet1.xml" ContentType="application/vnd.openxmlformats-officedocument.spreadsheetml.worksheet+xml"/>
+  <Override PartName="/xl/sharedStrings.xml" ContentType="application/vnd.openxmlformats-officedocument.spreadsheetml.sharedStrings+xml"/>
+</Types>""",
+        )
+        archive.writestr(
+            "xl/workbook.xml",
+            """<?xml version="1.0" encoding="UTF-8"?>
+<workbook xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main"
+ xmlns:r="http://schemas.openxmlformats.org/officeDocument/2006/relationships">
+  <sheets>
+    <sheet name="Sheet1" sheetId="1" r:id="rId1"/>
+  </sheets>
+</workbook>""",
+        )
+        archive.writestr(
+            "xl/_rels/workbook.xml.rels",
+            """<?xml version="1.0" encoding="UTF-8"?>
+<Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships">
+  <Relationship Id="rId1" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/worksheet" Target="worksheets/sheet1.xml"/>
+</Relationships>""",
+        )
+        archive.writestr(
+            "xl/sharedStrings.xml",
+            """<?xml version="1.0" encoding="UTF-8"?>
+<sst xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main" count="1" uniqueCount="1">
+  <si><t>only-one-string</t></si>
+</sst>""",
+        )
+        archive.writestr(
+            "xl/worksheets/sheet1.xml",
+            """<?xml version="1.0" encoding="UTF-8"?>
+<worksheet xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main">
+  <sheetData>
+    <row r="1">
+      <c r="A1" t="s"><v>99</v></c>
+    </row>
+  </sheetData>
+</worksheet>""",
+        )
+    return buffer.getvalue()
 
 
 def test_health_endpoint_returns_ok():

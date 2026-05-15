@@ -129,34 +129,7 @@ class SQLiteKefuRepository:
         self.initialize()
         with self._lock:
             with self._get_connection() as conn:
-                conn.executemany(
-                    """
-                    insert into knowledge_chunks (
-                      chunk_id, source_name, category, knowledge_tier, text, tags_json, embedding_json
-                    ) values (?, ?, ?, ?, ?, ?, ?)
-                    on conflict(chunk_id) do update set
-                      source_name = excluded.source_name,
-                      category = excluded.category,
-                      knowledge_tier = excluded.knowledge_tier,
-                      text = excluded.text,
-                      tags_json = excluded.tags_json,
-                      embedding_json = excluded.embedding_json
-                    """,
-                    [
-                        (
-                            chunk.chunk_id,
-                            chunk.source_name,
-                            chunk.category,
-                            chunk.knowledge_tier,
-                            chunk.text,
-                            json.dumps(chunk.tags, ensure_ascii=False),
-                            json.dumps(chunk.embedding, ensure_ascii=False)
-                            if chunk.embedding is not None
-                            else None,
-                        )
-                        for chunk in chunks
-                    ],
-                )
+                self._save_knowledge_chunks(conn, chunks)
 
     def delete_knowledge_chunks_by_source(self, source_name: str) -> None:
         self.initialize()
@@ -171,14 +144,7 @@ class SQLiteKefuRepository:
         self.initialize()
         with self._lock:
             with self._get_connection() as conn:
-                conn.execute(
-                    """
-                    delete from knowledge_chunks
-                    where source_name = ?
-                       or source_name like ? escape '\\'
-                    """,
-                    (source_prefix, f"{source_prefix}:%"),
-                )
+                self._delete_knowledge_chunks_by_source_prefix(conn, source_prefix)
 
     def _load_tags(self, tags_json: str, chunk_id: str) -> list[str]:
         try:
@@ -278,30 +244,7 @@ class SQLiteKefuRepository:
         self.initialize()
         with self._lock:
             with self._get_connection() as conn:
-                conn.execute(
-                    """
-                    insert into library_state (
-                      library_type, source_name, original_filename, imported_count,
-                      skipped_count, status, uploaded_at
-                    ) values (?, ?, ?, ?, ?, ?, ?)
-                    on conflict(library_type) do update set
-                      source_name = excluded.source_name,
-                      original_filename = excluded.original_filename,
-                      imported_count = excluded.imported_count,
-                      skipped_count = excluded.skipped_count,
-                      status = excluded.status,
-                      uploaded_at = excluded.uploaded_at
-                    """,
-                    (
-                        record.library_type,
-                        record.source_name,
-                        record.original_filename,
-                        record.imported_count,
-                        record.skipped_count,
-                        record.status,
-                        record.uploaded_at,
-                    ),
-                )
+                self._save_library_state(conn, record)
 
     def get_library_state(self, library_type: str) -> LibraryStateRecord | None:
         self.initialize()
@@ -447,8 +390,26 @@ class SQLiteKefuRepository:
         self.initialize()
         with self._lock:
             with self._get_connection() as conn:
-                conn.execute("delete from products")
-                self._insert_products(conn, products)
+                self._replace_products(conn, products)
+
+    def apply_library_upload(
+        self,
+        *,
+        source_name: str,
+        knowledge_chunks: list[KnowledgeChunk],
+        product_records: list[ProductRecord],
+        library_state: LibraryStateRecord,
+    ) -> None:
+        self.initialize()
+        with self._lock:
+            with self._get_connection() as conn:
+                self._delete_knowledge_chunks_by_source_prefix(conn, source_name)
+                if knowledge_chunks:
+                    self._save_knowledge_chunks(conn, knowledge_chunks)
+                if library_state.library_type == "product_inventory_excel":
+                    self._replace_products(conn, product_records)
+                self._save_library_state(conn, library_state)
+                self._before_commit_library_upload()
 
     def save_products(self, products: list[ProductRecord]) -> None:
         self.initialize()
@@ -513,6 +474,95 @@ class SQLiteKefuRepository:
                 for product in products
             ],
         )
+
+    def _save_knowledge_chunks(
+        self,
+        conn: sqlite3.Connection,
+        chunks: list[KnowledgeChunk],
+    ) -> None:
+        conn.executemany(
+            """
+            insert into knowledge_chunks (
+              chunk_id, source_name, category, knowledge_tier, text, tags_json, embedding_json
+            ) values (?, ?, ?, ?, ?, ?, ?)
+            on conflict(chunk_id) do update set
+              source_name = excluded.source_name,
+              category = excluded.category,
+              knowledge_tier = excluded.knowledge_tier,
+              text = excluded.text,
+              tags_json = excluded.tags_json,
+              embedding_json = excluded.embedding_json
+            """,
+            [
+                (
+                    chunk.chunk_id,
+                    chunk.source_name,
+                    chunk.category,
+                    chunk.knowledge_tier,
+                    chunk.text,
+                    json.dumps(chunk.tags, ensure_ascii=False),
+                    json.dumps(chunk.embedding, ensure_ascii=False)
+                    if chunk.embedding is not None
+                    else None,
+                )
+                for chunk in chunks
+            ],
+        )
+
+    def _delete_knowledge_chunks_by_source_prefix(
+        self,
+        conn: sqlite3.Connection,
+        source_prefix: str,
+    ) -> None:
+        conn.execute(
+            """
+            delete from knowledge_chunks
+            where source_name = ?
+               or source_name like ? escape '\\'
+            """,
+            (source_prefix, f"{source_prefix}:%"),
+        )
+
+    def _save_library_state(
+        self,
+        conn: sqlite3.Connection,
+        record: LibraryStateRecord,
+    ) -> None:
+        conn.execute(
+            """
+            insert into library_state (
+              library_type, source_name, original_filename, imported_count,
+              skipped_count, status, uploaded_at
+            ) values (?, ?, ?, ?, ?, ?, ?)
+            on conflict(library_type) do update set
+              source_name = excluded.source_name,
+              original_filename = excluded.original_filename,
+              imported_count = excluded.imported_count,
+              skipped_count = excluded.skipped_count,
+              status = excluded.status,
+              uploaded_at = excluded.uploaded_at
+            """,
+            (
+                record.library_type,
+                record.source_name,
+                record.original_filename,
+                record.imported_count,
+                record.skipped_count,
+                record.status,
+                record.uploaded_at,
+            ),
+        )
+
+    def _replace_products(
+        self,
+        conn: sqlite3.Connection,
+        products: list[ProductRecord],
+    ) -> None:
+        conn.execute("delete from products")
+        self._insert_products(conn, products)
+
+    def _before_commit_library_upload(self) -> None:
+        return None
 
     def list_products(self) -> list[ProductRecord]:
         self.initialize()

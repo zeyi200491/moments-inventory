@@ -1,17 +1,26 @@
 from __future__ import annotations
 
 from collections import defaultdict
+from datetime import datetime
 import json
 from typing import Annotated, Protocol
 
-from fastapi import APIRouter, Depends, Header, HTTPException, Query, status
+from fastapi import APIRouter, Depends, File, Form, Header, HTTPException, Query, UploadFile, status
 from pydantic import BaseModel, Field
 
 from moments_inventory.ai_kefu.audit import DraftAuditRecord
 from moments_inventory.ai_kefu.chat_sync import ChatSessionState
 from moments_inventory.ai_kefu.indexing import split_document_to_chunks
 from moments_inventory.ai_kefu.knowledge_policy import classify_knowledge_tier
-from moments_inventory.ai_kefu.models import KnowledgeChunk, KnowledgeTier, VALID_KNOWLEDGE_TIERS
+from moments_inventory.ai_kefu.library_ingestion import ingest_library_bytes
+from moments_inventory.ai_kefu.models import (
+    KnowledgeChunk,
+    KnowledgeTier,
+    LibraryStateRecord,
+    LibraryType,
+    ProductRecord,
+    VALID_KNOWLEDGE_TIERS,
+)
 from moments_inventory.ai_kefu.providers import EmbeddingProvider
 from moments_inventory.ai_kefu.risk import RiskDecision, RiskLevel, RuleBasedRiskClassifier
 from moments_inventory.ai_kefu.service import DraftResult
@@ -44,6 +53,31 @@ class KnowledgeRepository(Protocol):
         ...
 
     def delete_knowledge_chunks_by_source(self, source_name: str) -> None:
+        ...
+
+    def delete_knowledge_chunks_by_source_prefix(self, source_prefix: str) -> None:
+        ...
+
+    def replace_products(self, products: list[ProductRecord]) -> None:
+        ...
+
+    def save_library_state(self, record: LibraryStateRecord) -> None:
+        ...
+
+    def get_library_state(self, library_type: str) -> LibraryStateRecord | None:
+        ...
+
+    def list_library_states(self) -> list[LibraryStateRecord]:
+        ...
+
+    def apply_library_upload(
+        self,
+        *,
+        source_name: str,
+        knowledge_chunks: list[KnowledgeChunk],
+        product_records: list[ProductRecord],
+        library_state: LibraryStateRecord,
+    ) -> None:
         ...
 
     def list_draft_audit_records(self, *, limit: int) -> list[DraftAuditRecord]:
@@ -195,6 +229,33 @@ class KnowledgeSourceSummaryResponse(BaseModel):
     tags: list[str] = Field(default_factory=list)
 
 
+class LibraryStateResponse(BaseModel):
+    library_type: LibraryType
+    source_name: str
+    original_filename: str
+    imported_count: int
+    skipped_count: int
+    status: str
+    uploaded_at: str
+
+    @classmethod
+    def from_record(cls, record: LibraryStateRecord) -> "LibraryStateResponse":
+        return cls(
+            library_type=record.library_type,
+            source_name=record.source_name,
+            original_filename=record.original_filename,
+            imported_count=record.imported_count,
+            skipped_count=record.skipped_count,
+            status=record.status,
+            uploaded_at=record.uploaded_at,
+        )
+
+
+class LibraryUploadResponse(LibraryStateResponse):
+    replaced: bool
+    message: str
+
+
 class ChatSyncSessionResponse(BaseModel):
     sessionId: str
     username: str
@@ -292,6 +353,26 @@ def _build_knowledge_summaries(
     return summaries
 
 
+def _build_library_source_name(library_type: LibraryType) -> str:
+    return f"library:{library_type}"
+
+
+def _apply_embeddings(
+    chunks: list[KnowledgeChunk],
+    embedding_provider: EmbeddingProvider | None,
+) -> None:
+    if embedding_provider is None or not chunks:
+        return
+    try:
+        embeddings = embedding_provider.embed_texts([chunk.text for chunk in chunks])
+    except Exception:
+        return
+    if len(embeddings) != len(chunks):
+        return
+    for chunk, embedding in zip(chunks, embeddings, strict=True):
+        chunk.embedding = embedding
+
+
 def create_router(
     service: DraftService,
     repository: KnowledgeRepository,
@@ -379,6 +460,17 @@ def create_router(
         return DraftFeedbackResponse(ok=True)
 
     @router.get(
+        "/knowledge/libraries",
+        response_model=list[LibraryStateResponse],
+        dependencies=protected_dependencies,
+    )
+    def list_knowledge_libraries() -> list[LibraryStateResponse]:
+        return [
+            LibraryStateResponse.from_record(record)
+            for record in repository.list_library_states()
+        ]
+
+    @router.get(
         "/knowledge/sources",
         response_model=list[KnowledgeSourceSummaryResponse],
         dependencies=protected_dependencies,
@@ -429,14 +521,7 @@ def create_router(
         )
         for chunk in chunks:
             chunk.tags = list(tags)
-        if embedding_provider is not None and chunks:
-            try:
-                embeddings = embedding_provider.embed_texts([chunk.text for chunk in chunks])
-            except Exception:
-                embeddings = []
-            if len(embeddings) == len(chunks):
-                for chunk, embedding in zip(chunks, embeddings, strict=True):
-                    chunk.embedding = embedding
+        _apply_embeddings(chunks, embedding_provider)
 
         repository.delete_knowledge_chunks_by_source(source_name)
         repository.save_knowledge_chunks(chunks)
@@ -446,6 +531,68 @@ def create_router(
             knowledge_tier=resolved_tier,
             chunk_count=len(chunks),
             tags=tags,
+        )
+
+    @router.post(
+        "/knowledge/uploads",
+        response_model=LibraryUploadResponse,
+        dependencies=protected_dependencies,
+    )
+    def upload_knowledge_library(
+        library_type: Annotated[LibraryType, Form(...)],
+        file: Annotated[UploadFile, File(...)],
+    ) -> LibraryUploadResponse:
+        filename = file.filename or "upload.bin"
+        payload = file.file.read()
+        existing_record = repository.get_library_state(library_type)
+        uploaded_at = datetime.now().astimezone().isoformat(timespec="seconds")
+        source_name = _build_library_source_name(library_type)
+
+        try:
+            result = ingest_library_bytes(
+                library_type=library_type,
+                filename=filename,
+                payload=payload,
+                chunk_size=retrieval_settings.chunk_size,
+                chunk_overlap=retrieval_settings.chunk_overlap,
+            )
+        except NotImplementedError as exc:
+            raise HTTPException(
+                status_code=status.HTTP_501_NOT_IMPLEMENTED,
+                detail=str(exc),
+            ) from exc
+        except ValueError as exc:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail=str(exc),
+            ) from exc
+
+        record = LibraryStateRecord(
+            library_type=library_type,
+            source_name=source_name,
+            original_filename=filename,
+            imported_count=result.imported_count,
+            skipped_count=result.skipped_count,
+            status="active",
+            uploaded_at=uploaded_at,
+        )
+        _apply_embeddings(result.knowledge_chunks, embedding_provider)
+        repository.apply_library_upload(
+            source_name=source_name,
+            knowledge_chunks=result.knowledge_chunks,
+            product_records=result.product_records,
+            library_state=record,
+        )
+        return LibraryUploadResponse(
+            library_type=record.library_type,
+            source_name=record.source_name,
+            original_filename=record.original_filename,
+            imported_count=record.imported_count,
+            skipped_count=record.skipped_count,
+            status=record.status,
+            uploaded_at=record.uploaded_at,
+            replaced=existing_record is not None,
+            message="上传成功",
         )
 
     @router.get(
