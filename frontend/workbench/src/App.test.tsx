@@ -6,6 +6,7 @@ import App from "./App";
 const apiMocks = vi.hoisted(() => ({
   generateDraft: vi.fn(),
   importKnowledge: vi.fn(),
+  listKnowledgeLibraries: vi.fn(),
   listKnowledgeSources: vi.fn(),
   listDraftHistory: vi.fn(),
   submitDraftFeedback: vi.fn(),
@@ -53,6 +54,7 @@ describe("App", () => {
   beforeEach(() => {
     apiMocks.generateDraft.mockReset();
     apiMocks.importKnowledge.mockReset();
+    apiMocks.listKnowledgeLibraries.mockReset();
     apiMocks.listKnowledgeSources.mockReset();
     apiMocks.listDraftHistory.mockReset();
     apiMocks.submitDraftFeedback.mockReset();
@@ -72,6 +74,7 @@ describe("App", () => {
       required_data: [],
       used_knowledge: [],
     });
+    apiMocks.listKnowledgeLibraries.mockResolvedValue([]);
     apiMocks.listKnowledgeSources.mockResolvedValue([]);
     apiMocks.listDraftHistory.mockResolvedValue([]);
     apiMocks.submitDraftFeedback.mockResolvedValue({ ok: true });

@@ -61,6 +61,35 @@ export type KnowledgeSourceSummary = {
   tags: string[];
 };
 
+export type KnowledgeLibraryType =
+  | "master_rule_bundle"
+  | "product_inventory_excel"
+  | "product_material_excel"
+  | "shipping_info_excel"
+  | "style_sample_md";
+
+export type KnowledgeLibraryState = {
+  library_type: KnowledgeLibraryType;
+  source_name: string;
+  original_filename: string;
+  imported_count: number;
+  skipped_count: number;
+  status: string;
+  uploaded_at: string;
+};
+
+export type KnowledgeLibraryUploadResponse = {
+  library_type: KnowledgeLibraryType;
+  source_name: string;
+  original_filename: string;
+  imported_count: number;
+  skipped_count: number;
+  status: string;
+  replaced: boolean;
+  message: string;
+  uploaded_at: string;
+};
+
 export type DraftHistoryWorkflow = {
   customer_stage?: string;
   intent?: string;

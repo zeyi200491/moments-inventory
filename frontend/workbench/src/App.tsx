@@ -7,7 +7,7 @@ import {
   importKnowledge,
   listDraftHistory,
   listChatSyncSessions,
-  listKnowledgeSources,
+  listKnowledgeLibraries,
   refreshChatSyncSession,
   setCurrentChatSyncSession,
   submitDraftFeedback,
@@ -32,9 +32,12 @@ import type {
   ChatSyncSession,
   DraftHistoryItem,
   DraftResponse,
-  KnowledgeTier,
   KnowledgeImportResponse,
+  KnowledgeLibraryState,
+  KnowledgeLibraryType,
+  KnowledgeLibraryUploadResponse,
   KnowledgeSourceSummary,
+  KnowledgeTier,
 } from "./types";
 
 const MAX_IMPORT_FILE_BYTES = 10 * 1024 * 1024;
@@ -43,6 +46,22 @@ const AUTO_GENERATE_DEBOUNCE_MS = 1200;
 const DEFAULT_IMPORT_CATEGORY = "产品";
 const DEFAULT_IMPORT_KNOWLEDGE_TIER: KnowledgeTier = "product_material";
 const DEFAULT_STRUCTURED_SOURCE_NAME = "";
+
+const LIBRARY_TYPE_LABELS: Record<KnowledgeLibraryType, string> = {
+  master_rule_bundle: "涓昏鍒欐枃浠?",
+  product_inventory_excel: "鍟嗗搧搴撳瓨搴?",
+  product_material_excel: "鍟嗗搧绱犳潗搴?",
+  shipping_info_excel: "渚涘簲閾惧彂璐т俊鎭簱",
+  style_sample_md: "椋庢牸鏍锋湰搴?",
+};
+
+const LIBRARY_TYPE_TO_KNOWLEDGE_TIER: Record<KnowledgeLibraryType, KnowledgeTier> = {
+  master_rule_bundle: "master_rule",
+  product_inventory_excel: "product_inventory",
+  product_material_excel: "product_material",
+  shipping_info_excel: "shipping_info",
+  style_sample_md: "style_sample",
+};
 
 type WorkbenchPage = "runtime" | "settings";
 type SettingsSection = "tasks" | "knowledge" | "reports" | "profile";
@@ -105,6 +124,22 @@ function extractIncomingChatDelta(previousBuffer: string, nextBuffer: string): s
   return normalizedNext;
 }
 
+function mapLibraryStatesToKnowledgeSources(
+  libraries: KnowledgeLibraryState[],
+): KnowledgeSourceSummary[] {
+  return libraries.map((library) => ({
+    source_name: library.original_filename,
+    category: LIBRARY_TYPE_LABELS[library.library_type],
+    knowledge_tier: LIBRARY_TYPE_TO_KNOWLEDGE_TIER[library.library_type],
+    chunk_count: library.imported_count,
+    tags: [
+      `status:${library.status}`,
+      `uploaded_at:${library.uploaded_at}`,
+      ...(library.skipped_count > 0 ? [`skipped:${library.skipped_count}`] : []),
+    ],
+  }));
+}
+
 export default function App() {
   const [activePage, setActivePage] = useState<WorkbenchPage>("runtime");
   const [activeSettingsSection, setActiveSettingsSection] = useState<SettingsSection>("knowledge");
@@ -140,6 +175,10 @@ export default function App() {
   const [importMessage, setImportMessage] = useState<string | null>(null);
   const [importError, setImportError] = useState<string | null>(null);
   const [lastImport, setLastImport] = useState<KnowledgeImportResponse | null>(null);
+  const [lastLibraryUpload, setLastLibraryUpload] = useState<KnowledgeLibraryUploadResponse | null>(
+    null,
+  );
+  const [libraries, setLibraries] = useState<KnowledgeLibraryState[]>([]);
   const [importedSources, setImportedSources] = useState<KnowledgeSourceSummary[]>([]);
 
   useEffect(() => {
@@ -147,7 +186,7 @@ export default function App() {
   }, [loading]);
 
   useEffect(() => {
-    void refreshKnowledgeSources();
+    void refreshKnowledgeLibraries();
     void refreshDraftHistory();
     void refreshChatSessions();
 
@@ -222,10 +261,11 @@ export default function App() {
     currentChatSession?.lastMessageTimestamp,
   ]);
 
-  async function refreshKnowledgeSources() {
+  async function refreshKnowledgeLibraries() {
     try {
-      const sources = await listKnowledgeSources();
-      setImportedSources(sources);
+      const nextLibraries = await listKnowledgeLibraries();
+      setLibraries(nextLibraries);
+      setImportedSources(mapLibraryStatesToKnowledgeSources(nextLibraries));
     } catch (error) {
       setImportError(error instanceof Error ? error.message : "读取知识列表失败");
     }
@@ -447,7 +487,7 @@ export default function App() {
       setLastImport(response);
       setImportMessage(`导入完成：${response.source_name}，共切分 ${response.chunk_count} 段。`);
       closeUploadModal();
-      await refreshKnowledgeSources();
+      await refreshKnowledgeLibraries();
     } catch (error) {
       setImportError(error instanceof Error ? error.message : "导入知识失败");
     } finally {
@@ -495,7 +535,7 @@ export default function App() {
       setLastImport(response);
       setImportMessage(`导入完成：${response.source_name}，共切分 ${response.chunk_count} 段。`);
       closeUploadModal();
-      await refreshKnowledgeSources();
+      await refreshKnowledgeLibraries();
     } catch (error) {
       setImportError(error instanceof Error ? error.message : "导入知识失败");
     } finally {

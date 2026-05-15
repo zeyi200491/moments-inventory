@@ -7,6 +7,9 @@ import type {
   DraftResponse,
   KnowledgeImportRequest,
   KnowledgeImportResponse,
+  KnowledgeLibraryState,
+  KnowledgeLibraryType,
+  KnowledgeLibraryUploadResponse,
   KnowledgeSourceSummary,
   SetCurrentChatSyncSessionRequest,
 } from "./types";
@@ -59,6 +62,31 @@ export async function importKnowledge(
 
 export async function listKnowledgeSources(): Promise<KnowledgeSourceSummary[]> {
   return requestJson<KnowledgeSourceSummary[]>("/api/knowledge/sources");
+}
+
+export async function listKnowledgeLibraries(): Promise<KnowledgeLibraryState[]> {
+  return requestJson<KnowledgeLibraryState[]>("/api/knowledge/libraries");
+}
+
+export async function uploadKnowledgeLibrary(
+  libraryType: KnowledgeLibraryType,
+  file: File,
+): Promise<KnowledgeLibraryUploadResponse> {
+  const formData = new FormData();
+  formData.append("library_type", libraryType);
+  formData.append("file", file);
+
+  const response = await fetch("/api/knowledge/uploads", {
+    method: "POST",
+    headers: API_KEY ? { "X-API-Key": API_KEY } : undefined,
+    body: formData,
+  });
+
+  if (!response.ok) {
+    throw new Error(`璇锋眰澶辫触锛孒TTP ${response.status}`);
+  }
+
+  return (await response.json()) as KnowledgeLibraryUploadResponse;
 }
 
 export async function listDraftHistory(): Promise<DraftHistoryItem[]> {
