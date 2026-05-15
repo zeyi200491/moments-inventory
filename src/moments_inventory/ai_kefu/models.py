@@ -28,6 +28,14 @@ VALID_KNOWLEDGE_TIERS: tuple[KnowledgeTier, ...] = (
     "style_sample",
 )
 
+LibraryType = Literal[
+    "master_rule_bundle",
+    "product_inventory_excel",
+    "product_material_excel",
+    "shipping_info_excel",
+    "style_sample_md",
+]
+
 
 @dataclass(slots=True)
 class KnowledgeChunk:
@@ -69,3 +77,14 @@ class ProductRecord:
     video_path: str
     raw_copy: str
     manual_review_needed: bool = False
+
+
+@dataclass(slots=True)
+class LibraryStateRecord:
+    library_type: LibraryType
+    source_name: str
+    original_filename: str
+    imported_count: int
+    skipped_count: int
+    status: str
+    uploaded_at: str

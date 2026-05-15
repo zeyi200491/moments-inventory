@@ -6,7 +6,7 @@ import threading
 from pathlib import Path
 
 from moments_inventory.ai_kefu.audit import DraftAuditRecord
-from moments_inventory.ai_kefu.models import KnowledgeChunk, ProductRecord
+from moments_inventory.ai_kefu.models import KnowledgeChunk, LibraryStateRecord, ProductRecord
 from moments_inventory.ai_kefu.workflow import ConversationWorkflowState
 
 
@@ -96,6 +96,19 @@ class SQLiteKefuRepository:
                 )
                 conn.execute(
                     """
+                    create table if not exists library_state (
+                      library_type text primary key,
+                      source_name text not null,
+                      original_filename text not null,
+                      imported_count integer not null,
+                      skipped_count integer not null,
+                      status text not null,
+                      uploaded_at text not null
+                    )
+                    """
+                )
+                conn.execute(
+                    """
                     create table if not exists draft_audit_records (
                       draft_id text primary key,
                       conversation_id text not null,
@@ -152,6 +165,19 @@ class SQLiteKefuRepository:
                 conn.execute(
                     "delete from knowledge_chunks where source_name = ?",
                     (source_name,),
+                )
+
+    def delete_knowledge_chunks_by_source_prefix(self, source_prefix: str) -> None:
+        self.initialize()
+        with self._lock:
+            with self._get_connection() as conn:
+                conn.execute(
+                    """
+                    delete from knowledge_chunks
+                    where source_name = ?
+                       or source_name like ? escape '\\'
+                    """,
+                    (source_prefix, f"{source_prefix}:%"),
                 )
 
     def _load_tags(self, tags_json: str, chunk_id: str) -> list[str]:
@@ -247,6 +273,85 @@ class SQLiteKefuRepository:
                         1 if state.should_handoff else 0,
                     ),
                 )
+
+    def save_library_state(self, record: LibraryStateRecord) -> None:
+        self.initialize()
+        with self._lock:
+            with self._get_connection() as conn:
+                conn.execute(
+                    """
+                    insert into library_state (
+                      library_type, source_name, original_filename, imported_count,
+                      skipped_count, status, uploaded_at
+                    ) values (?, ?, ?, ?, ?, ?, ?)
+                    on conflict(library_type) do update set
+                      source_name = excluded.source_name,
+                      original_filename = excluded.original_filename,
+                      imported_count = excluded.imported_count,
+                      skipped_count = excluded.skipped_count,
+                      status = excluded.status,
+                      uploaded_at = excluded.uploaded_at
+                    """,
+                    (
+                        record.library_type,
+                        record.source_name,
+                        record.original_filename,
+                        record.imported_count,
+                        record.skipped_count,
+                        record.status,
+                        record.uploaded_at,
+                    ),
+                )
+
+    def get_library_state(self, library_type: str) -> LibraryStateRecord | None:
+        self.initialize()
+        with self._lock:
+            with self._get_connection() as conn:
+                row = conn.execute(
+                    """
+                    select library_type, source_name, original_filename, imported_count,
+                           skipped_count, status, uploaded_at
+                    from library_state
+                    where library_type = ?
+                    """,
+                    (library_type,),
+                ).fetchone()
+        if row is None:
+            return None
+        return LibraryStateRecord(
+            library_type=row[0],
+            source_name=row[1],
+            original_filename=row[2],
+            imported_count=row[3],
+            skipped_count=row[4],
+            status=row[5],
+            uploaded_at=row[6],
+        )
+
+    def list_library_states(self) -> list[LibraryStateRecord]:
+        self.initialize()
+        with self._lock:
+            with self._get_connection() as conn:
+                rows = conn.execute(
+                    """
+                    select library_type, source_name, original_filename, imported_count,
+                           skipped_count, status, uploaded_at
+                    from library_state
+                    order by library_type asc
+                    """
+                ).fetchall()
+        return [
+            LibraryStateRecord(
+                library_type=row[0],
+                source_name=row[1],
+                original_filename=row[2],
+                imported_count=row[3],
+                skipped_count=row[4],
+                status=row[5],
+                uploaded_at=row[6],
+            )
+            for row in rows
+        ]
 
     def save_draft_audit_record(self, record: DraftAuditRecord) -> None:
         self.initialize()

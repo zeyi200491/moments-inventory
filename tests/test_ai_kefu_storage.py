@@ -4,7 +4,7 @@ import sqlite3
 import pytest
 
 from moments_inventory.ai_kefu.loaders import load_text_document
-from moments_inventory.ai_kefu.models import KnowledgeChunk
+from moments_inventory.ai_kefu.models import KnowledgeChunk, LibraryStateRecord
 from moments_inventory.ai_kefu.storage import SQLiteKefuRepository
 
 
@@ -233,3 +233,160 @@ def test_sqlite_kefu_repository_round_trips_chunk_embeddings(tmp_path: Path):
 
     assert len(chunks) == 1
     assert chunks[0].embedding == [0.1, 0.2, 0.3]
+
+
+def test_sqlite_kefu_repository_round_trips_library_state_record(tmp_path: Path):
+    repository = SQLiteKefuRepository(tmp_path / "ai-kefu.db")
+    record = LibraryStateRecord(
+        library_type="master_rule_bundle",
+        source_name="library:master_rule_bundle",
+        original_filename="master_rule_bundle_2026-05-15.md",
+        imported_count=3,
+        skipped_count=1,
+        status="active",
+        uploaded_at="2026-05-15T10:05:00+08:00",
+    )
+
+    repository.save_library_state(record)
+
+    assert repository.get_library_state("master_rule_bundle") == record
+    assert repository.list_library_states() == [record]
+
+
+def test_sqlite_kefu_repository_replaces_library_state_by_library_type(tmp_path: Path):
+    repository = SQLiteKefuRepository(tmp_path / "ai-kefu.db")
+    repository.save_library_state(
+        LibraryStateRecord(
+            library_type="shipping_info_excel",
+            source_name="library:shipping_info_excel:2026-05-14",
+            original_filename="shipping_info_2026-05-14.xlsx",
+            imported_count=12,
+            skipped_count=0,
+            status="active",
+            uploaded_at="2026-05-14T09:00:00+08:00",
+        )
+    )
+
+    repository.save_library_state(
+        LibraryStateRecord(
+            library_type="shipping_info_excel",
+            source_name="library:shipping_info_excel:2026-05-15",
+            original_filename="shipping_info_2026-05-15.xlsx",
+            imported_count=15,
+            skipped_count=2,
+            status="active",
+            uploaded_at="2026-05-15T09:00:00+08:00",
+        )
+    )
+
+    assert repository.get_library_state("shipping_info_excel") == LibraryStateRecord(
+        library_type="shipping_info_excel",
+        source_name="library:shipping_info_excel:2026-05-15",
+        original_filename="shipping_info_2026-05-15.xlsx",
+        imported_count=15,
+        skipped_count=2,
+        status="active",
+        uploaded_at="2026-05-15T09:00:00+08:00",
+    )
+    assert repository.list_library_states() == [
+        LibraryStateRecord(
+            library_type="shipping_info_excel",
+            source_name="library:shipping_info_excel:2026-05-15",
+            original_filename="shipping_info_2026-05-15.xlsx",
+            imported_count=15,
+            skipped_count=2,
+            status="active",
+            uploaded_at="2026-05-15T09:00:00+08:00",
+        )
+    ]
+
+
+def test_sqlite_kefu_repository_can_delete_chunks_by_source_prefix(tmp_path: Path):
+    repository = SQLiteKefuRepository(tmp_path / "ai-kefu.db")
+    repository.save_knowledge_chunks(
+        [
+            KnowledgeChunk(
+                chunk_id="chunk-001",
+                source_name="library:master_rule_bundle",
+                category="总规则",
+                text="主规则索引",
+                tags=[],
+            ),
+            KnowledgeChunk(
+                chunk_id="chunk-002",
+                source_name="library:master_rule_bundle:section-001",
+                category="总规则",
+                text="主规则正文",
+                tags=[],
+            ),
+            KnowledgeChunk(
+                chunk_id="chunk-003",
+                source_name="library:other_bundle:section-001",
+                category="其他规则",
+                text="保留内容",
+                tags=[],
+            ),
+        ]
+    )
+
+    repository.delete_knowledge_chunks_by_source_prefix("library:master_rule_bundle")
+
+    assert repository.list_knowledge_chunks() == [
+        KnowledgeChunk(
+            chunk_id="chunk-003",
+            source_name="library:other_bundle:section-001",
+            category="其他规则",
+            text="保留内容",
+            tags=[],
+        )
+    ]
+
+
+def test_sqlite_kefu_repository_list_knowledge_chunks_order_remains_stable_after_prefix_delete(
+    tmp_path: Path,
+):
+    repository = SQLiteKefuRepository(tmp_path / "ai-kefu.db")
+    repository.save_knowledge_chunks(
+        [
+            KnowledgeChunk(
+                chunk_id="chunk-002",
+                source_name="library:master_rule_bundle:section-001",
+                category="总规则",
+                text="会被删除",
+                tags=[],
+            ),
+            KnowledgeChunk(
+                chunk_id="chunk-001",
+                source_name="faq.txt",
+                category="售后",
+                text="应继续保留",
+                tags=[],
+            ),
+            KnowledgeChunk(
+                chunk_id="chunk-003",
+                source_name="product.txt",
+                category="商品",
+                text="仍按 chunk_id 排序",
+                tags=[],
+            ),
+        ]
+    )
+
+    repository.delete_knowledge_chunks_by_source_prefix("library:master_rule_bundle")
+
+    assert repository.list_knowledge_chunks() == [
+        KnowledgeChunk(
+            chunk_id="chunk-001",
+            source_name="faq.txt",
+            category="售后",
+            text="应继续保留",
+            tags=[],
+        ),
+        KnowledgeChunk(
+            chunk_id="chunk-003",
+            source_name="product.txt",
+            category="商品",
+            text="仍按 chunk_id 排序",
+            tags=[],
+        ),
+    ]
