@@ -22,6 +22,7 @@ frontend/workbench/node_modules/
 .probe-temp-hidden/
 probe_temp_visible/
 github_release/
+.worktrees/
 AGENTS.md
 RTK.md
 rtk.cmd
