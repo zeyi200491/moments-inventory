@@ -1,49 +1,97 @@
-import type { KnowledgeImportResponse, KnowledgeSourceSummary, KnowledgeTier } from "../types";
+import type { KnowledgeLibraryState, KnowledgeLibraryType, KnowledgeLibraryUploadResponse } from "../types";
 
-const KNOWLEDGE_TIER_LABELS: Record<KnowledgeTier, string> = {
-  master_rule: "主规则文",
-  fixed_reply: "固定话术",
-  faq: "FAQ 规则库",
-  product_inventory: "商品库存库",
-  product_material: "商品素材库",
-  shipping_info: "供应链发货信息库",
-  after_sale_doc: "正式售后文件库",
-  style_sample: "风格样本库",
-};
+const LIBRARY_CARDS: Array<{
+  libraryType: KnowledgeLibraryType;
+  title: string;
+  description: string;
+  fileTypeHint: string;
+}> = [
+  {
+    libraryType: "master_rule_bundle",
+    title: "主规则文件",
+    description: "主规则和 FAQ 共用一份 Markdown，上传后会自动拆分入库。",
+    fileTypeHint: ".md",
+  },
+  {
+    libraryType: "product_inventory_excel",
+    title: "商品库存库",
+    description: "相机型号、品牌、价格、成本、利润空间、配件和验机视频信息。",
+    fileTypeHint: ".xlsx",
+  },
+  {
+    libraryType: "product_material_excel",
+    title: "商品素材库",
+    description: "实拍图和验机视频映射关系，按每行一条素材事实入库。",
+    fileTypeHint: ".xlsx",
+  },
+  {
+    libraryType: "shipping_info_excel",
+    title: "供应链发货信息库",
+    description: "供应商发货地、快递方式和偏远限制，按每行一条发货规则入库。",
+    fileTypeHint: ".xlsx",
+  },
+  {
+    libraryType: "style_sample_md",
+    title: "风格样本库",
+    description: "只影响语气，不参与业务规则判断。",
+    fileTypeHint: ".md",
+  },
+];
 
 type KnowledgeLibraryViewProps = {
-  importedSources: KnowledgeSourceSummary[];
+  libraries: KnowledgeLibraryState[];
   importMessage: string | null;
   importError: string | null;
-  lastImport: KnowledgeImportResponse | null;
-  onOpenUpload: () => void;
+  lastUpload: KnowledgeLibraryUploadResponse | null;
+  onOpenUpload: (libraryType?: KnowledgeLibraryType) => void;
 };
 
-function renderTags(item: KnowledgeSourceSummary) {
-  if (item.tags.length === 0) {
-    return "-";
+function formatUploadedAt(value: string | null | undefined) {
+  if (!value) {
+    return "未上传";
   }
 
-  return item.tags.join(" / ");
+  const parsed = new Date(value);
+  if (Number.isNaN(parsed.getTime())) {
+    return value;
+  }
+
+  return parsed.toLocaleString("zh-CN", {
+    year: "numeric",
+    month: "2-digit",
+    day: "2-digit",
+    hour: "2-digit",
+    minute: "2-digit",
+    hour12: false,
+  });
+}
+
+function renderStatusClass(status: string | undefined) {
+  if (status === "active") {
+    return "library-status library-status-active";
+  }
+  return "library-status";
 }
 
 export function KnowledgeLibraryView({
-  importedSources,
+  libraries,
   importMessage,
   importError,
-  lastImport,
+  lastUpload,
   onOpenUpload,
 }: KnowledgeLibraryViewProps) {
+  const libraryByType = new Map(libraries.map((item) => [item.library_type, item]));
+
   return (
     <section className="panel knowledge-panel">
       <div className="knowledge-toolbar">
         <div>
-          <span className="eyebrow">Knowledge Center / 文件管理</span>
-          <h2>知识文件管理</h2>
-          <p className="muted">把知识资料整理成清晰表格，导入后立即参与回复生成。</p>
+          <span className="eyebrow">Knowledge Center / 知识库管理</span>
+          <h2>知识库管理</h2>
+          <p className="muted">上传一次就记住，商品库存库支持随时重新上传并全量覆盖。</p>
         </div>
-        <button type="button" className="add-button" onClick={onOpenUpload}>
-          + 添加
+        <button type="button" className="add-button" onClick={() => onOpenUpload()}>
+          上传知识库
         </button>
       </div>
 
@@ -58,45 +106,63 @@ export function KnowledgeLibraryView({
         </div>
       ) : null}
 
-      <div className="knowledge-table-wrap">
-        <table className="knowledge-table">
-          <thead>
-            <tr>
-              <th>文件名</th>
-              <th>分类</th>
-              <th>知识层</th>
-              <th>分段数</th>
-              <th>备注</th>
-            </tr>
-          </thead>
-          <tbody>
-            {importedSources.length === 0 ? (
-              <tr>
-                <td colSpan={5}>
-                  <div className="empty-state">
-                    <strong>还没有知识文件</strong>
-                    <p>点击右上角“添加”，把 txt / md / csv 文件导入进来。</p>
-                  </div>
-                </td>
-              </tr>
-            ) : (
-              importedSources.map((item) => (
-                <tr key={`${item.source_name}-${item.category}`}>
-                  <td className="knowledge-file-cell">
-                    <strong>{item.source_name}</strong>
-                    <span>{lastImport?.source_name === item.source_name ? "刚刚导入" : "已入库"}</span>
-                  </td>
-                  <td>{item.category}</td>
-                  <td>
-                    {KNOWLEDGE_TIER_LABELS[item.knowledge_tier]} / {item.knowledge_tier}
-                  </td>
-                  <td>{item.chunk_count}</td>
-                  <td>{renderTags(item)}</td>
-                </tr>
-              ))
-            )}
-          </tbody>
-        </table>
+      <div className="knowledge-library-grid">
+        {LIBRARY_CARDS.map((card) => {
+          const library = libraryByType.get(card.libraryType);
+          const uploaded = Boolean(library);
+          const isLatest = lastUpload?.library_type === card.libraryType;
+
+          return (
+            <article key={card.libraryType} className="knowledge-library-card">
+              <div className="knowledge-library-card-head">
+                <div>
+                  <span className="knowledge-library-filetype">{card.fileTypeHint}</span>
+                  <h3>{card.title}</h3>
+                </div>
+                <span className={renderStatusClass(library?.status)}>
+                  {uploaded ? (isLatest ? "刚刚更新" : "已上传") : "未上传"}
+                </span>
+              </div>
+
+              <p className="muted knowledge-library-description">{card.description}</p>
+
+              <dl className="knowledge-library-meta">
+                <div>
+                  <dt>当前文件</dt>
+                  <dd>{library?.original_filename ?? "未上传"}</dd>
+                </div>
+                <div>
+                  <dt>上传时间</dt>
+                  <dd>{formatUploadedAt(library?.uploaded_at)}</dd>
+                </div>
+                <div>
+                  <dt>数据条数</dt>
+                  <dd>{library?.imported_count ?? 0}</dd>
+                </div>
+                <div>
+                  <dt>跳过行数</dt>
+                  <dd>{library?.skipped_count ?? 0}</dd>
+                </div>
+              </dl>
+
+              {card.libraryType === "product_inventory_excel" ? (
+                <div className="warning-box knowledge-library-warning">
+                  重新上传会全量覆盖当前商品库
+                </div>
+              ) : null}
+
+              <div className="knowledge-library-actions">
+                <button
+                  type="button"
+                  className="action-button action-button-inline"
+                  onClick={() => onOpenUpload(card.libraryType)}
+                >
+                  {uploaded ? "重新上传" : "上传"}
+                </button>
+              </div>
+            </article>
+          );
+        })}
       </div>
     </section>
   );

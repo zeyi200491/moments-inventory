@@ -5,7 +5,6 @@ import App from "./App";
 
 const apiMocks = vi.hoisted(() => ({
   generateDraft: vi.fn(),
-  importKnowledge: vi.fn(),
   listKnowledgeLibraries: vi.fn(),
   listDraftHistory: vi.fn(),
   submitDraftFeedback: vi.fn(),
@@ -13,6 +12,7 @@ const apiMocks = vi.hoisted(() => ({
   getChatSyncSession: vi.fn(),
   setCurrentChatSyncSession: vi.fn(),
   refreshChatSyncSession: vi.fn(),
+  uploadKnowledgeLibrary: vi.fn(),
 }));
 
 vi.mock("./api", () => apiMocks);
@@ -20,7 +20,6 @@ vi.mock("./api", () => apiMocks);
 describe("App knowledge libraries", () => {
   beforeEach(() => {
     apiMocks.generateDraft.mockReset();
-    apiMocks.importKnowledge.mockReset();
     apiMocks.listKnowledgeLibraries.mockReset();
     apiMocks.listDraftHistory.mockReset();
     apiMocks.submitDraftFeedback.mockReset();
@@ -28,6 +27,7 @@ describe("App knowledge libraries", () => {
     apiMocks.getChatSyncSession.mockReset();
     apiMocks.setCurrentChatSyncSession.mockReset();
     apiMocks.refreshChatSyncSession.mockReset();
+    apiMocks.uploadKnowledgeLibrary.mockReset();
 
     apiMocks.generateDraft.mockResolvedValue({
       reply_text: "ok",
@@ -46,7 +46,7 @@ describe("App knowledge libraries", () => {
     apiMocks.listChatSyncSessions.mockResolvedValue([]);
   });
 
-  it("loads business library rows from the library status endpoint", async () => {
+  it("loads business library cards from the library status endpoint", async () => {
     apiMocks.listKnowledgeLibraries.mockResolvedValue([
       {
         library_type: "product_inventory_excel",
@@ -63,7 +63,7 @@ describe("App knowledge libraries", () => {
 
     fireEvent.click(screen.getByRole("tab", { name: "设置页面" }));
 
-    expect(await screen.findByText("inventory.xlsx")).toBeInTheDocument();
-    expect(screen.getByText(/product_inventory/)).toBeInTheDocument();
+    expect(await screen.findByText("商品库存库")).toBeInTheDocument();
+    expect(screen.getByText("inventory.xlsx")).toBeInTheDocument();
   });
 });

@@ -1,34 +1,51 @@
 import type { ChangeEvent, DragEvent } from "react";
 
-import { STRUCTURED_KNOWLEDGE_SCHEMAS, isStructuredKnowledgeTier } from "../structuredKnowledge";
-import type { KnowledgeTier } from "../types";
+import type { KnowledgeLibraryType } from "../types";
 
-const KNOWLEDGE_TIER_OPTIONS: Array<{ value: KnowledgeTier; label: string }> = [
-  { value: "master_rule", label: "主规则文" },
-  { value: "fixed_reply", label: "固定话术" },
-  { value: "faq", label: "FAQ 规则库" },
-  { value: "product_inventory", label: "商品库存库" },
-  { value: "product_material", label: "商品素材库" },
-  { value: "shipping_info", label: "供应链发货信息库" },
-  { value: "after_sale_doc", label: "正式售后文件库" },
-  { value: "style_sample", label: "风格样本库" },
+const LIBRARY_OPTIONS: Array<{
+  value: KnowledgeLibraryType;
+  label: string;
+  hint: string;
+  accept: ".md" | ".xlsx";
+}> = [
+  {
+    value: "master_rule_bundle",
+    label: "主规则文件",
+    hint: "支持 Markdown，系统会自动拆分主规则和 FAQ。",
+    accept: ".md",
+  },
+  {
+    value: "product_inventory_excel",
+    label: "商品库存库",
+    hint: "支持 Excel，全量覆盖当前商品库存数据。",
+    accept: ".xlsx",
+  },
+  {
+    value: "product_material_excel",
+    label: "商品素材库",
+    hint: "支持 Excel，按每行一条素材关系入库。",
+    accept: ".xlsx",
+  },
+  {
+    value: "shipping_info_excel",
+    label: "供应链发货信息库",
+    hint: "支持 Excel，按每行一条发货规则入库。",
+    accept: ".xlsx",
+  },
+  {
+    value: "style_sample_md",
+    label: "风格样本库",
+    hint: "支持 Markdown，只影响语气，不影响规则判断。",
+    accept: ".md",
+  },
 ];
 
 type KnowledgeUploadModalProps = {
   open: boolean;
   importLoading: boolean;
   importError: string | null;
-  importCategory: string;
-  importKnowledgeTier: KnowledgeTier;
-  importTagsText: string;
-  structuredSourceName: string;
-  structuredFields: Record<string, string>;
-  onImportCategoryChange: (value: string) => void;
-  onImportKnowledgeTierChange: (value: KnowledgeTier) => void;
-  onImportTagsTextChange: (value: string) => void;
-  onStructuredSourceNameChange: (value: string) => void;
-  onStructuredFieldChange: (fieldKey: string, value: string) => void;
-  onStructuredSubmit: () => void;
+  selectedLibraryType: KnowledgeLibraryType;
+  onLibraryTypeChange: (value: KnowledgeLibraryType) => void;
   onFileChange: (event: ChangeEvent<HTMLInputElement>) => void;
   onDrop: (event: DragEvent<HTMLDivElement>) => void;
   onClose: () => void;
@@ -38,17 +55,8 @@ export function KnowledgeUploadModal({
   open,
   importLoading,
   importError,
-  importCategory,
-  importKnowledgeTier,
-  importTagsText,
-  structuredSourceName,
-  structuredFields,
-  onImportCategoryChange,
-  onImportKnowledgeTierChange,
-  onImportTagsTextChange,
-  onStructuredSourceNameChange,
-  onStructuredFieldChange,
-  onStructuredSubmit,
+  selectedLibraryType,
+  onLibraryTypeChange,
   onFileChange,
   onDrop,
   onClose,
@@ -57,15 +65,17 @@ export function KnowledgeUploadModal({
     return null;
   }
 
-  const structuredSchema = isStructuredKnowledgeTier(importKnowledgeTier)
-    ? STRUCTURED_KNOWLEDGE_SCHEMAS[importKnowledgeTier]
-    : null;
+  const currentOption =
+    LIBRARY_OPTIONS.find((option) => option.value === selectedLibraryType) ?? LIBRARY_OPTIONS[0];
 
   return (
     <div className="upload-modal-backdrop">
       <div className="upload-modal" role="dialog" aria-modal="true" aria-labelledby="upload-modal-title">
         <div className="upload-modal-header">
-          <h2 id="upload-modal-title">请选择要添加的文件</h2>
+          <div>
+            <span className="eyebrow">Business Library / 业务知识库上传</span>
+            <h2 id="upload-modal-title">上传知识库文件</h2>
+          </div>
           <button
             type="button"
             className="modal-close"
@@ -77,99 +87,51 @@ export function KnowledgeUploadModal({
           </button>
         </div>
 
-        <div
-          className="upload-dropzone"
-          onDragOver={(event) => event.preventDefault()}
-          onDrop={onDrop}
-        >
+        <label className="field">
+          <span>业务库类型</span>
+          <select
+            className="text-input"
+            value={selectedLibraryType}
+            onChange={(event) => onLibraryTypeChange(event.target.value as KnowledgeLibraryType)}
+            disabled={importLoading}
+            aria-label="业务库类型"
+          >
+            {LIBRARY_OPTIONS.map((option) => (
+              <option key={option.value} value={option.value}>
+                {option.label}
+              </option>
+            ))}
+          </select>
+        </label>
+
+        <div className="knowledge-library-hint-card">
+          <strong>{currentOption.label}</strong>
+          <p>{currentOption.hint}</p>
+          <span>文件格式：{currentOption.accept}</span>
+        </div>
+
+        {selectedLibraryType === "product_inventory_excel" ? (
+          <div className="warning-box knowledge-library-warning">重新上传会全量覆盖当前商品库</div>
+        ) : null}
+
+        <div className="upload-dropzone" onDragOver={(event) => event.preventDefault()} onDrop={onDrop}>
           <div className="upload-icon" aria-hidden="true">
-            ⬆
+            ⇪
           </div>
-          <strong>{importLoading ? "上传中..." : "点击或将文件拖拽至此进行上传"}</strong>
-          <span>支持 txt / md / csv</span>
+          <strong>{importLoading ? "上传中..." : "点击或将文件拖拽到此进行上传"}</strong>
+          <span>当前仅支持 {currentOption.accept} 文件</span>
           <span>单文件不超过 10MB</span>
           <label className="upload-picker">
             <span>选择文件</span>
-            <input type="file" accept=".txt,.md,.csv" onChange={onFileChange} disabled={importLoading} />
-          </label>
-        </div>
-
-        <div className="upload-form-grid">
-          <label className="field">
-            <span>知识分类</span>
             <input
-              className="text-input"
-              value={importCategory}
-              onChange={(event) => onImportCategoryChange(event.target.value)}
-              placeholder="例如：售后 / 产品 / 物流 / 话术"
-            />
-          </label>
-          <label className="field">
-            <span>知识层级</span>
-            <select
-              className="text-input"
-              value={importKnowledgeTier}
-              onChange={(event) => onImportKnowledgeTierChange(event.target.value as KnowledgeTier)}
-            >
-              {KNOWLEDGE_TIER_OPTIONS.map((option) => (
-                <option key={option.value} value={option.value}>
-                  {option.label} / {option.value}
-                </option>
-              ))}
-            </select>
-          </label>
-          <label className="field">
-            <span>标签</span>
-            <input
-              className="text-input"
-              value={importTagsText}
-              onChange={(event) => onImportTagsTextChange(event.target.value)}
-              placeholder="用逗号分隔，例如：退款,到账,售后"
+              type="file"
+              accept={currentOption.accept}
+              onChange={onFileChange}
+              disabled={importLoading}
+              aria-label="选择文件"
             />
           </label>
         </div>
-
-        {structuredSchema ? (
-          <section className="structured-import-panel">
-            <div className="panel-heading panel-heading-compact">
-              <span className="eyebrow">Structured Entry / 专用录入</span>
-              <h2>{structuredSchema.title}</h2>
-              <p className="muted">这三类知识建议直接按字段录入，避免后续检索时文本结构混乱。</p>
-            </div>
-            <div className="upload-form-grid">
-              <label className="field">
-                <span>条目名称</span>
-                <input
-                  className="text-input"
-                  value={structuredSourceName}
-                  onChange={(event) => onStructuredSourceNameChange(event.target.value)}
-                  placeholder="例如：supplier-laowang-shenzhen"
-                />
-              </label>
-              {structuredSchema.fields.map((field) => (
-                <label key={field.key} className="field">
-                  <span>{field.label}</span>
-                  <input
-                    className="text-input"
-                    value={structuredFields[field.key] ?? ""}
-                    onChange={(event) => onStructuredFieldChange(field.key, event.target.value)}
-                    placeholder={field.placeholder}
-                  />
-                </label>
-              ))}
-            </div>
-            <div className="history-actions">
-              <button
-                type="button"
-                className="action-button action-button-inline"
-                onClick={onStructuredSubmit}
-                disabled={importLoading}
-              >
-                保存结构化条目
-              </button>
-            </div>
-          </section>
-        ) : null}
 
         {importError ? (
           <div className="error-box" role="alert">

@@ -4,13 +4,13 @@ import type { ChangeEvent, DragEvent } from "react";
 import {
   generateDraft,
   getChatSyncSession,
-  importKnowledge,
-  listDraftHistory,
   listChatSyncSessions,
+  listDraftHistory,
   listKnowledgeLibraries,
   refreshChatSyncSession,
   setCurrentChatSyncSession,
   submitDraftFeedback,
+  uploadKnowledgeLibrary,
 } from "./api";
 import { ChatSessionList } from "./components/ChatSessionList";
 import { ChatSyncToolbar } from "./components/ChatSyncToolbar";
@@ -23,44 +23,26 @@ import { ReplyDraftPanel } from "./components/ReplyDraftPanel";
 import { RunHistoryPanel } from "./components/RunHistoryPanel";
 import { SettingsNav } from "./components/SettingsNav";
 import { SettingsShell } from "./components/SettingsShell";
-import {
-  STRUCTURED_KNOWLEDGE_SCHEMAS,
-  createEmptyStructuredFields,
-  isStructuredKnowledgeTier,
-} from "./structuredKnowledge";
 import type {
   ChatSyncSession,
   DraftHistoryItem,
   DraftResponse,
-  KnowledgeImportResponse,
   KnowledgeLibraryState,
   KnowledgeLibraryType,
   KnowledgeLibraryUploadResponse,
-  KnowledgeSourceSummary,
-  KnowledgeTier,
 } from "./types";
 
 const MAX_IMPORT_FILE_BYTES = 10 * 1024 * 1024;
 const CHAT_SYNC_POLL_MS = 2000;
 const AUTO_GENERATE_DEBOUNCE_MS = 1200;
-const DEFAULT_IMPORT_CATEGORY = "产品";
-const DEFAULT_IMPORT_KNOWLEDGE_TIER: KnowledgeTier = "product_material";
-const DEFAULT_STRUCTURED_SOURCE_NAME = "";
+const DEFAULT_LIBRARY_TYPE: KnowledgeLibraryType = "master_rule_bundle";
 
 const LIBRARY_TYPE_LABELS: Record<KnowledgeLibraryType, string> = {
-  master_rule_bundle: "涓昏鍒欐枃浠?",
-  product_inventory_excel: "鍟嗗搧搴撳瓨搴?",
-  product_material_excel: "鍟嗗搧绱犳潗搴?",
-  shipping_info_excel: "渚涘簲閾惧彂璐т俊鎭簱",
-  style_sample_md: "椋庢牸鏍锋湰搴?",
-};
-
-const LIBRARY_TYPE_TO_KNOWLEDGE_TIER: Record<KnowledgeLibraryType, KnowledgeTier> = {
-  master_rule_bundle: "master_rule",
-  product_inventory_excel: "product_inventory",
-  product_material_excel: "product_material",
-  shipping_info_excel: "shipping_info",
-  style_sample_md: "style_sample",
+  master_rule_bundle: "主规则文件",
+  product_inventory_excel: "商品库存库",
+  product_material_excel: "商品素材库",
+  shipping_info_excel: "供应链发货信息库",
+  style_sample_md: "风格样本库",
 };
 
 type WorkbenchPage = "runtime" | "settings";
@@ -82,13 +64,6 @@ function buildDraftFromHistory(entry: DraftHistoryItem): DraftResponse {
     required_data: entry.workflow.required_data ?? [],
     used_knowledge: [],
   };
-}
-
-function resolveDefaultCategoryByTier(knowledgeTier: KnowledgeTier): string {
-  if (isStructuredKnowledgeTier(knowledgeTier)) {
-    return STRUCTURED_KNOWLEDGE_SCHEMAS[knowledgeTier].defaultCategory;
-  }
-  return DEFAULT_IMPORT_CATEGORY;
 }
 
 function mergeCustomerMessage(currentText: string, incomingText: string): string {
@@ -124,22 +99,6 @@ function extractIncomingChatDelta(previousBuffer: string, nextBuffer: string): s
   return normalizedNext;
 }
 
-function mapLibraryStatesToKnowledgeSources(
-  libraries: KnowledgeLibraryState[],
-): KnowledgeSourceSummary[] {
-  return libraries.map((library) => ({
-    source_name: library.original_filename,
-    category: LIBRARY_TYPE_LABELS[library.library_type],
-    knowledge_tier: LIBRARY_TYPE_TO_KNOWLEDGE_TIER[library.library_type],
-    chunk_count: library.imported_count,
-    tags: [
-      `status:${library.status}`,
-      `uploaded_at:${library.uploaded_at}`,
-      ...(library.skipped_count > 0 ? [`skipped:${library.skipped_count}`] : []),
-    ],
-  }));
-}
-
 export default function App() {
   const [activePage, setActivePage] = useState<WorkbenchPage>("runtime");
   const [activeSettingsSection, setActiveSettingsSection] = useState<SettingsSection>("knowledge");
@@ -162,24 +121,15 @@ export default function App() {
   const [copySucceeded, setCopySucceeded] = useState(false);
   const [historyMessage, setHistoryMessage] = useState<string | null>(null);
 
-  const [importCategory, setImportCategory] = useState(DEFAULT_IMPORT_CATEGORY);
-  const [importKnowledgeTier, setImportKnowledgeTier] = useState<KnowledgeTier>(
-    DEFAULT_IMPORT_KNOWLEDGE_TIER,
-  );
-  const [importTagsText, setImportTagsText] = useState("");
-  const [structuredSourceName, setStructuredSourceName] = useState(DEFAULT_STRUCTURED_SOURCE_NAME);
-  const [structuredFields, setStructuredFields] = useState<Record<string, string>>(
-    createEmptyStructuredFields("product_material"),
-  );
+  const [selectedLibraryType, setSelectedLibraryType] =
+    useState<KnowledgeLibraryType>(DEFAULT_LIBRARY_TYPE);
   const [importLoading, setImportLoading] = useState(false);
   const [importMessage, setImportMessage] = useState<string | null>(null);
   const [importError, setImportError] = useState<string | null>(null);
-  const [lastImport, setLastImport] = useState<KnowledgeImportResponse | null>(null);
   const [lastLibraryUpload, setLastLibraryUpload] = useState<KnowledgeLibraryUploadResponse | null>(
     null,
   );
   const [libraries, setLibraries] = useState<KnowledgeLibraryState[]>([]);
-  const [importedSources, setImportedSources] = useState<KnowledgeSourceSummary[]>([]);
 
   useEffect(() => {
     loadingRef.current = loading;
@@ -259,15 +209,15 @@ export default function App() {
     currentChatSession?.sessionId,
     currentChatSession?.autoGenerate,
     currentChatSession?.lastMessageTimestamp,
+    customerMessage,
   ]);
 
   async function refreshKnowledgeLibraries() {
     try {
       const nextLibraries = await listKnowledgeLibraries();
       setLibraries(nextLibraries);
-      setImportedSources(mapLibraryStatesToKnowledgeSources(nextLibraries));
     } catch (error) {
-      setImportError(error instanceof Error ? error.message : "读取知识列表失败");
+      setImportError(error instanceof Error ? error.message : "读取知识库状态失败");
     }
   }
 
@@ -290,11 +240,7 @@ export default function App() {
   }
 
   function resetImportForm() {
-    setImportCategory(DEFAULT_IMPORT_CATEGORY);
-    setImportKnowledgeTier(DEFAULT_IMPORT_KNOWLEDGE_TIER);
-    setImportTagsText("");
-    setStructuredSourceName(DEFAULT_STRUCTURED_SOURCE_NAME);
-    setStructuredFields(createEmptyStructuredFields("product_material"));
+    setSelectedLibraryType(DEFAULT_LIBRARY_TYPE);
     setImportError(null);
   }
 
@@ -303,22 +249,10 @@ export default function App() {
     resetImportForm();
   }
 
-  function handleImportKnowledgeTierChange(value: KnowledgeTier) {
-    setImportKnowledgeTier(value);
-    setImportCategory(resolveDefaultCategoryByTier(value));
-    if (isStructuredKnowledgeTier(value)) {
-      setStructuredFields(createEmptyStructuredFields(value));
-    } else {
-      setStructuredFields(createEmptyStructuredFields("product_material"));
-    }
-    setStructuredSourceName(DEFAULT_STRUCTURED_SOURCE_NAME);
-  }
-
-  function handleStructuredFieldChange(fieldKey: string, value: string) {
-    setStructuredFields((current) => ({
-      ...current,
-      [fieldKey]: value,
-    }));
+  function openUploadModal(libraryType: KnowledgeLibraryType = DEFAULT_LIBRARY_TYPE) {
+    setSelectedLibraryType(libraryType);
+    setImportError(null);
+    setUploadModalOpen(true);
   }
 
   async function loadChatSessionDetail(
@@ -472,68 +406,9 @@ export default function App() {
     setImportMessage(null);
 
     try {
-      const content = await file.text();
-      const response = await importKnowledge({
-        source_name: file.name,
-        category: importCategory.trim() || DEFAULT_IMPORT_CATEGORY,
-        knowledge_tier: importKnowledgeTier,
-        content,
-        tags: importTagsText
-          .split(",")
-          .map((item) => item.trim())
-          .filter(Boolean),
-      });
-
-      setLastImport(response);
-      setImportMessage(`导入完成：${response.source_name}，共切分 ${response.chunk_count} 段。`);
-      closeUploadModal();
-      await refreshKnowledgeLibraries();
-    } catch (error) {
-      setImportError(error instanceof Error ? error.message : "导入知识失败");
-    } finally {
-      setImportLoading(false);
-    }
-  }
-
-  async function handleStructuredSubmit() {
-    if (!isStructuredKnowledgeTier(importKnowledgeTier)) {
-      return;
-    }
-
-    const sourceName = structuredSourceName.trim();
-    if (!sourceName) {
-      setImportError("结构化条目必须填写条目名称。");
-      return;
-    }
-
-    const normalizedFields = Object.fromEntries(
-      Object.entries(structuredFields)
-        .map(([key, value]) => [key, value.trim()])
-        .filter(([, value]) => value),
-    );
-    if (Object.keys(normalizedFields).length === 0) {
-      setImportError("结构化条目至少填写一个业务字段。");
-      return;
-    }
-
-    setImportLoading(true);
-    setImportError(null);
-    setImportMessage(null);
-
-    try {
-      const response = await importKnowledge({
-        source_name: sourceName,
-        category: importCategory.trim() || resolveDefaultCategoryByTier(importKnowledgeTier),
-        knowledge_tier: importKnowledgeTier,
-        content: "",
-        structured_fields: normalizedFields,
-        tags: importTagsText
-          .split(",")
-          .map((item) => item.trim())
-          .filter(Boolean),
-      });
-      setLastImport(response);
-      setImportMessage(`导入完成：${response.source_name}，共切分 ${response.chunk_count} 段。`);
+      const response = await uploadKnowledgeLibrary(selectedLibraryType, file);
+      setLastLibraryUpload(response);
+      setImportMessage(response.message || `已更新 ${LIBRARY_TYPE_LABELS[response.library_type]}`);
       closeUploadModal();
       await refreshKnowledgeLibraries();
     } catch (error) {
@@ -635,17 +510,13 @@ export default function App() {
     return (
       <div className="settings-stack">
         <KnowledgeLibraryView
-          importedSources={importedSources}
+          libraries={libraries}
           importMessage={importMessage}
           importError={importError ?? historyMessage}
-          lastImport={lastImport}
-          onOpenUpload={() => setUploadModalOpen(true)}
+          lastUpload={lastLibraryUpload}
+          onOpenUpload={openUploadModal}
         />
-        <RunHistoryPanel
-          history={history}
-          onReuse={handleReuse}
-          onFeedback={handleHistoryFeedback}
-        />
+        <RunHistoryPanel history={history} onReuse={handleReuse} onFeedback={handleHistoryFeedback} />
       </div>
     );
   }
@@ -680,12 +551,7 @@ export default function App() {
       </section>
 
       {activePage === "runtime" ? (
-        <section
-          id="panel-runtime"
-          className="runtime-layout"
-          role="tabpanel"
-          aria-labelledby="tab-runtime"
-        >
+        <section id="panel-runtime" className="runtime-layout" role="tabpanel" aria-labelledby="tab-runtime">
           <ChatSessionList
             sessions={chatSessions}
             currentSessionId={currentChatSession?.sessionId ?? null}
@@ -720,36 +586,17 @@ export default function App() {
           </div>
         </section>
       ) : (
-        <section
-          id="panel-settings"
-          className="settings-page"
-          role="tabpanel"
-          aria-labelledby="tab-settings"
-        >
+        <section id="panel-settings" className="settings-page" role="tabpanel" aria-labelledby="tab-settings">
           <SettingsShell
-            nav={
-              <SettingsNav
-                activeSection={activeSettingsSection}
-                onChange={setActiveSettingsSection}
-              />
-            }
+            nav={<SettingsNav activeSection={activeSettingsSection} onChange={setActiveSettingsSection} />}
             content={renderSettingsContent()}
           />
           <KnowledgeUploadModal
             open={uploadModalOpen}
             importLoading={importLoading}
             importError={importError}
-            importCategory={importCategory}
-            importKnowledgeTier={importKnowledgeTier}
-            importTagsText={importTagsText}
-            structuredSourceName={structuredSourceName}
-            structuredFields={structuredFields}
-            onImportCategoryChange={setImportCategory}
-            onImportKnowledgeTierChange={handleImportKnowledgeTierChange}
-            onImportTagsTextChange={setImportTagsText}
-            onStructuredSourceNameChange={setStructuredSourceName}
-            onStructuredFieldChange={handleStructuredFieldChange}
-            onStructuredSubmit={handleStructuredSubmit}
+            selectedLibraryType={selectedLibraryType}
+            onLibraryTypeChange={setSelectedLibraryType}
             onFileChange={handleImportFileChange}
             onDrop={handleImportDrop}
             onClose={closeUploadModal}

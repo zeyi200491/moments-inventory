@@ -1176,6 +1176,117 @@ body::before {
   line-height: 1.6;
 }
 
+.knowledge-library-grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 16px;
+}
+
+.knowledge-library-card {
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+  padding: 18px;
+  border-radius: var(--radius-md);
+  border: 1px solid var(--line);
+  background: var(--surface-raised);
+  box-shadow: var(--shadow-sm);
+}
+
+.knowledge-library-card-head {
+  display: flex;
+  justify-content: space-between;
+  align-items: flex-start;
+  gap: 12px;
+}
+
+.knowledge-library-card h3 {
+  margin: 4px 0 0;
+}
+
+.knowledge-library-filetype {
+  display: inline-flex;
+  align-items: center;
+  padding: 4px 8px;
+  border-radius: 999px;
+  background: var(--surface-tint);
+  color: var(--muted);
+  font-size: 12px;
+  letter-spacing: 0.06em;
+}
+
+.knowledge-library-description {
+  margin: 0;
+  line-height: 1.6;
+}
+
+.knowledge-library-meta {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 12px;
+  margin: 0;
+}
+
+.knowledge-library-meta div {
+  padding: 10px 12px;
+  border-radius: var(--radius-sm);
+  background: var(--surface-tint);
+  border: 1px solid var(--line);
+}
+
+.knowledge-library-meta dt {
+  margin: 0 0 6px;
+  color: var(--muted);
+  font-size: 12px;
+}
+
+.knowledge-library-meta dd {
+  margin: 0;
+  word-break: break-word;
+}
+
+.knowledge-library-actions {
+  display: flex;
+  justify-content: flex-end;
+}
+
+.library-status {
+  display: inline-flex;
+  align-items: center;
+  padding: 6px 10px;
+  border-radius: 999px;
+  background: var(--surface-tint);
+  color: var(--muted);
+  font-size: 12px;
+  white-space: nowrap;
+}
+
+.library-status-active {
+  background: var(--success-bg);
+  color: var(--success-text);
+  border: 1px solid var(--success-border);
+}
+
+.knowledge-library-warning {
+  margin-top: 0;
+}
+
+.knowledge-library-hint-card {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  padding: 14px 16px;
+  border-radius: var(--radius-md);
+  background: var(--surface-tint);
+  border: 1px solid var(--line);
+}
+
+.knowledge-library-hint-card p,
+.knowledge-library-hint-card span {
+  margin: 0;
+  color: var(--muted);
+}
+
 .secondary-button-success {
   background: var(--success-bg-strong);
   color: var(--success-text-strong);
@@ -1218,6 +1329,11 @@ body::before {
   }
 
   .upload-form-grid {
+    grid-template-columns: 1fr;
+  }
+
+  .knowledge-library-grid,
+  .knowledge-library-meta {
     grid-template-columns: 1fr;
   }
 }
