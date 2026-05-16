@@ -193,6 +193,43 @@ python -m moments_inventory.cli sync --export
 
 它们都在 `config/config.yaml` 里 `task.output_dir` 指定的目录下。
 
+## 6.1 AI 客服工作台怎么启动
+
+如果你要用这个仓库里的 AI 客服工作台，而不是只做朋友圈导出，优先直接运行：
+
+```bat
+run_ai_kefu_workbench.bat
+```
+
+它会自动检查并启动：
+
+- 后端接口：`http://127.0.0.1:8787`
+- 前端工作台：`http://127.0.0.1:5173`
+
+后端默认会带热重载，相当于内部执行：
+
+```bat
+python -m moments_inventory.cli kefu-dev --host 127.0.0.1 --port 8787 --reload --ai-kefu-config config/ai_kefu.yaml
+```
+
+如果你只想单独启动后端，也建议保留 `--reload`，否则改完上传逻辑、规则或检索代码后，浏览器可能还会连着旧进程。
+
+## 6.2 AI 客服知识库上传的常见坑
+
+如果知识库页面已经显示支持新格式，但上传时仍返回旧报错，比如：
+
+- `shipping_info_excel 暂未实现解析`
+- 明明代码已经改过，页面还是报旧错误
+
+通常不是前端问题，而是本地后端进程没有重启。处理顺序建议固定为：
+
+1. 重新运行 `run_ai_kefu_workbench.bat`
+2. 等待后端和前端都启动完成
+3. 刷新浏览器页面
+4. 再重新上传文件
+
+像“供应链发货信息库”现在支持 `.xlsx` 和 `.xls`，如果页面和接口行为对不上，优先检查是不是旧后端实例还占着 `8787` 端口。
+
 ## 7. 常见问题
 
 ### 提示找不到 `.venv\Scripts\python.exe`

@@ -22,7 +22,7 @@ const LIBRARY_CARDS: Array<{
     libraryType: "shipping_info_excel",
     title: "供应链发货信息库",
     description: "供应商发货地、快递方式和偏远限制，按每行一条发货规则入库。",
-    fileTypeHint: ".xlsx",
+    fileTypeHint: ".xlsx / .xls",
   },
   {
     libraryType: "style_sample_md",

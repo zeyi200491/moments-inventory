@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from io import BytesIO
+import os
 from pathlib import Path
 from types import SimpleNamespace
 import zipfile
@@ -522,7 +523,7 @@ def test_knowledge_upload_endpoint_persists_embeddings_when_provider_available(t
     assert all(chunk.embedding == [0.11, 0.22] for chunk in chunks)
 
 
-def test_knowledge_upload_endpoint_rejects_unimplemented_library_type(tmp_path):
+def test_knowledge_upload_endpoint_ingests_shipping_info_excel(tmp_path):
     repository = SQLiteKefuRepository(tmp_path / "ai-kefu.db")
     repository.initialize()
     client = TestClient(
@@ -539,14 +540,35 @@ def test_knowledge_upload_endpoint_rejects_unimplemented_library_type(tmp_path):
         files={
             "file": (
                 "shipping-info.xlsx",
-                b"placeholder",
+                build_products_workbook_bytes(
+                    [
+                        [
+                            "备注名",
+                            "发源地",
+                            "快递公司",
+                            "备注",
+                            "备注：根据用户地区来判断，默认包邮，偏远地区需要补运费",
+                        ],
+                        ["小黎福州中通包邮货源", "福州", "中通", ""],
+                        ["安安天津顺丰货源", "天津", "顺丰", "含电池商品无法发特快"],
+                    ]
+                ),
                 "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
             )
         },
     )
 
-    assert response.status_code == 501
-    assert "shipping_info_excel" in response.json()["detail"]
+    assert response.status_code == 200
+    assert response.json()["library_type"] == "shipping_info_excel"
+    assert response.json()["imported_count"] == 3
+    assert response.json()["skipped_count"] == 0
+    assert response.json()["message"] == "上传成功"
+    chunks = repository.list_knowledge_chunks()
+    assert len(chunks) == 3
+    assert all(chunk.knowledge_tier == "shipping_info" for chunk in chunks)
+    assert any("发源地：福州" in chunk.text for chunk in chunks)
+    assert any("快递公司：顺丰" in chunk.text for chunk in chunks)
+    assert any("默认包邮" in chunk.text for chunk in chunks)
 
 
 def test_knowledge_import_endpoint_remains_available_after_upload_api_added(tmp_path):
@@ -959,6 +981,27 @@ def test_build_parser_supports_kefu_dev_command():
     assert args.host == "0.0.0.0"
     assert args.port == 9000
     assert args.ai_kefu_config == "config/ai_kefu.yaml"
+    assert args.reload is False
+
+
+def test_build_parser_supports_kefu_dev_reload_flag():
+    parser = cli_module.build_parser()
+
+    args = parser.parse_args(
+        [
+            "kefu-dev",
+            "--host",
+            "0.0.0.0",
+            "--port",
+            "9000",
+            "--ai-kefu-config",
+            "config/ai_kefu.yaml",
+            "--reload",
+        ]
+    )
+
+    assert args.command == "kefu-dev"
+    assert args.reload is True
 
 
 def test_cli_kefu_dev_runs_uvicorn_without_loading_legacy_settings(monkeypatch: pytest.MonkeyPatch):
@@ -973,10 +1016,11 @@ def test_cli_kefu_dev_runs_uvicorn_without_loading_legacy_settings(monkeypatch: 
         captured["config_path"] = config_path
         return app_instance
 
-    def fake_run(app: object, *, host: str, port: int) -> None:
+    def fake_run(app: object, *, host: str, port: int, reload: bool) -> None:
         captured["app"] = app
         captured["host"] = host
         captured["port"] = port
+        captured["reload"] = reload
 
     monkeypatch.setattr(cli_module, "load_settings", fake_load_settings)
     monkeypatch.setattr(cli_module, "create_app", fake_create_app_with_config)
@@ -993,7 +1037,37 @@ def test_cli_kefu_dev_runs_uvicorn_without_loading_legacy_settings(monkeypatch: 
         "app": app_instance,
         "host": "0.0.0.0",
         "port": 9000,
+        "reload": False,
     }
+
+
+def test_cli_kefu_dev_with_reload_runs_uvicorn_factory(monkeypatch: pytest.MonkeyPatch):
+    captured: dict[str, object] = {}
+
+    def fake_load_settings(_path: str):
+        raise AssertionError("kefu-dev 不应该加载旧配置")
+
+    def fake_run(app: object, **kwargs: object) -> None:
+        captured["app"] = app
+        captured.update(kwargs)
+
+    monkeypatch.delenv("MOMENTS_AI_KEFU_CONFIG_PATH", raising=False)
+    monkeypatch.setattr(cli_module, "load_settings", fake_load_settings)
+    monkeypatch.setattr(cli_module, "uvicorn", SimpleNamespace(run=fake_run))
+
+    result = cli_module.main(
+        ["kefu-dev", "--host", "0.0.0.0", "--port", "9000", "--ai-kefu-config", "config/ai_kefu.yaml", "--reload"]
+    )
+
+    assert result == 0
+    assert captured == {
+        "app": "moments_inventory.ai_kefu.app:create_app_from_env",
+        "host": "0.0.0.0",
+        "port": 9000,
+        "reload": True,
+        "factory": True,
+    }
+    assert os.environ["MOMENTS_AI_KEFU_CONFIG_PATH"] == "config/ai_kefu.yaml"
 
 
 def _build_chat_sync_bridge() -> ChatSyncBridge:

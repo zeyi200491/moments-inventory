@@ -24,7 +24,7 @@ const LIBRARY_OPTIONS: Array<{
     value: "shipping_info_excel",
     label: "供应链发货信息库",
     hint: "支持 Excel，按每行一条发货规则入库。",
-    accept: ".xlsx",
+    accept: ".xlsx,.xls",
   },
   {
     value: "style_sample_md",

@@ -204,3 +204,8 @@ def create_app(
         )
     )
     return app
+
+
+def create_app_from_env() -> FastAPI:
+    config_path = os.environ.get("MOMENTS_AI_KEFU_CONFIG_PATH", "").strip() or None
+    return create_app(config_path=config_path)

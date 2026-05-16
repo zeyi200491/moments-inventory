@@ -119,7 +119,7 @@ AI 客服后端已经从普通“检索 + 生成”升级到“规则驱动草�
 - 主规则文件：上传 `.md`，同一份文件里可同时包含主规则和 FAQ，系统会自动拆分到 `master_rule` 和 `faq`
 - 商品库存库：上传 `.xlsx`，全量覆盖当前商品库
 - 商品素材库：上传 `.xlsx`，按每行一条素材事实入库
-- 供应链发货信息库：上传 `.xlsx`，按每行一条发货规则入库
+- 供应链发货信息库：上传 `.xlsx` / `.xls`，按每行一条发货规则入库
 - 风格样本库：上传 `.md`，只影响语气
 
 ### 商品库存库
@@ -148,8 +148,21 @@ python -m moments_inventory.cli import-products --xlsx "E:\Ai jjfajgsw\AIkefu\co
 
 ```bash
 set AI_KEFU_OPENAI_API_KEY=你的真实密钥
-python -m moments_inventory.cli kefu-dev --host 127.0.0.1 --port 8787 --ai-kefu-config config/ai_kefu.yaml
+python -m moments_inventory.cli kefu-dev --host 127.0.0.1 --port 8787 --reload --ai-kefu-config config/ai_kefu.yaml
 ```
+
+日常本地联调更建议直接运行：
+
+```bat
+run_ai_kefu_workbench.bat
+```
+
+这个启动器会同时检查并拉起：
+
+- AI 客服后端 `127.0.0.1:8787`
+- 前端工作台 `127.0.0.1:5173`
+
+并默认带上后端热重载，避免改完代码后浏览器还连着旧进程。
 
 启动后可用接口：
 
@@ -311,10 +324,16 @@ npm run dev
 ## WeFlow 会话同步流程
 
 1. 在 `config/ai_kefu.yaml` 里启用 `chat_sync`
-2. 启动 `python -m moments_inventory.cli kefu-dev --host 127.0.0.1 --port 8787 --ai-kefu-config config/ai_kefu.yaml`
+2. 启动 `python -m moments_inventory.cli kefu-dev --host 127.0.0.1 --port 8787 --reload --ai-kefu-config config/ai_kefu.yaml`
 3. 打开工作台，在“实际运行”页选择一个私聊会话
 4. 新消息会自动追加到“客户消息”区域
 5. 打开“自动生成”后，新消息进入会自动触发候选回复生成
+
+如果你改过知识库上传、检索或规则代码，但页面仍提示“未实现解析”这类旧报错，优先怀疑本地后端还是旧实例：
+
+- 直接重新执行 `run_ai_kefu_workbench.bat`
+- 或手动重启 `kefu-dev`
+- 然后刷新浏览器页面再重试
 
 第一版只支持私聊，不处理群聊，也不会跟随 WeFlow 当前打开窗口自动切换。
 

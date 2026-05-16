@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import argparse
+import os
 from pathlib import Path
 
 import uvicorn
@@ -43,6 +44,7 @@ def build_parser() -> argparse.ArgumentParser:
     kefu_parser = subparsers.add_parser("kefu-dev", help="启动 AI 客服本地开发后端")
     kefu_parser.add_argument("--host", default="127.0.0.1", help="本地绑定地址")
     kefu_parser.add_argument("--port", type=int, default=8787, help="本地端口")
+    kefu_parser.add_argument("--reload", action="store_true", help="源码变更后自动热重载")
     kefu_parser.add_argument(
         "--ai-kefu-config",
         default="config/ai_kefu.yaml",
@@ -129,7 +131,22 @@ def main(argv: list[str] | None = None) -> int:
     args = parser.parse_args(argv)
 
     if args.command == "kefu-dev":
-        uvicorn.run(create_app(args.ai_kefu_config), host=args.host, port=args.port)
+        if args.reload:
+            os.environ["MOMENTS_AI_KEFU_CONFIG_PATH"] = args.ai_kefu_config
+            uvicorn.run(
+                "moments_inventory.ai_kefu.app:create_app_from_env",
+                host=args.host,
+                port=args.port,
+                reload=True,
+                factory=True,
+            )
+        else:
+            uvicorn.run(
+                create_app(args.ai_kefu_config),
+                host=args.host,
+                port=args.port,
+                reload=False,
+            )
         return 0
 
     if args.command == "import-products":

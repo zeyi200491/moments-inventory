@@ -6,16 +6,17 @@ from typing import Callable, TypeVar
 from xml.etree.ElementTree import ParseError
 
 from moments_inventory.ai_kefu.models import KnowledgeChunk, ProductRecord
-from moments_inventory.ai_kefu.products import (
-    import_products_from_rows,
-    import_products_from_xlsx_bytes,
-    read_xlsx_rows_from_bytes,
-)
+from moments_inventory.ai_kefu.products import import_products_from_rows, read_xlsx_rows_from_bytes
 from moments_inventory.ai_kefu.structured_imports import build_structured_import_content
 from moments_inventory.exporter import HEADERS
 
 
 T = TypeVar("T")
+
+_SHIPPING_NAME_HEADERS = ("备注名", "供应商", "供应商名称", "货源名", "规则名")
+_SHIPPING_ORIGIN_HEADERS = ("发源地", "发货地", "仓库位置", "仓库", "发货仓")
+_SHIPPING_COURIER_HEADERS = ("快递公司", "物流公司", "快递", "发货快递")
+_SHIPPING_NOTE_HEADERS = ("备注", "说明", "特殊说明", "补充说明")
 
 
 @dataclass(slots=True)
@@ -75,6 +76,58 @@ def ingest_product_material_excel(payload: bytes) -> list[KnowledgeChunk]:
                 knowledge_tier="product_material",
                 text=text,
                 tags=[_material_tag(material_type), *tags],
+            )
+        )
+
+    return chunks
+
+
+def ingest_shipping_info_excel(payload: bytes) -> list[KnowledgeChunk]:
+    rows = _load_excel_rows(
+        payload=payload,
+        loader=read_xlsx_rows_from_bytes,
+    )
+    if not rows:
+        return []
+
+    header = [str(value or "").strip() for value in rows[0]]
+    header_map = {name: index for index, name in enumerate(header) if name}
+    shared_notes = _extract_shipping_shared_notes(header, header_map)
+    chunks: list[KnowledgeChunk] = []
+
+    if shared_notes:
+        chunks.append(
+            KnowledgeChunk(
+                chunk_id="shipping-info-shared-note-0000",
+                source_name="library:shipping_info_excel:shared-note",
+                category="供应链发货",
+                knowledge_tier="shipping_info",
+                text=_build_shipping_shared_note_text(shared_notes),
+                tags=["物流", "发货规则"],
+            )
+        )
+
+    for row_index, row in enumerate(rows[1:], start=1):
+        rule_name = _get_cell_by_aliases(row, header_map, _SHIPPING_NAME_HEADERS)
+        origin = _get_cell_by_aliases(row, header_map, _SHIPPING_ORIGIN_HEADERS)
+        courier = _get_cell_by_aliases(row, header_map, _SHIPPING_COURIER_HEADERS)
+        notes = _get_cell_by_aliases(row, header_map, _SHIPPING_NOTE_HEADERS)
+        if not any((rule_name, origin, courier, notes)):
+            continue
+
+        chunks.append(
+            KnowledgeChunk(
+                chunk_id=f"shipping-info-row-{row_index:04d}",
+                source_name=f"library:shipping_info_excel:row-{row_index:04d}",
+                category="供应链发货",
+                knowledge_tier="shipping_info",
+                text=_build_shipping_row_text(
+                    rule_name=rule_name,
+                    origin=origin,
+                    courier=courier,
+                    notes=notes,
+                ),
+                tags=_collect_tags(rule_name, origin, courier),
             )
         )
 
@@ -154,6 +207,72 @@ def _material_tag(material_type: str) -> str:
     if "视频" in normalized:
         return "material:inspection_video"
     return "material:real_shot"
+
+
+def _extract_shipping_shared_notes(header: list[str], header_map: dict[str, int]) -> list[str]:
+    return [
+        value
+        for value in header
+        if value
+        and (
+            value.startswith("备注：")
+            or value.startswith("说明：")
+            or value.startswith("注意：")
+        )
+    ]
+
+
+def _build_shipping_shared_note_text(shared_notes: list[str]) -> str:
+    lines = ["供应链发货总说明"]
+    lines.extend(shared_notes)
+    return "\n".join(lines)
+
+
+def _build_shipping_row_text(
+    *,
+    rule_name: str,
+    origin: str,
+    courier: str,
+    notes: str,
+) -> str:
+    lines = [
+        "供应链发货条目",
+        _line("备注名", rule_name),
+        _line("发源地", origin),
+        _line("快递公司", courier),
+        _line("备注", notes),
+    ]
+    return "\n".join(line for line in lines if line)
+
+
+def _get_cell_by_aliases(
+    row: list[object],
+    header_map: dict[str, int],
+    header_names: tuple[str, ...],
+) -> str:
+    for header_name in header_names:
+        value = _get_cell(row, header_map, header_name)
+        if value:
+            return value
+    return ""
+
+
+def _collect_tags(*values: str) -> list[str]:
+    tags: list[str] = []
+    seen: set[str] = set()
+    for raw_value in values:
+        value = raw_value.strip()
+        if not value or value in seen:
+            continue
+        seen.add(value)
+        tags.append(value)
+    return tags
+
+
+def _line(label: str, value: str | None) -> str:
+    if not value:
+        return ""
+    return f"{label}：{value}"
 
 
 def _get_cell(row: list[object], header_map: dict[str, int], header_name: str) -> str:

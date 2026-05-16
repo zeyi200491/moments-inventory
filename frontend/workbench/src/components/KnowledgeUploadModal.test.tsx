@@ -22,6 +22,23 @@ describe("KnowledgeUploadModal", () => {
     expect(screen.queryByRole("option", { name: "商品素材库" })).toBeNull();
   });
 
+  it("uses xlsx and xls input rules for the shipping info library", () => {
+    render(
+      <KnowledgeUploadModal
+        open
+        importLoading={false}
+        importError={null}
+        selectedLibraryType="shipping_info_excel"
+        onLibraryTypeChange={vi.fn()}
+        onFileChange={vi.fn()}
+        onDrop={vi.fn()}
+        onClose={vi.fn()}
+      />,
+    );
+
+    expect(screen.getByLabelText("选择文件")).toHaveAttribute("accept", ".xlsx,.xls");
+  });
+
   it("switches file hints when the library type changes", () => {
     const onLibraryTypeChange = vi.fn();
 

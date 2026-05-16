@@ -5,6 +5,7 @@ from dataclasses import dataclass, field
 from moments_inventory.ai_kefu.library_ingestion_excel import (
     ingest_product_inventory_excel,
     ingest_product_material_excel,
+    ingest_shipping_info_excel,
 )
 from moments_inventory.ai_kefu.library_ingestion_markdown import (
     split_master_rule_bundle_markdown,
@@ -72,9 +73,14 @@ def ingest_library_bytes(
         )
 
     if library_type == "shipping_info_excel":
-        raise NotImplementedError(f"业务库类型 {library_type} 暂未实现解析，无法导入文件 {filename}")
+        knowledge_chunks = ingest_shipping_info_excel(payload)
+        return LibraryImportResult(
+            library_type=library_type,
+            knowledge_chunks=knowledge_chunks,
+            imported_count=len(knowledge_chunks),
+        )
 
-    raise ValueError(f"不支持的业务库类型 {library_type}（{filename}）")
+    raise ValueError(f"不支持的业务库类型：{library_type}（{filename}）")
 
 
 def _decode_markdown_payload(payload: bytes, filename: str, library_label: str) -> str:

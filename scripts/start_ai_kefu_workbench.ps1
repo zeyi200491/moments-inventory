@@ -106,7 +106,8 @@ function Ensure-AiKefuApiKeyEnv {
 
 function Ensure-BackendDependencies {
     Write-Info "Checking backend dependencies..."
-    & $PythonExe -c "import uvicorn, fastapi" *> $null
+    $probeCommand = "`"$PythonExe`" -c `"import uvicorn, fastapi, multipart`" 1>nul 2>nul"
+    cmd /c $probeCommand | Out-Null
     if ($LASTEXITCODE -ne 0) {
         Write-Info "Installing backend dependencies..."
         & $PythonExe -m pip install -e $RootDir
@@ -148,7 +149,7 @@ function Start-BackendIfNeeded {
 
     Start-Process `
         -FilePath $PythonExe `
-        -ArgumentList "-m", "moments_inventory.cli", "kefu-dev", "--host", "127.0.0.1", "--port", "8787", "--ai-kefu-config", "config/ai_kefu.yaml" `
+        -ArgumentList "-m", "moments_inventory.cli", "kefu-dev", "--host", "127.0.0.1", "--port", "8787", "--reload", "--ai-kefu-config", "config/ai_kefu.yaml" `
         -WorkingDirectory $RootDir `
         -WindowStyle Hidden `
         -RedirectStandardOutput $backendOutLog `

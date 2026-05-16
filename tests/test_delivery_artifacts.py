@@ -91,6 +91,8 @@ def test_ai_kefu_workbench_launcher_artifacts_exist_and_reference_expected_comma
     assert "frontend\\workbench" in helper_text
     assert "http://127.0.0.1:5173" in helper_text
     assert "MOMENTS_INVENTORY_NONINTERACTIVE" in helper_text
+    assert "multipart" in helper_text
+    assert "cmd /c" in helper_text
 
 
 def test_ai_kefu_workbench_launcher_reports_missing_frontend_package_in_noninteractive_mode():
