@@ -252,6 +252,38 @@ def test_knowledge_upload_endpoint_ingests_master_rule_bundle(tmp_path):
     ]
 
 
+def test_knowledge_upload_endpoint_ingests_style_sample_markdown(tmp_path):
+    repository = SQLiteKefuRepository(tmp_path / "ai-kefu.db")
+    repository.initialize()
+    client = TestClient(
+        create_app(
+            service=RecordingDraftService(),
+            repository=repository,
+            retrieval_settings=RetrievalSettings(chunk_size=80, chunk_overlap=10),
+        )
+    )
+
+    response = client.post(
+        "/api/knowledge/uploads",
+        data={"library_type": "style_sample_md"},
+        files={
+            "file": (
+                "style.md",
+                "语气自然一点，像真人聊天。多用短句，别太像客服模板。".encode("utf-8"),
+                "text/markdown",
+            )
+        },
+    )
+
+    assert response.status_code == 200
+    assert response.json()["library_type"] == "style_sample_md"
+    assert response.json()["message"] == "上传成功"
+    chunks = repository.list_knowledge_chunks()
+    assert len(chunks) == 1
+    assert chunks[0].knowledge_tier == "style_sample"
+    assert chunks[0].category == "回复风格"
+
+
 def test_knowledge_upload_endpoint_replaces_existing_library_state_and_chunks(tmp_path):
     repository = SQLiteKefuRepository(tmp_path / "ai-kefu.db")
     repository.initialize()
@@ -392,7 +424,7 @@ def test_knowledge_upload_endpoint_rejects_broken_product_inventory_excel(tmp_pa
     )
 
     assert response.status_code == 400
-    assert "xlsx" in response.json()["detail"]
+    assert response.json()["detail"] == "Excel 文件无法解析，请重新导出后再上传"
 
 
 def test_knowledge_upload_endpoint_rejects_malformed_product_inventory_excel(tmp_path):
@@ -419,7 +451,7 @@ def test_knowledge_upload_endpoint_rejects_malformed_product_inventory_excel(tmp
     )
 
     assert response.status_code == 400
-    assert "xlsx" in response.json()["detail"]
+    assert response.json()["detail"] == "Excel 文件无法解析，请重新导出后再上传"
 
 
 def test_knowledge_upload_endpoint_rejects_malformed_product_material_excel(tmp_path):
@@ -446,7 +478,7 @@ def test_knowledge_upload_endpoint_rejects_malformed_product_material_excel(tmp_
     )
 
     assert response.status_code == 400
-    assert "xlsx" in response.json()["detail"]
+    assert response.json()["detail"] == "Excel 文件无法解析，请重新导出后再上传"
 
 
 def test_knowledge_upload_endpoint_persists_embeddings_when_provider_available(tmp_path):

@@ -203,6 +203,27 @@ describe("App", () => {
     expect(await screen.findByText("inventory.xlsx")).toBeInTheDocument();
   });
 
+  it("shows backend detail when knowledge upload fails", async () => {
+    apiMocks.uploadKnowledgeLibrary.mockRejectedValue(
+      new Error("风格样本库文件必须是 UTF-8 编码的 Markdown"),
+    );
+
+    render(<App />);
+
+    fireEvent.click(screen.getByRole("tab", { name: "设置页面" }));
+    fireEvent.click(await screen.findByRole("button", { name: "上传知识库" }));
+    fireEvent.change(screen.getByLabelText("业务库类型"), {
+      target: { value: "style_sample_md" },
+    });
+
+    const file = new File(["style"], "style.md", { type: "text/markdown" });
+    fireEvent.change(screen.getByLabelText("选择文件"), { target: { files: [file] } });
+
+    expect(
+      (await screen.findAllByText("风格样本库文件必须是 UTF-8 编码的 Markdown")).length,
+    ).toBeGreaterThan(0);
+  });
+
   it("历史记录支持提交反馈到后端", async () => {
     apiMocks.listDraftHistory.mockResolvedValue([
       {

@@ -9,20 +9,14 @@ const LIBRARY_CARDS: Array<{
   {
     libraryType: "master_rule_bundle",
     title: "主规则文件",
-    description: "主规则和 FAQ 共用一份 Markdown，上传后会自动拆分入库。",
+    description: "主规则和 FAQ 共用一个 Markdown，上传后会自动拆分入库。",
     fileTypeHint: ".md",
   },
   {
     libraryType: "product_inventory_excel",
     title: "商品库存库",
-    description: "相机型号、品牌、价格、成本、利润空间、配件和验机视频信息。",
-    fileTypeHint: ".xlsx",
-  },
-  {
-    libraryType: "product_material_excel",
-    title: "商品素材库",
-    description: "实拍图和验机视频映射关系，按每行一条素材事实入库。",
-    fileTypeHint: ".xlsx",
+    description: "型号、品牌、价格、成本、利润空间，以及实拍图和验机视频等素材线索统一从库存表导入。",
+    fileTypeHint: ".xlsx / .xls",
   },
   {
     libraryType: "shipping_info_excel",

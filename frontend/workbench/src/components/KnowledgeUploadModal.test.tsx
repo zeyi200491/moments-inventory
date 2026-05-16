@@ -4,7 +4,7 @@ import { describe, expect, it, vi } from "vitest";
 import { KnowledgeUploadModal } from "./KnowledgeUploadModal";
 
 describe("KnowledgeUploadModal", () => {
-  it("uses xlsx input rules for the product inventory library", () => {
+  it("uses xlsx and xls input rules for the product inventory library", () => {
     render(
       <KnowledgeUploadModal
         open
@@ -18,8 +18,8 @@ describe("KnowledgeUploadModal", () => {
       />,
     );
 
-    expect(screen.getByLabelText("选择文件")).toHaveAttribute("accept", ".xlsx");
-    expect(screen.getByText("重新上传会全量覆盖当前商品库")).toBeInTheDocument();
+    expect(screen.getByLabelText("选择文件")).toHaveAttribute("accept", ".xlsx,.xls");
+    expect(screen.queryByRole("option", { name: "商品素材库" })).toBeNull();
   });
 
   it("switches file hints when the library type changes", () => {

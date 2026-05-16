@@ -7,6 +7,7 @@ from moments_inventory.ai_kefu.models import KnowledgeChunk
 
 
 _FAQ_HEADING_PATTERN = re.compile(r"^##\s*(常见问题|FAQ)\s*$", re.IGNORECASE | re.MULTILINE)
+_STYLE_SAMPLE_CATEGORY = "回复风格"
 
 
 def split_master_rule_bundle_markdown(
@@ -41,6 +42,25 @@ def split_master_rule_bundle_markdown(
             )
         )
     return chunks
+
+
+def split_style_sample_markdown(
+    *,
+    markdown_text: str,
+    chunk_size: int,
+    chunk_overlap: int,
+) -> list[KnowledgeChunk]:
+    normalized = markdown_text.strip()
+    if not normalized:
+        return []
+    return split_document_to_chunks(
+        source_name="library:style_sample_md",
+        category=_STYLE_SAMPLE_CATEGORY,
+        text=normalized,
+        chunk_size=chunk_size,
+        chunk_overlap=chunk_overlap,
+        knowledge_tier="style_sample",
+    )
 
 
 def _split_master_rule_sections(markdown_text: str) -> tuple[str, str]:

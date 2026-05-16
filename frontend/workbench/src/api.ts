@@ -24,6 +24,31 @@ function buildHeaders(extraHeaders?: HeadersInit): HeadersInit {
   };
 }
 
+async function buildErrorMessage(response: Response, fallback: string): Promise<string> {
+  try {
+    const payload = (await response.clone().json()) as { detail?: unknown; message?: unknown };
+    if (typeof payload.detail === "string" && payload.detail.trim()) {
+      return payload.detail.trim();
+    }
+    if (typeof payload.message === "string" && payload.message.trim()) {
+      return payload.message.trim();
+    }
+  } catch {
+    // 忽略非 JSON 响应，继续尝试读取纯文本。
+  }
+
+  try {
+    const text = (await response.text()).trim();
+    if (text) {
+      return text;
+    }
+  } catch {
+    // 读取失败时回退到通用文案。
+  }
+
+  return `${fallback}，HTTP ${response.status}`;
+}
+
 async function requestJson<T>(
   input: string,
   init?: Omit<RequestInit, "headers"> & { headers?: HeadersInit },
@@ -34,7 +59,7 @@ async function requestJson<T>(
   });
 
   if (!response.ok) {
-    throw new Error(`请求失败，HTTP ${response.status}`);
+    throw new Error(await buildErrorMessage(response, "请求失败"));
   }
 
   return (await response.json()) as T;
@@ -83,7 +108,7 @@ export async function uploadKnowledgeLibrary(
   });
 
   if (!response.ok) {
-    throw new Error(`璇锋眰澶辫触锛孒TTP ${response.status}`);
+    throw new Error(await buildErrorMessage(response, "上传失败"));
   }
 
   return (await response.json()) as KnowledgeLibraryUploadResponse;
