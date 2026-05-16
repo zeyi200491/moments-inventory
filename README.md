@@ -10,7 +10,7 @@
 仓库最早的能力是一套 Windows 命令行工具，用来通过 WeFlow HTTP API 抓取朋友圈内容，识别 CCD 商品信息，并导出：
 
 - 当前在售 Excel
-- 历史总库 Excel
+- 分批大执行脚本 `run_batched_warmup_and_export.bat`
 - 对应的本地图片和视频
 
 ### 快速开始
@@ -30,6 +30,7 @@ python -m moments_inventory.cli sync
 python -m moments_inventory.cli export
 python -m moments_inventory.cli sync --export
 python -m moments_inventory.cli warmup --export
+python -m moments_inventory.cli batch-run --export
 ```
 
 ## AI 客服工作台

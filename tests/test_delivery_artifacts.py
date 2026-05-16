@@ -188,3 +188,15 @@ def test_ai_kefu_workbench_launcher_reports_missing_openai_api_key_in_noninterac
 
     assert result.returncode == 1
     assert "Missing required environment variable: AI_KEFU_OPENAI_API_KEY" in output
+
+
+def test_batched_delivery_artifacts_exist_and_docs_drop_history_workbook():
+    batched_script = PROJECT_ROOT / "run_batched_warmup_and_export.bat"
+    usage_text = (PROJECT_ROOT / "docs" / "windows-使用说明.md").read_text(encoding="utf-8")
+    readme_text = (PROJECT_ROOT / "README.md").read_text(encoding="utf-8")
+
+    assert batched_script.exists()
+    assert "历史总库.xlsx" not in usage_text
+    assert "历史总库 Excel" not in readme_text
+    assert "run_batched_warmup_and_export.bat" in usage_text
+    assert "batch-run --export" in readme_text

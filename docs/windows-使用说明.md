@@ -8,7 +8,7 @@
 工具会通过 WeFlow 的 HTTP API 抓取指定联系人的朋友圈内容，识别其中的 CCD 商品信息，然后导出到你配置的输出目录中，主要产物包括：
 
 - `当前在售库.xlsx`
-- `历史总库.xlsx`
+- `run_batched_warmup_and_export.bat` 可用于大批量联系人分批执行
 - `media/` 目录下的本地图片和视频
 
 ## 2. 首次使用步骤
@@ -157,7 +157,15 @@ setx WEFLOW_ACCESS_TOKEN "你的实际token"
 
 另外，`config/config.yaml` 里的 `warmup.enabled` 默认是 `false`。要使用 `run_warmup_and_export.bat`，必须先把它改成 `true`，否则即使运行了脚本，也不会按预期进入预刷新流程。
 
-然后在项目根目录运行：
+如果你有 100-200 人这类大批量联系人，建议改用：
+
+```bat
+run_batched_warmup_and_export.bat
+```
+
+它会按 `batch_run.batch_size` 分批执行 warmup、抓取和最终导出，只输出一份 `当前在售库.xlsx`。
+
+普通日常导出仍然可以在项目根目录运行：
 
 ```bat
 run_warmup_and_export.bat
