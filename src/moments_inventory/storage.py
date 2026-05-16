@@ -347,6 +347,53 @@ class InventoryStore:
             ).fetchall()
         return [self._row_to_record(row) for row in rows]
 
+    def clear_staged_records(self, run_id: str) -> None:
+        self.initialize()
+        with self._connect() as conn:
+            conn.execute(
+                "delete from inventory_staging_records where run_id = ?",
+                (run_id,),
+            )
+
+    def replace_current_records_from_stage(
+        self,
+        run_id: str,
+        committed_at: str | None = None,
+    ) -> None:
+        self.initialize()
+        committed_timestamp = committed_at or datetime.now().astimezone().isoformat()
+        with self._connect() as conn:
+            rows = conn.execute(
+                """
+                select record_key, remark_name, wxid, published_at, model, price, serial_no,
+                       status, image_urls, video_urls, content_text, note, needs_manual,
+                       source_moment_ids
+                from inventory_staging_records
+                where run_id = ?
+                order by batch_index asc, published_at asc, record_key asc
+                """,
+                (run_id,),
+            ).fetchall()
+            records = [self._row_to_record(row) for row in rows]
+
+            conn.execute("delete from inventory_records")
+            for record in records:
+                conn.execute(
+                    """
+                    insert into inventory_records (
+                      record_key, remark_name, wxid, published_at, model, price, serial_no, status,
+                      image_urls, video_urls, content_text, note, needs_manual, source_moment_ids,
+                      first_seen_at, last_seen_at
+                    ) values (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    """,
+                    (
+                        *self._record_to_row(record),
+                        committed_timestamp,
+                        committed_timestamp,
+                    ),
+                )
+                self._replace_detail_rows(conn, record)
+
     def _list_record_keys_by_detail(
         self,
         table_name: str,
