@@ -34,7 +34,7 @@ def build_record(record_key: str, status: str = "未售出"):
     )
 
 
-def test_missing_record_from_latest_sync_becomes_sold():
+def test_missing_record_from_latest_sync_is_deleted():
     temp_root = _make_temp_root(f"pytest-storage-{uuid.uuid4().hex}-")
 
     try:
@@ -53,7 +53,51 @@ def test_missing_record_from_latest_sync_becomes_sold():
 
         records = store.list_all_records()
 
-        assert records[0].status != "未售出"
+        assert records == []
+        assert store.list_record_keys_by_image_url("a.jpg") == []
+        assert store.list_record_keys_by_source_moment_id("sns_001") == []
+    finally:
+        shutil.rmtree(temp_root, ignore_errors=True)
+
+
+def test_incomplete_snapshot_keeps_missing_records():
+    temp_root = _make_temp_root(f"pytest-storage-partial-{uuid.uuid4().hex}-")
+
+    try:
+        store = InventoryStore(temp_root / "inventory.db")
+        store.initialize()
+        store.upsert_records(
+            [build_record("record-1")],
+            fetched_moment_ids={"sns_001"},
+            sync_started_at="2026-04-20T12:00:00+08:00",
+        )
+
+        newer_record = InventoryRecord(
+            record_key="record-2",
+            remark_name="user-b",
+            wxid="wxid_456",
+            published_at=datetime.fromisoformat("2026-04-21T10:00:00+08:00"),
+            model="wx300",
+            price=900,
+            serial_no="B22",
+            status="active",
+            image_urls=["b.jpg"],
+            video_urls=[],
+            content_text="wx300 900 B22",
+            source_moment_ids=["sns_002"],
+        )
+        store.upsert_records(
+            [newer_record],
+            fetched_moment_ids={"sns_002"},
+            sync_started_at="2026-04-21T12:00:00+08:00",
+            snapshot_complete=False,
+        )
+
+        records = {record.record_key: record for record in store.list_all_records()}
+
+        assert set(records) == {"record-1", "record-2"}
+        assert store.list_record_keys_by_image_url("a.jpg") == ["record-1"]
+        assert store.list_record_keys_by_source_moment_id("sns_001") == ["record-1"]
     finally:
         shutil.rmtree(temp_root, ignore_errors=True)
 

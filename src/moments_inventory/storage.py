@@ -124,11 +124,15 @@ class InventoryStore:
         )
 
     def upsert_records(
-        self, records: list[InventoryRecord], fetched_moment_ids: set[str], sync_started_at: str
+        self,
+        records: list[InventoryRecord],
+        fetched_moment_ids: set[str],
+        sync_started_at: str,
+        snapshot_complete: bool = True,
     ) -> None:
         self.initialize()
         deleted_by_merge = 0
-        marked_as_sold = 0
+        deleted_missing = 0
         with self._connect() as conn:
             for record in records:
                 first_seen = conn.execute(
@@ -197,17 +201,18 @@ class InventoryStore:
                     )
                     deleted_by_merge += 1
 
-            all_rows = conn.execute(
-                "select record_key, source_moment_ids from inventory_records"
-            ).fetchall()
-            for record_key, source_moment_ids_json in all_rows:
-                source_ids = set(json.loads(source_moment_ids_json))
-                if source_ids and source_ids.isdisjoint(fetched_moment_ids):
-                    conn.execute(
-                        "update inventory_records set status = ? where record_key = ?",
-                        (DEFAULT_SOLD_STATUS, record_key),
-                    )
-                    marked_as_sold += 1
+            if snapshot_complete:
+                all_rows = conn.execute(
+                    "select record_key, source_moment_ids from inventory_records"
+                ).fetchall()
+                for record_key, source_moment_ids_json in all_rows:
+                    source_ids = set(json.loads(source_moment_ids_json))
+                    if source_ids and source_ids.isdisjoint(fetched_moment_ids):
+                        conn.execute(
+                            "delete from inventory_records where record_key = ?",
+                            (record_key,),
+                        )
+                        deleted_missing += 1
 
             orphan_keys = [
                 row[0]
@@ -223,7 +228,8 @@ class InventoryStore:
             extra={
                 "record_count": len(records),
                 "deleted_by_merge": deleted_by_merge,
-                "marked_as_sold": marked_as_sold,
+                "deleted_missing": deleted_missing,
+                "snapshot_complete": snapshot_complete,
             },
         )
 

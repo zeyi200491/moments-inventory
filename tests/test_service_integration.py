@@ -10,8 +10,9 @@ import pytest
 import moments_inventory.weflow_client as weflow_module
 from moments_inventory.cli import build_parser
 from moments_inventory.config import load_settings
-from moments_inventory.models import RawMoment
+from moments_inventory.models import InventoryRecord, RawMoment
 from moments_inventory.service import SyncService
+from moments_inventory.storage import InventoryStore
 from moments_inventory.weflow_client import WeFlowClient, WeFlowRequestError, parse_timeline_response
 
 
@@ -824,5 +825,93 @@ paths:
 
         assert len(records) == 1
         assert records[0].wxid == "wxid_2"
+    finally:
+        shutil.rmtree(temp_root, ignore_errors=True)
+
+
+def test_sync_service_does_not_delete_existing_records_when_snapshot_is_incomplete():
+    temp_root = _make_temp_root("pytest-service-no-delete-on-partial-temp-")
+
+    try:
+        model_file = temp_root / "models.txt"
+        model_file.write_text("canon ixus95\ncanon a2400\n", encoding="utf-8")
+        config_file = temp_root / "config.yaml"
+        config_file.write_text(
+            f"""
+weflow:
+  base_url: "http://127.0.0.1:5030"
+  timeout_seconds: 20
+task:
+  days: 30
+  merge_window_minutes: 10
+  output_dir: "{(temp_root / 'output').as_posix()}"
+targets:
+  - remark_name: "user-1"
+    wxid: "wxid_1"
+  - remark_name: "user-2"
+    wxid: "wxid_2"
+rules:
+  required_fields:
+    - model
+    - price
+    - serial_no
+paths:
+  sqlite_db: "{(temp_root / 'inventory.db').as_posix()}"
+  model_dict: "{model_file.as_posix()}"
+""",
+            encoding="utf-8",
+        )
+        settings = load_settings(config_file)
+        store = InventoryStore(settings.paths.sqlite_db)
+        store.initialize()
+        store.upsert_records(
+            [
+                InventoryRecord(
+                    record_key="existing-record",
+                    remark_name="user-1",
+                    wxid="wxid_1",
+                    published_at=datetime.fromisoformat("2026-04-25T20:25:40+08:00"),
+                    model="canon a2400",
+                    price=799,
+                    serial_no=None,
+                    status="active",
+                    image_urls=["old-a.jpg"],
+                    video_urls=[],
+                    content_text="canon a2400 799",
+                    source_moment_ids=["m1"],
+                )
+            ],
+            fetched_moment_ids={"m1"},
+            sync_started_at="2026-04-26T12:00:00+08:00",
+        )
+
+        class PartiallyFailingClient:
+            def resolve_usernames(self, targets):
+                return ["wxid_1", "wxid_2"]
+
+            def fetch_timeline(self, usernames, start, end):
+                if usernames == ["wxid_1"]:
+                    raise RuntimeError("temporary fetch failure")
+                published_at = datetime.fromisoformat("2026-04-26T10:00:00+08:00")
+                return [
+                    RawMoment(
+                        "m3",
+                        "user-2",
+                        "wxid_2",
+                        published_at,
+                        "568 canon ixus95 A12",
+                        ["b.jpg"],
+                        [],
+                    )
+                ]
+
+        service = SyncService(settings=settings, client=PartiallyFailingClient())
+        records = service.sync(now=datetime.fromisoformat("2026-04-27T12:00:00+08:00"))
+        stored_records = {record.record_key: record for record in service.load_records()}
+
+        assert len(records) == 1
+        assert records[0].wxid == "wxid_2"
+        assert "existing-record" in stored_records
+        assert any(record.wxid == "wxid_2" for record in stored_records.values())
     finally:
         shutil.rmtree(temp_root, ignore_errors=True)

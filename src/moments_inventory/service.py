@@ -36,6 +36,7 @@ class SyncService:
         )
         usernames = self._client.resolve_usernames(self._settings.targets)
         moments = []
+        snapshot_complete = True
         for username in usernames:
             try:
                 moments.extend(
@@ -46,6 +47,7 @@ class SyncService:
                     )
                 )
             except Exception:
+                snapshot_complete = False
                 LOGGER.exception("sync fetch failed", extra={"username": username})
         records = deduplicate_and_merge(
             moments,
@@ -58,6 +60,7 @@ class SyncService:
             records=records,
             fetched_moment_ids=fetched_moment_ids,
             sync_started_at=current_time.isoformat(),
+            snapshot_complete=snapshot_complete,
         )
         LOGGER.info(
             "sync completed",
@@ -65,6 +68,7 @@ class SyncService:
                 "username_count": len(usernames),
                 "moment_count": len(moments),
                 "record_count": len(records),
+                "snapshot_complete": snapshot_complete,
             },
         )
         return records
