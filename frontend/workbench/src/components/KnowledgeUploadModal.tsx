@@ -6,7 +6,7 @@ const LIBRARY_OPTIONS: Array<{
   value: KnowledgeLibraryType;
   label: string;
   hint: string;
-  accept: ".md" | ".xlsx";
+  accept: ".md" | ".xlsx" | ".xlsx,.xls";
 }> = [
   {
     value: "master_rule_bundle",
@@ -17,14 +17,8 @@ const LIBRARY_OPTIONS: Array<{
   {
     value: "product_inventory_excel",
     label: "商品库存库",
-    hint: "支持 Excel，全量覆盖当前商品库存数据。",
-    accept: ".xlsx",
-  },
-  {
-    value: "product_material_excel",
-    label: "商品素材库",
-    hint: "支持 Excel，按每行一条素材关系入库。",
-    accept: ".xlsx",
+    hint: "支持 .xlsx 和 .xls，上传后会同时更新库存信息与素材信息。",
+    accept: ".xlsx,.xls",
   },
   {
     value: "shipping_info_excel",
@@ -35,7 +29,7 @@ const LIBRARY_OPTIONS: Array<{
   {
     value: "style_sample_md",
     label: "风格样本库",
-    hint: "支持 Markdown，只影响语气，不影响规则判断。",
+    hint: "支持 Markdown，只影响语气，不参与业务规则判断。",
     accept: ".md",
   },
 ];
@@ -91,7 +85,7 @@ export function KnowledgeUploadModal({
           <span>业务库类型</span>
           <select
             className="text-input"
-            value={selectedLibraryType}
+            value={currentOption.value}
             onChange={(event) => onLibraryTypeChange(event.target.value as KnowledgeLibraryType)}
             disabled={importLoading}
             aria-label="业务库类型"

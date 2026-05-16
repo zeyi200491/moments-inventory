@@ -126,6 +126,28 @@ def test_ingest_product_inventory_excel_parses_products_from_bytes(tmp_path: Pat
             manual_review_needed=False,
         )
     ]
-    assert result.knowledge_chunks == []
+    assert len(result.knowledge_chunks) == 1
+    assert result.knowledge_chunks[0].knowledge_tier == "product_material"
+    assert result.knowledge_chunks[0].category == "商品素材"
+    assert "验机视频" in result.knowledge_chunks[0].text
+    assert "media/record-a/video-1.mp4" in result.knowledge_chunks[0].text
+    assert result.imported_count == 1
+    assert result.skipped_count == 0
+
+
+def test_ingest_style_sample_markdown_builds_style_sample_chunk():
+    markdown_bytes = "语气自然一点，像真人聊天。多用短句，别太像客服模板。".encode("utf-8")
+
+    result = ingest_library_bytes(
+        library_type="style_sample_md",
+        filename="style.md",
+        payload=markdown_bytes,
+        chunk_size=80,
+        chunk_overlap=10,
+    )
+
+    assert len(result.knowledge_chunks) == 1
+    assert result.knowledge_chunks[0].knowledge_tier == "style_sample"
+    assert result.knowledge_chunks[0].category == "回复风格"
     assert result.imported_count == 1
     assert result.skipped_count == 0

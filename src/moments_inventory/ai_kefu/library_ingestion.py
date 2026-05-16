@@ -6,7 +6,10 @@ from moments_inventory.ai_kefu.library_ingestion_excel import (
     ingest_product_inventory_excel,
     ingest_product_material_excel,
 )
-from moments_inventory.ai_kefu.library_ingestion_markdown import split_master_rule_bundle_markdown
+from moments_inventory.ai_kefu.library_ingestion_markdown import (
+    split_master_rule_bundle_markdown,
+    split_style_sample_markdown,
+)
 from moments_inventory.ai_kefu.models import KnowledgeChunk, LibraryType, ProductRecord
 
 
@@ -29,7 +32,7 @@ def ingest_library_bytes(
 ) -> LibraryImportResult:
     if library_type == "master_rule_bundle":
         knowledge_chunks = split_master_rule_bundle_markdown(
-            markdown_text=payload.decode("utf-8"),
+            markdown_text=_decode_markdown_payload(payload, filename, "主规则文件"),
             chunk_size=chunk_size,
             chunk_overlap=chunk_overlap,
         )
@@ -48,14 +51,34 @@ def ingest_library_bytes(
         )
 
     if library_type == "product_inventory_excel":
-        product_records = ingest_product_inventory_excel(payload)
+        result = ingest_product_inventory_excel(payload)
         return LibraryImportResult(
             library_type=library_type,
-            product_records=product_records,
-            imported_count=len(product_records),
+            knowledge_chunks=result.knowledge_chunks,
+            product_records=result.product_records,
+            imported_count=len(result.product_records),
         )
 
-    if library_type in {"shipping_info_excel", "style_sample_md"}:
+    if library_type == "style_sample_md":
+        knowledge_chunks = split_style_sample_markdown(
+            markdown_text=_decode_markdown_payload(payload, filename, "风格样本库文件"),
+            chunk_size=chunk_size,
+            chunk_overlap=chunk_overlap,
+        )
+        return LibraryImportResult(
+            library_type=library_type,
+            knowledge_chunks=knowledge_chunks,
+            imported_count=len(knowledge_chunks),
+        )
+
+    if library_type == "shipping_info_excel":
         raise NotImplementedError(f"业务库类型 {library_type} 暂未实现解析，无法导入文件 {filename}")
 
-    raise ValueError(f"不支持的业务库类型: {library_type} ({filename})")
+    raise ValueError(f"不支持的业务库类型 {library_type}（{filename}）")
+
+
+def _decode_markdown_payload(payload: bytes, filename: str, library_label: str) -> str:
+    try:
+        return payload.decode("utf-8")
+    except UnicodeDecodeError as exc:
+        raise ValueError(f"{library_label}必须是 UTF-8 编码的 Markdown：{filename}") from exc
