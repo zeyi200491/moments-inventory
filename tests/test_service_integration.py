@@ -133,6 +133,108 @@ def test_parse_timeline_response_prefers_proxy_url_for_image_posts():
     ]
 
 
+def test_parse_timeline_response_skips_deleted_items_with_boolean_flags():
+    payload = {
+        "success": True,
+        "count": 3,
+        "timeline": [
+            {
+                "id": "deleted-1",
+                "username": "wxid_demo",
+                "nickname": "demo",
+                "createTime": 1777293411,
+                "contentDesc": "should be skipped",
+                "media": [],
+                "deleted": True,
+            },
+            {
+                "id": "deleted-2",
+                "username": "wxid_demo",
+                "nickname": "demo",
+                "createTime": 1777293412,
+                "contentDesc": "should also be skipped",
+                "media": [],
+                "isDeleted": True,
+            },
+            {
+                "id": "active-1",
+                "username": "wxid_demo",
+                "nickname": "demo",
+                "createTime": 1777293413,
+                "contentDesc": "should be kept",
+                "media": [],
+            },
+        ],
+    }
+
+    moments = parse_timeline_response(payload)
+
+    assert [moment.moment_id for moment in moments] == ["active-1"]
+
+
+def test_parse_timeline_response_skips_deleted_items_with_status_fields():
+    payload = {
+        "success": True,
+        "count": 5,
+        "timeline": [
+            {
+                "id": "deleted-status",
+                "username": "wxid_demo",
+                "nickname": "demo",
+                "createTime": 1777293411,
+                "contentDesc": "deleted by status",
+                "media": [],
+                "status": "deleted",
+            },
+            {
+                "id": "removed-status",
+                "username": "wxid_demo",
+                "nickname": "demo",
+                "createTime": 1777293412,
+                "contentDesc": "should be kept when removed",
+                "media": [],
+                "snsStatus": "removed",
+            },
+            {
+                "id": "hidden-status",
+                "username": "wxid_demo",
+                "nickname": "demo",
+                "createTime": 1777293413,
+                "contentDesc": "should be kept when only invisible",
+                "media": [],
+                "visible": 0,
+            },
+            {
+                "id": "active-status",
+                "username": "wxid_demo",
+                "nickname": "demo",
+                "createTime": 1777293414,
+                "contentDesc": "active",
+                "media": [],
+                "status": "published",
+                "visible": 1,
+            },
+            {
+                "id": "deleted-sns-status",
+                "username": "wxid_demo",
+                "nickname": "demo",
+                "createTime": 1777293415,
+                "contentDesc": "deleted by snsStatus",
+                "media": [],
+                "snsStatus": "deleted",
+            },
+        ],
+    }
+
+    moments = parse_timeline_response(payload)
+
+    assert [moment.moment_id for moment in moments] == [
+        "removed-status",
+        "hidden-status",
+        "active-status",
+    ]
+
+
 class FakeClient:
     def resolve_usernames(self, targets):
         return ["wxid_123"]

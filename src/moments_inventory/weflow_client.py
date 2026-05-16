@@ -68,10 +68,27 @@ def _pick_image_url(media: dict) -> str | None:
     )
 
 
+def _is_deleted_timeline_item(item: dict) -> bool:
+    if item.get("deleted") is True or item.get("isDeleted") is True:
+        return True
+
+    status = str(item.get("status") or "").strip().lower()
+    if status == "deleted":
+        return True
+
+    sns_status = str(item.get("snsStatus") or "").strip().lower()
+    if sns_status == "deleted":
+        return True
+
+    return False
+
+
 def parse_timeline_response(payload: dict) -> list[RawMoment]:
     items = payload.get("data") or payload.get("timeline") or []
     moments: list[RawMoment] = []
     for item in items:
+        if _is_deleted_timeline_item(item):
+            continue
         if "create_time" in item:
             published_at = datetime.fromisoformat(item["create_time"])
             content = item.get("content", "")
