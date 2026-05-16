@@ -13,6 +13,7 @@ from moments_inventory.ai_kefu.models import KnowledgeTier
 from moments_inventory.ai_kefu.products import import_products_from_xlsx
 from moments_inventory.ai_kefu.settings import load_ai_kefu_settings
 from moments_inventory.ai_kefu.storage import SQLiteKefuRepository
+from moments_inventory.batch_run import BatchRunService
 from moments_inventory.config import Settings, load_settings
 from moments_inventory.exporter import export_records
 from moments_inventory.logging_utils import configure_logging
@@ -39,6 +40,16 @@ def build_parser() -> argparse.ArgumentParser:
         "--export",
         action="store_true",
         help="预热达到导出条件后继续同步并导出 Excel",
+    )
+
+    batch_parser = subparsers.add_parser(
+        "batch-run",
+        help="按批次执行预热、抓取朋友圈并可选导出 Excel",
+    )
+    batch_parser.add_argument(
+        "--export",
+        action="store_true",
+        help="大执行成功后导出当前在售 Excel",
     )
 
     kefu_parser = subparsers.add_parser("kefu-dev", help="启动 AI 客服本地开发后端")
@@ -78,13 +89,40 @@ def build_parser() -> argparse.ArgumentParser:
     return parser
 
 
-def _run_export(service: SyncService, settings: Settings) -> None:
+def _export_loaded_records(records: list[object], settings: Settings) -> None:
     export_records(
-        service.load_records(),
+        records,
         settings.task.output_dir,
         base_url=settings.weflow.base_url,
         access_token=settings.weflow.access_token,
     )
+
+
+def _run_export(service: SyncService, settings: Settings) -> None:
+    _export_loaded_records(service.load_records(), settings)
+
+
+def _build_batch_warmup_runner(settings: Settings):
+    if not settings.warmup.enabled:
+        return None
+
+    controller = PywinautoKeyboardController()
+    adapter = WeChatWarmupAdapter(settings=settings.warmup, controller=controller)
+
+    def warmup_batch(batch_targets):
+        runner = WarmupRunner(
+            settings=settings.warmup,
+            targets=batch_targets,
+            adapter=adapter,
+            output_dir=settings.task.output_dir,
+        )
+        result = runner.run()
+        if result.aborted:
+            raise RuntimeError("batch warmup aborted")
+        if settings.batch_run.stop_on_batch_failure and result.failure_count > 0:
+            raise RuntimeError("batch warmup reported failures")
+
+    return warmup_batch
 
 
 def _parse_knowledge_tags(raw_tags: str) -> list[str]:
@@ -197,6 +235,19 @@ def main(argv: list[str] | None = None) -> int:
             service = SyncService(settings)
             service.sync()
             _run_export(service, settings)
+        return 0
+
+    if args.command == "batch-run":
+        if not settings.batch_run.enabled:
+            parser.error("batch_run 未启用，请先在配置中启用 batch_run.enabled")
+
+        service = BatchRunService(
+            settings,
+            warmup_runner=_build_batch_warmup_runner(settings),
+        )
+        records = service.run()
+        if args.export:
+            _export_loaded_records(records, settings)
         return 0
 
     return 1
