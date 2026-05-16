@@ -94,6 +94,69 @@ class InventoryStore:
             conn.execute(
                 "create index if not exists idx_record_source_moments_moment_id on record_source_moments(moment_id)"
             )
+            conn.execute(
+                """
+                create table if not exists inventory_staging_records (
+                  run_id text not null,
+                  batch_index integer not null,
+                  record_key text not null,
+                  remark_name text,
+                  wxid text,
+                  published_at text not null,
+                  model text,
+                  price integer,
+                  serial_no text,
+                  status text not null,
+                  image_urls text not null,
+                  video_urls text not null,
+                  content_text text not null,
+                  note text not null,
+                  needs_manual integer not null,
+                  source_moment_ids text not null,
+                  primary key (run_id, record_key)
+                )
+                """
+            )
+            conn.execute(
+                "create index if not exists idx_inventory_staging_records_run_id_batch_index "
+                "on inventory_staging_records(run_id, batch_index)"
+            )
+
+    def _record_to_row(self, record: InventoryRecord) -> tuple[object, ...]:
+        return (
+            record.record_key,
+            record.remark_name,
+            record.wxid,
+            record.published_at.isoformat(),
+            record.model,
+            record.price,
+            record.serial_no,
+            record.status or DEFAULT_ACTIVE_STATUS,
+            json.dumps(record.image_urls, ensure_ascii=False),
+            json.dumps(record.video_urls, ensure_ascii=False),
+            record.content_text,
+            record.note,
+            int(record.needs_manual),
+            json.dumps(record.source_moment_ids, ensure_ascii=False),
+        )
+
+    def _row_to_record(self, row: tuple[object, ...]) -> InventoryRecord:
+        return InventoryRecord(
+            record_key=row[0],
+            remark_name=row[1],
+            wxid=row[2],
+            published_at=datetime.fromisoformat(row[3]),
+            model=row[4],
+            price=row[5],
+            serial_no=row[6],
+            status=row[7],
+            image_urls=json.loads(row[8]),
+            video_urls=json.loads(row[9]),
+            content_text=row[10],
+            note=row[11],
+            needs_manual=bool(row[12]),
+            source_moment_ids=json.loads(row[13]),
+        )
 
     def _replace_detail_rows(
         self,
@@ -163,20 +226,7 @@ class InventoryStore:
                       last_seen_at = excluded.last_seen_at
                     """,
                     (
-                        record.record_key,
-                        record.remark_name,
-                        record.wxid,
-                        record.published_at.isoformat(),
-                        record.model,
-                        record.price,
-                        record.serial_no,
-                        record.status or DEFAULT_ACTIVE_STATUS,
-                        json.dumps(record.image_urls, ensure_ascii=False),
-                        json.dumps(record.video_urls, ensure_ascii=False),
-                        record.content_text,
-                        record.note,
-                        int(record.needs_manual),
-                        json.dumps(record.source_moment_ids, ensure_ascii=False),
+                        *self._record_to_row(record),
                         first_seen[0] if first_seen else sync_started_at,
                         sync_started_at,
                     ),
@@ -245,25 +295,57 @@ class InventoryStore:
                 """
             ).fetchall()
 
-        return [
-            InventoryRecord(
-                record_key=row[0],
-                remark_name=row[1],
-                wxid=row[2],
-                published_at=datetime.fromisoformat(row[3]),
-                model=row[4],
-                price=row[5],
-                serial_no=row[6],
-                status=row[7],
-                image_urls=json.loads(row[8]),
-                video_urls=json.loads(row[9]),
-                content_text=row[10],
-                note=row[11],
-                needs_manual=bool(row[12]),
-                source_moment_ids=json.loads(row[13]),
+        return [self._row_to_record(row) for row in rows]
+
+    def stage_records(
+        self,
+        run_id: str,
+        batch_index: int,
+        records: list[InventoryRecord],
+    ) -> None:
+        self.initialize()
+        with self._connect() as conn:
+            conn.executemany(
+                """
+                insert into inventory_staging_records (
+                  run_id, batch_index, record_key, remark_name, wxid, published_at, model,
+                  price, serial_no, status, image_urls, video_urls, content_text, note,
+                  needs_manual, source_moment_ids
+                ) values (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                on conflict(run_id, record_key) do update set
+                  batch_index = excluded.batch_index,
+                  remark_name = excluded.remark_name,
+                  wxid = excluded.wxid,
+                  published_at = excluded.published_at,
+                  model = excluded.model,
+                  price = excluded.price,
+                  serial_no = excluded.serial_no,
+                  status = excluded.status,
+                  image_urls = excluded.image_urls,
+                  video_urls = excluded.video_urls,
+                  content_text = excluded.content_text,
+                  note = excluded.note,
+                  needs_manual = excluded.needs_manual,
+                  source_moment_ids = excluded.source_moment_ids
+                """,
+                [(run_id, batch_index, *self._record_to_row(record)) for record in records],
             )
-            for row in rows
-        ]
+
+    def list_staged_records(self, run_id: str) -> list[InventoryRecord]:
+        self.initialize()
+        with self._connect() as conn:
+            rows = conn.execute(
+                """
+                select record_key, remark_name, wxid, published_at, model, price, serial_no,
+                       status, image_urls, video_urls, content_text, note, needs_manual,
+                       source_moment_ids
+                from inventory_staging_records
+                where run_id = ?
+                order by batch_index asc, published_at asc, record_key asc
+                """,
+                (run_id,),
+            ).fetchall()
+        return [self._row_to_record(row) for row in rows]
 
     def _list_record_keys_by_detail(
         self,

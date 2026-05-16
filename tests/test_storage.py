@@ -228,3 +228,30 @@ def test_store_rejects_unknown_detail_table_or_column():
             )
     finally:
         shutil.rmtree(temp_root, ignore_errors=True)
+
+
+def test_stage_records_are_isolated_by_run_id():
+    temp_root = _make_temp_root(f"pytest-storage-staging-{uuid.uuid4().hex}-")
+
+    try:
+        store = InventoryStore(temp_root / "inventory.db")
+        store.initialize()
+
+        run_one_record = build_record("record-1")
+        run_two_record = build_record("record-1", status="已售出")
+
+        store.stage_records("run-1", 0, [run_one_record])
+        store.stage_records("run-2", 1, [run_two_record])
+
+        run_one_records = store.list_staged_records("run-1")
+        run_two_records = store.list_staged_records("run-2")
+
+        assert len(run_one_records) == 1
+        assert run_one_records[0].record_key == "record-1"
+        assert run_one_records[0].status == build_record("record-1").status
+
+        assert len(run_two_records) == 1
+        assert run_two_records[0].record_key == "record-1"
+        assert run_two_records[0].status == "已售出"
+    finally:
+        shutil.rmtree(temp_root, ignore_errors=True)

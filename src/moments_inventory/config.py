@@ -56,6 +56,15 @@ class WarmupSettings:
 
 
 @dataclass(slots=True)
+class BatchRunSettings:
+    enabled: bool = False
+    batch_size: int = 25
+    stop_on_batch_failure: bool = True
+    export_only_when_all_batches_succeed: bool = True
+    keep_batch_temp_reports: bool = True
+
+
+@dataclass(slots=True)
 class Settings:
     weflow: WeFlowSettings
     task: TaskSettings
@@ -63,6 +72,7 @@ class Settings:
     rules: RuleSettings
     paths: PathSettings
     warmup: WarmupSettings = field(default_factory=WarmupSettings)
+    batch_run: BatchRunSettings = field(default_factory=BatchRunSettings)
     model_keywords: list[str] = field(default_factory=list)
 
 
@@ -79,6 +89,14 @@ _WARMUP_INT_FIELDS = {
 }
 _WARMUP_ALLOWED_KEYS = _WARMUP_BOOL_FIELDS | _WARMUP_INT_FIELDS | {"start_page"}
 _WARMUP_ALLOWED_START_PAGES = {"contacts", "chat_list"}
+_BATCH_RUN_BOOL_FIELDS = {
+    "enabled",
+    "stop_on_batch_failure",
+    "export_only_when_all_batches_succeed",
+    "keep_batch_temp_reports",
+}
+_BATCH_RUN_INT_FIELDS = {"batch_size"}
+_BATCH_RUN_ALLOWED_KEYS = _BATCH_RUN_BOOL_FIELDS | _BATCH_RUN_INT_FIELDS
 
 
 def _expect_mapping(value: object, path: str) -> dict:
@@ -207,6 +225,31 @@ def _parse_warmup_settings(raw_warmup: object | None) -> WarmupSettings:
     return WarmupSettings(**parsed_values)
 
 
+def _parse_batch_run_settings(raw_batch_run: object | None) -> BatchRunSettings:
+    defaults = BatchRunSettings()
+    batch_run_raw = _expect_mapping(
+        {} if raw_batch_run is None else raw_batch_run,
+        "batch_run",
+    )
+    _validate_keys("batch_run", batch_run_raw, set(), _BATCH_RUN_ALLOWED_KEYS)
+
+    parsed_values: dict[str, object] = {}
+
+    for field_name in sorted(_BATCH_RUN_BOOL_FIELDS):
+        parsed_values[field_name] = _expect_bool(
+            batch_run_raw.get(field_name, getattr(defaults, field_name)),
+            f"batch_run.{field_name}",
+        )
+
+    for field_name in sorted(_BATCH_RUN_INT_FIELDS):
+        parsed_values[field_name] = _expect_positive_int(
+            batch_run_raw.get(field_name, getattr(defaults, field_name)),
+            f"batch_run.{field_name}",
+        )
+
+    return BatchRunSettings(**parsed_values)
+
+
 def load_settings(path: str | Path) -> Settings:
     config_path = Path(path)
     raw = yaml.safe_load(config_path.read_text(encoding="utf-8"))
@@ -215,7 +258,7 @@ def load_settings(path: str | Path) -> Settings:
         raw_path := "config",
         raw,
         {"weflow", "task", "targets", "rules", "paths"},
-        {"warmup"},
+        {"warmup", "batch_run"},
     )
     base_dir = config_path.parent.resolve()
 
@@ -261,5 +304,6 @@ def load_settings(path: str | Path) -> Settings:
         ),
         paths=PathSettings(sqlite_db=sqlite_db, model_dict=str(model_path)),
         warmup=_parse_warmup_settings(raw.get("warmup")),
+        batch_run=_parse_batch_run_settings(raw.get("batch_run")),
         model_keywords=_read_model_keywords(model_path),
     )

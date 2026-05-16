@@ -12,11 +12,15 @@ def _make_temp_root(prefix: str) -> Path:
     return Path(tempfile.mkdtemp(prefix=prefix))
 
 
-def _write_config_file(temp_root: Path, warmup_yaml: str = "") -> Path:
+def _write_config_file(
+    temp_root: Path,
+    warmup_yaml: str = "",
+    extra_yaml: str = "",
+) -> Path:
     config_file = temp_root / "config.yaml"
     model_file = temp_root / "models.txt"
     model_file.write_text("ixus 95\n", encoding="utf-8")
-    config_file.write_text(
+    config_text = (
         """
 weflow:
   base_url: "http://127.0.0.1:5030"
@@ -37,11 +41,13 @@ paths:
   sqlite_db: "./data/inventory.db"
   model_dict: "MODELS_FILE"
 WARMUP_BLOCK
+EXTRA_BLOCK
         """
         .replace("MODELS_FILE", str(model_file).replace("\\", "/"))
-        .replace("WARMUP_BLOCK", warmup_yaml),
-        encoding="utf-8",
+        .replace("WARMUP_BLOCK", warmup_yaml)
+        .replace("EXTRA_BLOCK", extra_yaml)
     )
+    config_file.write_text(config_text, encoding="utf-8")
     return config_file
 
 
@@ -121,5 +127,37 @@ def test_load_settings_uses_default_warmup_when_section_missing():
         assert settings.warmup.max_consecutive_failures == 3
         assert settings.warmup.min_success_count == 1
         assert settings.warmup.auto_export_on_success is True
+        assert settings.batch_run.enabled is False
+        assert settings.batch_run.batch_size == 25
+        assert settings.batch_run.stop_on_batch_failure is True
+        assert settings.batch_run.export_only_when_all_batches_succeed is True
+        assert settings.batch_run.keep_batch_temp_reports is True
+    finally:
+        shutil.rmtree(temp_root, ignore_errors=True)
+
+
+def test_load_settings_reads_batch_run_config():
+    temp_root = _make_temp_root(f"pytest-batch-run-{uuid.uuid4().hex}-")
+
+    try:
+        config_file = _write_config_file(
+            temp_root,
+            extra_yaml="""
+batch_run:
+  enabled: true
+  batch_size: 10
+  stop_on_batch_failure: false
+  export_only_when_all_batches_succeed: false
+  keep_batch_temp_reports: false
+            """,
+        )
+
+        settings = load_settings(config_file)
+
+        assert settings.batch_run.enabled is True
+        assert settings.batch_run.batch_size == 10
+        assert settings.batch_run.stop_on_batch_failure is False
+        assert settings.batch_run.export_only_when_all_batches_succeed is False
+        assert settings.batch_run.keep_batch_temp_reports is False
     finally:
         shutil.rmtree(temp_root, ignore_errors=True)
