@@ -43,7 +43,7 @@ def _read_sheet_rows(workbook_path: Path) -> list[tuple]:
     return rows
 
 
-def test_export_records_creates_current_and_history_workbooks():
+def test_export_records_creates_only_current_workbook():
     temp_root = _make_temp_root(f"pytest-export-{uuid.uuid4().hex}-")
 
     try:
@@ -66,13 +66,14 @@ def test_export_records_creates_current_and_history_workbooks():
             )
         ]
 
-        current_path, history_path = export_records(records, temp_root)
+        current_path = export_records(records, temp_root)
 
         current_rows = _read_sheet_rows(current_path)
-        history_rows = _read_sheet_rows(history_path)
 
         assert current_rows[1][2] == "未售出"
-        assert history_rows[1][0] == "ixus 95"
+        assert current_rows[1][0] == "ixus 95"
+        assert current_path.name == "当前在售库.xlsx"
+        assert not (temp_root / "历史总库.xlsx").exists()
     finally:
         shutil.rmtree(temp_root, ignore_errors=True)
 
@@ -100,10 +101,61 @@ def test_export_records_treats_unsold_status_as_current():
             )
         ]
 
-        current_path, _ = export_records(records, temp_root)
+        current_path = export_records(records, temp_root)
         current_rows = _read_sheet_rows(current_path)
 
         assert current_rows[1][0] == "ixus 80"
+    finally:
+        shutil.rmtree(temp_root, ignore_errors=True)
+
+
+def test_export_records_only_includes_current_status_records_in_workbook():
+    temp_root = _make_temp_root(f"pytest-export-mixed-status-{uuid.uuid4().hex}-")
+
+    try:
+        current_status = next(iter(exporter.CURRENT_STATUSES))
+        records = [
+            InventoryRecord(
+                record_key="record-current",
+                remark_name="user-a",
+                wxid="wxid_123",
+                published_at=datetime.fromisoformat("2026-04-20T10:00:00+08:00"),
+                model="ixus current",
+                price=850,
+                serial_no="A12",
+                status=current_status,
+                image_urls=[],
+                video_urls=[],
+                content_text="ixus current 850 A12",
+                note="",
+                needs_manual=False,
+                source_moment_ids=["sns_001"],
+            ),
+            InventoryRecord(
+                record_key="record-sold",
+                remark_name="user-b",
+                wxid="wxid_456",
+                published_at=datetime.fromisoformat("2026-04-21T10:00:00+08:00"),
+                model="ixus sold",
+                price=680,
+                serial_no="B18",
+                status="已售出",
+                image_urls=[],
+                video_urls=[],
+                content_text="ixus sold 680 B18",
+                note="",
+                needs_manual=False,
+                source_moment_ids=["sns_002"],
+            ),
+        ]
+
+        current_path = export_records(records, temp_root)
+        current_rows = _read_sheet_rows(current_path)
+
+        assert len(current_rows) == 2
+        assert current_rows[1][0] == "ixus current"
+        assert current_rows[1][2] == current_status
+        assert all("ixus sold" not in row for row in current_rows[1:])
     finally:
         shutil.rmtree(temp_root, ignore_errors=True)
 
@@ -160,7 +212,7 @@ def test_export_records_exports_media_files_and_writes_local_paths():
             )
         ]
 
-        current_path, history_path = exporter.export_records(
+        current_path = exporter.export_records(
             records,
             temp_root,
             base_url="http://127.0.0.1:5031",
@@ -170,7 +222,7 @@ def test_export_records_exports_media_files_and_writes_local_paths():
         rows = _read_sheet_rows(current_path)
         assert rows[1][7] == "media/record-1/image-1.jpg\nmedia/record-1/image-2.png"
         assert rows[1][8] == "media/record-1/video-1.mp4"
-        assert history_path.exists()
+        assert not (temp_root / "历史总库.xlsx").exists()
         assert (temp_root / "media" / "record-1" / "image-1.jpg").read_bytes() == b"image-a"
         assert (temp_root / "media" / "record-1" / "image-2.png").read_bytes() == b"image-b"
         assert (temp_root / "media" / "record-1" / "video-1.mp4").read_bytes() == b"fake-video"
@@ -212,7 +264,7 @@ def test_export_records_uses_fixed_failure_text_when_media_download_fails():
             )
         ]
 
-        current_path, _ = export_records(records, temp_root)
+        current_path = export_records(records, temp_root)
         rows = _read_sheet_rows(current_path)
 
         assert rows[1][7] == "图片未成功下载"
@@ -245,7 +297,7 @@ def test_export_records_filters_xml_control_characters():
             )
         ]
 
-        current_path, _ = export_records(records, temp_root)
+        current_path = export_records(records, temp_root)
         rows = _read_sheet_rows(current_path)
 
         assert rows[1][9] == "helloworld"

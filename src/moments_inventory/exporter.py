@@ -304,19 +304,15 @@ def export_records(
     output_dir: str | Path,
     base_url: str | None = None,
     access_token: str | None = None,
-) -> tuple[Path, Path]:
+) -> Path:
     target_dir = Path(output_dir)
     target_dir.mkdir(parents=True, exist_ok=True)
     media_root = target_dir / "media"
     media_root.mkdir(parents=True, exist_ok=True)
     current_path = target_dir / "当前在售库.xlsx"
-    history_path = target_dir / "历史总库.xlsx"
 
     media_paths = _export_media_files(records, media_root, base_url, access_token)
     current_records = [record for record in records if record.status in CURRENT_STATUSES]
     current_rows = _to_rows(current_records, media_paths)
-    history_rows = _to_rows(records, media_paths)
-
     _write_workbook(current_path, current_rows)
-    _write_workbook(history_path, history_rows)
-    return current_path, history_path
+    return current_path
