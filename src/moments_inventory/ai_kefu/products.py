@@ -47,6 +47,20 @@ _KNOWN_BRANDS: tuple[tuple[str, tuple[str, ...]], ...] = (
 )
 _FUNCTIONAL_KEYWORDS = ("功能正常", "一切正常", "全部正常", "都正常")
 _FAILED_MEDIA_TEXT = ("未成功下载", "下载失败")
+_HEADER_ALIASES: dict[str, tuple[str, ...]] = {
+    "型号": ("型号",),
+    "价格": ("价格",),
+    "状态": ("状态",),
+    "备注名": ("备注名", "来源备注名"),
+    "备注名wxid": ("备注名wxid", "来源 wxid", "来源wxid"),
+    "发布时间": ("发布时间", "朋友圈发布时间"),
+    "序列号": ("序列号", "编号"),
+    "图片路径": ("图片路径", "图片本地路径"),
+    "视频路径": ("视频路径", "视频本地路径"),
+    "原文文案": ("原文文案", "文案原文"),
+    "备注": ("备注",),
+    "是否需要人工复核": ("是否需要人工复核", "是否待人工补充"),
+}
 
 
 @dataclass(slots=True)
@@ -80,23 +94,24 @@ def _build_products_from_rows(rows: list[list[object]]) -> list[ProductRecord]:
 
     header = [str(value or "").strip() for value in rows[0]]
     header_map = {name: index for index, name in enumerate(header)}
+    canonical_header_map = _build_canonical_header_map(header_map)
     products: list[ProductRecord] = []
     seen_product_ids: dict[str, int] = {}
     for row in rows[1:]:
-        model = _get_cell(row, header_map, HEADERS[0])
+        model = _get_cell(row, canonical_header_map, HEADERS[0])
         if not model:
             continue
 
-        cost_price = _parse_price(_get_cell(row, header_map, HEADERS[1]))
+        cost_price = _parse_price(_get_cell(row, canonical_header_map, HEADERS[1]))
         if cost_price is None:
             continue
 
-        image_path = _get_cell(row, header_map, HEADERS[7])
-        video_path = _get_cell(row, header_map, HEADERS[8])
-        raw_copy = _get_cell(row, header_map, HEADERS[9])
-        source_wxid = _get_cell(row, header_map, HEADERS[4])
-        published_at = _get_cell(row, header_map, HEADERS[5])
-        source_record_id = _get_cell(row, header_map, HEADERS[6]) or model
+        image_path = _get_cell(row, canonical_header_map, HEADERS[7])
+        video_path = _get_cell(row, canonical_header_map, HEADERS[8])
+        raw_copy = _get_cell(row, canonical_header_map, HEADERS[9])
+        source_wxid = _get_cell(row, canonical_header_map, HEADERS[4])
+        published_at = _get_cell(row, canonical_header_map, HEADERS[5])
+        source_record_id = _get_cell(row, canonical_header_map, HEADERS[6]) or model
         product_id = _build_unique_product_id(
             seen_product_ids,
             source_record_id=source_record_id,
@@ -111,23 +126,36 @@ def _build_products_from_rows(rows: list[list[object]]) -> list[ProductRecord]:
                 source_record_id=source_record_id,
                 brand=brand,
                 model_std=model_std,
-                sale_status=_get_cell(row, header_map, HEADERS[2]),
+                sale_status=_get_cell(row, canonical_header_map, HEADERS[2]),
                 is_functional=_is_functional(raw_copy),
                 has_inspection_video=_has_media(video_path),
                 has_sample_output=_has_media(image_path),
                 cost_price=cost_price,
                 sale_price=cost_price,
                 profit_amount=0,
-                source_name=_get_cell(row, header_map, HEADERS[3]),
+                source_name=_get_cell(row, canonical_header_map, HEADERS[3]),
                 source_wxid=source_wxid,
                 published_at=published_at,
                 image_path=image_path,
                 video_path=video_path,
                 raw_copy=raw_copy,
-                manual_review_needed=_is_true_value(_get_cell(row, header_map, HEADERS[11])),
+                manual_review_needed=_is_true_value(
+                    _get_cell(row, canonical_header_map, HEADERS[11])
+                ),
             )
         )
     return _apply_pricing_recommendations(products)
+
+
+def _build_canonical_header_map(header_map: dict[str, int]) -> dict[str, int]:
+    canonical: dict[str, int] = {}
+    for header_name in HEADERS:
+        aliases = _HEADER_ALIASES.get(header_name, (header_name,))
+        for alias in aliases:
+            if alias in header_map:
+                canonical[header_name] = header_map[alias]
+                break
+    return canonical
 
 
 def _apply_pricing_recommendations(products: list[ProductRecord]) -> list[ProductRecord]:

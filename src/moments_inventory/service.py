@@ -4,6 +4,7 @@ from datetime import datetime, timedelta
 
 from moments_inventory.config import Settings
 from moments_inventory.logging_utils import get_logger
+from moments_inventory.models import RawMoment
 from moments_inventory.matcher import deduplicate_and_merge
 from moments_inventory.storage import InventoryStore
 from moments_inventory.weflow_client import WeFlowClient
@@ -22,6 +23,25 @@ class SyncService:
     def _is_relevant_record(record) -> bool:
         return bool(record.model)
 
+    def _target_remark_names_by_wxid(self) -> dict[str, str]:
+        return {
+            target.wxid: target.remark_name
+            for target in self._settings.targets
+            if target.wxid and target.remark_name
+        }
+
+    @staticmethod
+    def _canonicalize_moment_remark_names(
+        moments: list[RawMoment],
+        target_remark_names_by_wxid: dict[str, str],
+    ) -> None:
+        for moment in moments:
+            if not moment.author_wxid:
+                continue
+            target_remark_name = target_remark_names_by_wxid.get(moment.author_wxid)
+            if target_remark_name:
+                moment.author_remark_name = target_remark_name
+
     def sync(self, now: datetime | None = None):
         if now is None:
             current_time = datetime.now().astimezone()
@@ -35,17 +55,21 @@ class SyncService:
             extra={"target_count": len(self._settings.targets), "days": self._settings.task.days},
         )
         usernames = self._client.resolve_usernames(self._settings.targets)
+        target_remark_names_by_wxid = self._target_remark_names_by_wxid()
         moments = []
         snapshot_complete = True
         for username in usernames:
             try:
-                moments.extend(
-                    self._client.fetch_timeline(
-                        usernames=[username],
-                        start=start_time.isoformat(),
-                        end=current_time.isoformat(),
-                    )
+                user_moments = self._client.fetch_timeline(
+                    usernames=[username],
+                    start=start_time.isoformat(),
+                    end=current_time.isoformat(),
                 )
+                self._canonicalize_moment_remark_names(
+                    user_moments,
+                    target_remark_names_by_wxid,
+                )
+                moments.extend(user_moments)
             except Exception:
                 snapshot_complete = False
                 LOGGER.exception("sync fetch failed", extra={"username": username})

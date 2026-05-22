@@ -8,25 +8,48 @@ from xml.sax.saxutils import escape
 import zipfile
 
 from moments_inventory.models import InventoryRecord
+from moments_inventory.storage import DEFAULT_ACTIVE_STATUS
 
 
+HEADERS = [
+    "鍨嬪彿",
+    "浠锋牸",
+    "鐘舵€?",
+    "鏉ユ簮澶囨敞鍚?",
+    "鏉ユ簮 wxid",
+    "鏈嬪弸鍦堝彂甯冩椂闂?",
+    "缂栧彿",
+    "鍥剧墖鏈湴璺緞",
+    "瑙嗛鏈湴璺緞",
+    "鏂囨鍘熸枃",
+    "澶囨敞",
+    "鏄惁寰呬汉宸ヨˉ鍏?",
+]
+
+CURRENT_STATUSES = {DEFAULT_ACTIVE_STATUS, "未售卖"}
+DEFAULT_WORKBOOK_FILENAME = "current.xlsx"
+IMAGE_FAILURE_TEXT = "鍥剧墖鏈垚鍔熶笅杞?"
+VIDEO_FAILURE_TEXT = "瑙嗛鏈垚鍔熶笅杞?"
+_XML_CONTROL_CHARACTER_PATTERN = re.compile(r"[\x00-\x08\x0b\x0c\x0e-\x1f]")
+
+# 覆盖历史乱码常量，确保导出的 Excel 表头和提示文案为正常中文。
 HEADERS = [
     "型号",
     "价格",
     "状态",
-    "来源备注名",
-    "来源 wxid",
-    "朋友圈发布时间",
-    "编号",
-    "图片本地路径",
-    "视频本地路径",
-    "文案原文",
+    "备注名",
+    "备注名wxid",
+    "发布时间",
+    "序列号",
+    "图片路径",
+    "视频路径",
+    "原文文案",
     "备注",
-    "是否待人工补充",
+    "是否需要人工复核",
 ]
-
-CURRENT_STATUSES = {"未售出", "未售卖"}
-_XML_CONTROL_CHARACTER_PATTERN = re.compile(r"[\x00-\x08\x0b\x0c\x0e-\x1f]")
+CURRENT_STATUSES = {DEFAULT_ACTIVE_STATUS, "未售卖"}
+IMAGE_FAILURE_TEXT = "图片下载失败"
+VIDEO_FAILURE_TEXT = "视频下载失败"
 
 
 def _column_name(index: int) -> str:
@@ -255,7 +278,7 @@ def _export_media_files(
             media_root,
             prefix="image",
             default_extension="jpg",
-            failure_text="图片未成功下载",
+            failure_text=IMAGE_FAILURE_TEXT,
             base_url=base_url,
             access_token=access_token,
         )
@@ -265,12 +288,21 @@ def _export_media_files(
             media_root,
             prefix="video",
             default_extension="mp4",
-            failure_text="视频未成功下载",
+            failure_text=VIDEO_FAILURE_TEXT,
             base_url=base_url,
             access_token=access_token,
         )
         exported[record.record_key] = (image_paths, video_paths)
     return exported
+
+
+def _empty_media_paths(
+    records: list[InventoryRecord],
+) -> dict[str, tuple[list[str], list[str]]]:
+    return {
+        record.record_key: ([], [])
+        for record in records
+    }
 
 
 def _to_rows(
@@ -299,20 +331,34 @@ def _to_rows(
     return rows
 
 
+def _is_formal_price_record(record: InventoryRecord) -> bool:
+    if record.status not in CURRENT_STATUSES:
+        return False
+    if record.price is None or record.price < 99:
+        return False
+    return "💰" in (record.content_text or "")
+
+
 def export_records(
     records: list[InventoryRecord],
     output_dir: str | Path,
     base_url: str | None = None,
     access_token: str | None = None,
+    *,
+    download_media: bool = True,
+    filename: str | None = None,
 ) -> Path:
     target_dir = Path(output_dir)
     target_dir.mkdir(parents=True, exist_ok=True)
     media_root = target_dir / "media"
     media_root.mkdir(parents=True, exist_ok=True)
-    current_path = target_dir / "当前在售库.xlsx"
+    current_path = target_dir / (filename or DEFAULT_WORKBOOK_FILENAME)
 
-    media_paths = _export_media_files(records, media_root, base_url, access_token)
-    current_records = [record for record in records if record.status in CURRENT_STATUSES]
+    if download_media:
+        media_paths = _export_media_files(records, media_root, base_url, access_token)
+    else:
+        media_paths = _empty_media_paths(records)
+    current_records = [record for record in records if _is_formal_price_record(record)]
     current_rows = _to_rows(current_records, media_paths)
     _write_workbook(current_path, current_rows)
     return current_path

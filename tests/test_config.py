@@ -89,9 +89,11 @@ task:
   days: 30
   merge_window_minutes: 10
   output_dir: "./output"
+  download_media: false
 targets:
   - remark_name: "user-a"
     wxid: "wxid_123"
+    tier: 1
 rules:
   required_fields:
     - model
@@ -100,6 +102,16 @@ rules:
 paths:
   sqlite_db: "./data/inventory.db"
   model_dict: "MODELS_FILE"
+orchestrator:
+  enabled: true
+  mode: "full"
+  batch_size: 25
+  export_priority_after_p1: true
+  export_full_after_all: true
+  resume_enabled: true
+  write_failed_targets: true
+  priority_output_name: "priority.xlsx"
+  full_output_name: "full.xlsx"
             """.replace("MODELS_FILE", str(model_file).replace("\\", "/")),
             encoding="utf-8",
         )
@@ -108,8 +120,12 @@ paths:
 
         assert settings.weflow.base_url == "http://127.0.0.1:5030"
         assert settings.task.merge_window_minutes == 10
+        assert settings.task.download_media is False
         assert settings.targets[0].remark_name == "user-a"
+        assert settings.targets[0].tier == 1
         assert settings.weflow.access_token == "demo-token"
+        assert settings.orchestrator.enabled is True
+        assert settings.orchestrator.mode == "full"
         assert settings.model_keywords == ["ixus 95", "sony t2"]
     finally:
         shutil.rmtree(temp_root, ignore_errors=True)

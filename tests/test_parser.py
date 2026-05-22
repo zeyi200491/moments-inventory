@@ -72,3 +72,35 @@ def test_parse_content_does_not_treat_date_as_price():
     assert parsed.model == "canon ixus 95"
     assert parsed.price is None
     assert parsed.needs_manual is True
+
+
+def test_parse_content_prefers_digits_adjacent_to_money_symbol_over_prefix_numbers():
+    parsed = parse_content(
+        "15新 宾得s55 319💰 编号H1",
+        model_keywords=["宾得s55"],
+    )
+
+    assert parsed.model == "宾得s55"
+    assert parsed.price == 319
+    assert parsed.serial_no == "H1"
+
+
+def test_parse_content_prefers_money_symbol_price_over_spec_numbers():
+    parsed = parse_content(
+        "索尼h70 1400万像素 509💰",
+        model_keywords=["索尼h70"],
+    )
+
+    assert parsed.model == "索尼h70"
+    assert parsed.price == 509
+
+
+def test_parse_content_does_not_fallback_to_unrelated_numbers_when_money_symbol_has_no_adjacent_price():
+    parsed = parse_content(
+        "15新 宾得s55 💰 容后问 编号H1",
+        model_keywords=["宾得s55"],
+    )
+
+    assert parsed.model == "宾得s55"
+    assert parsed.price is None
+    assert parsed.serial_no == "H1"

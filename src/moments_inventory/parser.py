@@ -35,7 +35,17 @@ def _pick_model(text: str, model_keywords: list[str]) -> str | None:
 
 
 def _pick_price(text: str, model: str | None) -> int | None:
-    for index, pattern in enumerate(PRICE_PATTERNS):
+    money_matches: list[tuple[int, int]] = []
+    for pattern in PRICE_PATTERNS[:2]:
+        for match in pattern.finditer(text):
+            money_matches.append((match.start(), int(match.group(1))))
+    if money_matches:
+        money_matches.sort(key=lambda item: item[0])
+        return money_matches[0][1]
+    if "💰" in text:
+        return None
+
+    for index, pattern in enumerate(PRICE_PATTERNS[2:], start=2):
         matches = pattern.findall(text)
         if not matches:
             continue
@@ -48,7 +58,7 @@ def _pick_price(text: str, model: str | None) -> int | None:
             ]
             if not filtered_matches:
                 continue
-            return max(filtered_matches)
+            return filtered_matches[0]
         return int(matches[0])
     return None
 

@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from datetime import datetime
+
 import pytest
 
 from moments_inventory.config import PathSettings, RuleSettings, Settings, TaskSettings, WeFlowSettings
@@ -168,3 +170,121 @@ def test_fetch_session_messages_supports_chatlab_payload(monkeypatch: pytest.Mon
     assert messages[0].message_type == "text"
     assert messages[1].content == "customer message"
     assert messages[1].is_self is False
+
+
+def test_fetch_timeline_paginates_with_offset_and_deduplicates(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    settings = _build_settings()
+    client = WeFlowClient(settings)
+    calls: list[dict[str, str] | None] = []
+
+    def fake_get_json(path: str, query: dict[str, str] | None = None) -> dict:
+        calls.append(query)
+        offset = (query or {}).get("offset")
+        if offset == "0":
+            return {
+                "timeline": [
+                    {
+                        "id": "m-1",
+                        "username": "wxid_1",
+                        "nickname": "seller-a",
+                        "contentDesc": "ixus 95 800 A1",
+                        "createTime": int(datetime.fromisoformat("2026-04-20T10:00:00+08:00").timestamp()),
+                        "media": [],
+                    },
+                    {
+                        "id": "m-2",
+                        "username": "wxid_1",
+                        "nickname": "seller-a",
+                        "contentDesc": "ixus 130 999 A2",
+                        "createTime": int(datetime.fromisoformat("2026-04-19T10:00:00+08:00").timestamp()),
+                        "media": [],
+                    },
+                ]
+            }
+        if offset == "2":
+            return {
+                "timeline": [
+                    {
+                        "id": "m-2",
+                        "username": "wxid_1",
+                        "nickname": "seller-a",
+                        "contentDesc": "ixus 130 999 A2",
+                        "createTime": int(datetime.fromisoformat("2026-04-19T10:00:00+08:00").timestamp()),
+                        "media": [],
+                    },
+                    {
+                        "id": "m-3",
+                        "username": "wxid_1",
+                        "nickname": "seller-a",
+                        "contentDesc": "ixus 220 1299 A3",
+                        "createTime": int(datetime.fromisoformat("2026-04-18T10:00:00+08:00").timestamp()),
+                        "media": [],
+                    },
+                ]
+            }
+        return {"timeline": []}
+
+    monkeypatch.setattr(client, "_get_json", fake_get_json)
+    monkeypatch.setattr("moments_inventory.weflow_client.TIMELINE_PAGE_SIZE", 2)
+    monkeypatch.setattr("moments_inventory.weflow_client.MAX_TIMELINE_PAGE_COUNT", 5)
+
+    moments = client.fetch_timeline(
+        ["wxid_1"],
+        "2026-04-01T00:00:00+08:00",
+        "2026-04-30T23:59:59+08:00",
+    )
+
+    assert [moment.moment_id for moment in moments] == ["m-1", "m-2", "m-3"]
+    assert [query["offset"] for query in calls] == ["0", "2", "4"]
+
+
+def test_fetch_timeline_filters_time_range_locally_when_gateway_ignores_query(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    settings = _build_settings()
+    client = WeFlowClient(settings)
+
+    monkeypatch.setattr(
+        client,
+        "_get_json",
+        lambda path, query=None: {
+            "timeline": [
+                {
+                    "id": "m-old",
+                    "username": "wxid_1",
+                    "nickname": "seller-a",
+                    "contentDesc": "ixus 95 800 A1",
+                    "createTime": int(datetime.fromisoformat("2025-01-20T10:00:00+08:00").timestamp()),
+                    "media": [],
+                },
+                {
+                    "id": "m-hit",
+                    "username": "wxid_1",
+                    "nickname": "seller-a",
+                    "contentDesc": "ixus 130 999 A2",
+                    "createTime": int(datetime.fromisoformat("2026-04-20T10:00:00+08:00").timestamp()),
+                    "media": [],
+                },
+                {
+                    "id": "m-future",
+                    "username": "wxid_1",
+                    "nickname": "seller-a",
+                    "contentDesc": "ixus 220 1299 A3",
+                    "createTime": int(datetime.fromisoformat("2026-06-01T10:00:00+08:00").timestamp()),
+                    "media": [],
+                },
+            ]
+        },
+    )
+    monkeypatch.setattr("moments_inventory.weflow_client.TIMELINE_PAGE_SIZE", 10)
+    monkeypatch.setattr("moments_inventory.weflow_client.MAX_TIMELINE_PAGE_COUNT", 2)
+
+    moments = client.fetch_timeline(
+        ["wxid_1"],
+        "2026-04-01T00:00:00+08:00",
+        "2026-04-30T23:59:59+08:00",
+    )
+
+    assert [moment.moment_id for moment in moments] == ["m-hit"]

@@ -255,6 +255,47 @@ def test_batch_run_service_deduplicates_targets_by_wxid_and_usernames() -> None:
         shutil.rmtree(temp_root, ignore_errors=True)
 
 
+def test_batch_run_service_uses_configured_target_remark_names() -> None:
+    temp_root = _make_temp_root(f"pytest-batch-run-remark-map-{uuid.uuid4().hex}-")
+
+    try:
+        targets = [
+            TargetContact(remark_name="Configured Seller", wxid="wxid_1"),
+        ]
+        settings = _build_settings(temp_root, targets, batch_size=10)
+        store = InventoryStore(settings.paths.sqlite_db)
+        store.initialize()
+
+        client = FakeClient(
+            {
+                "wxid_1": [
+                    RawMoment(
+                        moment_id="m1",
+                        author_remark_name="WeFlow Alias",
+                        author_wxid="wxid_1",
+                        published_at=datetime.fromisoformat("2026-04-20T10:01:00+08:00"),
+                        content="ixus 95 100 A1",
+                        image_urls=["m1.jpg"],
+                        video_urls=[],
+                    )
+                ],
+            }
+        )
+
+        service = BatchRunService(
+            settings=settings,
+            store=store,
+            client=client,
+            warmup_runner=None,
+        )
+
+        records = service.run(now=datetime.fromisoformat("2026-04-21T12:00:00+08:00"))
+
+        assert [record.remark_name for record in records] == ["Configured Seller"]
+    finally:
+        shutil.rmtree(temp_root, ignore_errors=True)
+
+
 def test_batch_run_service_skips_later_batch_when_resolved_username_was_already_processed() -> None:
     temp_root = _make_temp_root(f"pytest-batch-run-cross-batch-{uuid.uuid4().hex}-")
 

@@ -64,6 +64,7 @@ warmup:
   search_delay_ms: 900
   open_profile_delay_ms: 1100
   open_timeline_delay_ms: 1300
+  timeline_sync_wait_ms: 1700
   scroll_count: 5
   scroll_delay_ms: 950
   back_delay_ms: 700
@@ -80,12 +81,43 @@ warmup:
         assert settings.warmup.search_delay_ms == 900
         assert settings.warmup.open_profile_delay_ms == 1100
         assert settings.warmup.open_timeline_delay_ms == 1300
+        assert settings.warmup.timeline_sync_wait_ms == 1700
         assert settings.warmup.scroll_count == 5
         assert settings.warmup.scroll_delay_ms == 950
         assert settings.warmup.back_delay_ms == 700
         assert settings.warmup.max_consecutive_failures == 4
         assert settings.warmup.min_success_count == 2
         assert settings.warmup.auto_export_on_success is False
+        assert settings.warmup.segment_size == 5
+        assert settings.warmup.verify_state_after_each_contact is True
+        assert settings.warmup.force_recovery_on_reset_failure is True
+        assert settings.warmup.log_step_details is True
+    finally:
+        shutil.rmtree(temp_root, ignore_errors=True)
+
+
+def test_load_settings_parses_warmup_stability_options():
+    temp_root = _make_temp_root(f"pytest-warmup-stability-{uuid.uuid4().hex}-")
+
+    try:
+        config_file = _write_config_file(
+            temp_root,
+            """
+warmup:
+  enabled: true
+  segment_size: 5
+  verify_state_after_each_contact: true
+  force_recovery_on_reset_failure: true
+  log_step_details: true
+            """,
+        )
+
+        settings = load_settings(config_file)
+
+        assert settings.warmup.segment_size == 5
+        assert settings.warmup.verify_state_after_each_contact is True
+        assert settings.warmup.force_recovery_on_reset_failure is True
+        assert settings.warmup.log_step_details is True
     finally:
         shutil.rmtree(temp_root, ignore_errors=True)
 
@@ -121,12 +153,17 @@ def test_load_settings_uses_default_warmup_when_section_missing():
         assert settings.warmup.search_delay_ms == 800
         assert settings.warmup.open_profile_delay_ms == 1000
         assert settings.warmup.open_timeline_delay_ms == 1200
-        assert settings.warmup.scroll_count == 4
+        assert settings.warmup.timeline_sync_wait_ms == 1500
+        assert settings.warmup.scroll_count == 50
         assert settings.warmup.scroll_delay_ms == 900
         assert settings.warmup.back_delay_ms == 600
         assert settings.warmup.max_consecutive_failures == 3
         assert settings.warmup.min_success_count == 1
         assert settings.warmup.auto_export_on_success is True
+        assert settings.warmup.segment_size == 5
+        assert settings.warmup.verify_state_after_each_contact is True
+        assert settings.warmup.force_recovery_on_reset_failure is True
+        assert settings.warmup.log_step_details is True
         assert settings.batch_run.enabled is False
         assert settings.batch_run.batch_size == 25
         assert settings.batch_run.stop_on_batch_failure is True

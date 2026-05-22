@@ -1,19 +1,29 @@
 # Windows 使用说明
 
-这份文档给“拿到项目后直接使用”的同事或客户看。  
-首次配置完成后，后面通常运行 `run_export.bat`；如果需要先做朋友圈预刷新，再运行 `run_warmup_and_export.bat`。
+这份文档面向“拿到项目后直接使用”的同事或客户，重点只讲：
 
-## 1. 这个工具做什么
+- 怎么配置
+- 怎么运行
+- 怎么导出
+- 当前正式规则是什么
 
-工具会通过 WeFlow 的 HTTP API 抓取指定联系人的朋友圈内容，识别其中的 CCD 商品信息，然后导出到你配置的输出目录中，主要产物包括：
+## 1. 这套工具做什么
 
-- `当前在售库.xlsx`
-- `run_batched_warmup_and_export.bat` 可用于大批量联系人分批执行
-- `media/` 目录下的本地图片和视频
+工具通过 WeFlow HTTP API 抓取指定联系人的朋友圈内容，识别 CCD 商品信息，并导出为 Excel。
 
-## 2. 首次使用步骤
+当前正式导出只保留“当前在售”结果，不再额外导出历史总库。
 
-### 第一步：运行初始化脚本
+常见产物：
+
+- `优先货源当前库.xlsx`
+- `全量当前库.xlsx`
+- `progress.json`
+- `failed_targets.csv`
+- `media/` 目录下的图片和视频（如果开启媒体下载）
+
+## 2. 首次使用
+
+### 第一步：初始化环境
 
 在项目根目录运行：
 
@@ -21,79 +31,108 @@
 setup_windows.bat
 ```
 
-它会自动完成这些事情：
+它会自动完成：
 
-- 创建 `.venv` 虚拟环境
-- 安装项目依赖
-- 如果 `config/config.yaml` 不存在，就从 `config/config.example.yaml` 复制一份
-- 如果 `config/models.txt` 不存在，就从 `config/models.example.txt` 复制一份
+- 创建 `.venv`
+- 安装依赖
+- 生成 `config/config.yaml`
+- 生成 `config/models.txt`
 
-### 第二步：填写 `config/config.yaml`
+### 第二步：配置 `config/config.yaml`
 
-`config/config.yaml` 不是手动新建的，它来自项目自带的示例配置：
+重点字段：
 
-- 示例文件：`config/config.example.yaml`
-- 实际使用文件：`config/config.yaml`
+说明：
 
-通常在你运行完 `setup_windows.bat` 之后，`config/config.yaml` 已经自动生成好了，你只需要编辑它。
-
-重点需要确认这些字段：
+- 首次初始化时，`setup_windows.bat` 会基于 `config/config.example.yaml` 生成 `config/config.yaml`
+- 后续实际运行始终读取 `config/config.yaml`
 
 #### `weflow.base_url`
 
-这是 WeFlow HTTP API 的地址。
+WeFlow HTTP API 地址，常见是：
 
-常见情况：
+```yaml
+weflow:
+  base_url: "http://127.0.0.1:5031"
+```
 
-- 如果 WeFlow 跑在你自己的电脑上，通常是 `http://127.0.0.1:5030` 或 `http://127.0.0.1:5031`
-- 如果 WeFlow 是别人部署给你用的，就让对方提供完整地址
+#### `task.download_media`
+
+- `true`：下载图片和视频
+- `false`：只导出 Excel，不下载媒体
+
+如果你只是想快速看结果，建议先设成：
+
+```yaml
+task:
+  download_media: false
+```
 
 #### `targets`
 
-这里填写你要抓取的联系人。
+每个目标联系人支持：
 
-建议优先填 `wxid`，更稳定；如果你没有 `wxid`，也可以只填 `remark_name`，程序会尝试按备注名匹配联系人。
+- `remark_name`
+- `wxid`
+- `tier`
 
 示例：
 
 ```yaml
 targets:
-  - remark_name: "张三库存号"
-    wxid: "wxid_123"
-  - remark_name: "李四"
-    wxid: ""
+  - remark_name: "白得一批"
+    wxid: "wxid_xxx"
+    tier: 1
+  - remark_name: "星星"
+    wxid: "wxid_yyy"
+    tier: 2
 ```
 
-#### `task.output_dir`
+规则：
 
-这是导出目录，例如：
+- `tier: 1` 表示优先货源
+- `tier: 2` 表示普通货源
+- 在 warmup 场景下，`remark_name` 视为必填，因为当前微信桌面端自动化主要按备注名搜索联系人
+
+#### `warmup.enabled`
+
+- `true`：先做微信 warmup 预刷新
+- `false`：不刷新，直接抓取/导出
+
+快速测试模式建议：
 
 ```yaml
-task:
-  output_dir: "./output"
+warmup:
+  enabled: false
 ```
 
-脚本运行成功后，Excel、图片和视频都会出现在这个目录里。
+#### `orchestrator`
 
-#### `paths.sqlite_db`
+推荐使用的两种正式模式：
 
-这是本地 SQLite 数据库路径，一般保持默认即可。
+```yaml
+orchestrator:
+  enabled: true
+  mode: "priority_only"
+  batch_size: 25
+  export_priority_after_p1: true
+  export_full_after_all: true
+  resume_enabled: true
+  write_failed_targets: true
+  priority_output_name: "优先货源当前库.xlsx"
+  full_output_name: "全量当前库.xlsx"
+```
 
-## 3. `config/models.txt` 从哪里来，怎么填
+说明：
 
-这个文件是“型号关键词词库”。
+- `priority_only`
+  只跑 `tier=1`
+- `full`
+  先跑 `tier=1`，再继续跑剩余批次
 
-项目中有两份相关文件：
+### 第三步：配置 `config/models.txt`
 
-- 实际使用文件：`config/models.txt`
-- 示例文件：`config/models.example.txt`
-
-如果你已经运行过 `setup_windows.bat`：
-
-- `config/models.txt` 已存在：直接编辑它
-- `config/models.txt` 不存在：脚本会自动从 `config/models.example.txt` 复制
-
-填写规则很简单：一行一个型号关键词，例如：
+一行一个型号关键词，例如：
 
 ```text
 ixus 95
@@ -102,147 +141,182 @@ sony t2
 fuji f455
 ```
 
-这些关键词通常来自：
+词库越全，型号识别越稳。
 
-- 你平时实际售卖的 CCD 型号清单
-- 你历史朋友圈文案中经常出现的型号名
-- 现有库存表中的型号列
+说明：
 
-词库越完整，识别准确率越高。
+- 首次初始化时，`setup_windows.bat` 会基于 `config/models.example.txt` 生成 `config/models.txt`
+- 后续你只需要维护 `config/models.txt`
 
-## 4. `WEFLOW_ACCESS_TOKEN` 从哪里来，怎么配置
+### 第四步：配置 `WEFLOW_ACCESS_TOKEN`
 
-项目默认不把 token 写进仓库文件，而是要求你在 Windows 里配置系统环境变量：
-
-- 变量名：`WEFLOW_ACCESS_TOKEN`
-
-### 这个 token 从哪里来
-
-它本质上就是 WeFlow HTTP API 的访问凭证。
-
-常见来源：
-
-- 如果 WeFlow 是你自己部署的：去 WeFlow 的启动配置、环境变量、后台配置页面或部署说明里找 `access token`
-- 如果 WeFlow 是别人部署给你用的：直接向对方索取 API token
-
-可以把它理解成“访问 WeFlow 接口的密码”。
-
-### 在 Windows 里怎么配置
-
-最简单的方式是在命令行执行：
+在 Windows 命令行执行：
 
 ```bat
 setx WEFLOW_ACCESS_TOKEN "你的实际token"
 ```
 
-执行完成后：
+执行后关闭当前命令行窗口，再重新打开一个新窗口。
 
-1. 关闭当前命令行窗口
-2. 重新打开一个新的命令行窗口
-3. 再运行 `run_export.bat`
+## 3. 正式价格规则
 
-也可以用图形界面配置：
+当前正式 Excel 的价格规则非常严格：
 
-1. 打开“编辑系统环境变量”
-2. 进入“环境变量”
-3. 新建用户变量
-4. 变量名填 `WEFLOW_ACCESS_TOKEN`
-5. 变量值填你的实际 token
+1. 原文里必须出现 `💰`
+2. 价格只认 `💰` 前后紧邻的数字
+3. 没有 `💰` 的记录，不进入正式 Excel
+4. 价格 `< 99` 的记录，不进入正式 Excel
 
-## 5. 预刷新导出
+这条规则是为了避免把：
 
-如果你的 WeFlow 流程需要先在微信里打开朋友圈，再继续抓取和导出，建议使用预刷新脚本。
+- `15新`
+- `99新`
+- `1400万像素`
+- 编号、序列号
 
-运行前，请先把微信停在通讯录或聊天列表，也就是微信先停在通讯录或聊天列表。第一版脚本依赖这个起始位置去执行固定路径操作，避免从未知页面开始导致流程走偏。
+误识别成价格。
 
-另外，`config/config.yaml` 里的 `warmup.enabled` 默认是 `false`。要使用 `run_warmup_and_export.bat`，必须先把它改成 `true`，否则即使运行了脚本，也不会按预期进入预刷新流程。
+例如：
 
-如果你有 100-200 人这类大批量联系人，建议改用：
+- `319💰宾得s55` -> 价格 `319`
+- `💰460 编号H1916` -> 价格 `460`
+- `15新 宾得s55` -> 不进入正式 Excel
 
-```bat
-run_batched_warmup_and_export.bat
+## 4. 推荐运行方式
+
+### 方式 A：不 warmup 的快速导出
+
+适合：
+
+- 先验证分层模式是否正常
+- 先看 Excel
+- 不想等待微信自动化
+
+配置建议：
+
+```yaml
+warmup:
+  enabled: false
+
+task:
+  download_media: false
 ```
 
-它会按 `batch_run.batch_size` 分批执行 warmup、抓取和最终导出，只输出一份 `当前在售库.xlsx`。
+运行：
 
-普通日常导出仍然可以在项目根目录运行：
+```bash
+python -m moments_inventory.cli orchestrated-run --mode priority_only
+```
+
+输出：
+
+- `优先货源当前库.xlsx`
+
+### 方式 B：第一阶段优先货源
+
+适合：
+
+- 先刷最重要的 25 人
+- 先出一份优先货源表
+
+配置建议：
+
+```yaml
+warmup:
+  enabled: true
+
+task:
+  download_media: false
+```
+
+运行：
 
 ```bat
 run_warmup_and_export.bat
 ```
 
-这个脚本会按 `config/config.yaml` 里的 `targets` 顺序逐个执行预刷新。虽然平时建议优先填写 `wxid`，但在 warmup 场景下，`targets[].remark_name` 实际上应视为必填，因为当前版本是按备注名搜索联系人；只有 `wxid` 而没有 `remark_name`，预刷新阶段无法可靠定位联系人。达到程序设定的阈值后，会继续执行同步与导出，不需要再手动补跑一次 `run_export.bat`。
-
-第一版限制如下：
-
-- 仅支持 Windows
-- 仅支持微信桌面端固定操作路径
-- warmup 场景下联系人按 `targets[].remark_name` 搜索，因此 `remark_name` 应填写并视为必填
-
-## 6. 日常怎么运行
-
-配置完成后，平时只需要运行：
-
-```bat
-run_export.bat
-```
-
-它会自动执行：
+或者：
 
 ```bash
-python -m moments_inventory.cli sync --export
+python -m moments_inventory.cli orchestrated-run --mode priority_only
 ```
 
-运行完成后，你会得到：
+### 方式 C：全量模式
 
-- Excel 文件
-- 本地图片
-- 本地视频
+适合：
 
-它们都在 `config/config.yaml` 里 `task.output_dir` 指定的目录下。
+- 先跑 `tier=1`
+- 再继续批量跑 `tier=2`
+- 最后出全量表
 
-## 6.1 AI 客服工作台怎么启动
+运行：
 
-如果你要用这个仓库里的 AI 客服工作台，而不是只做朋友圈导出，优先直接运行：
-
-```bat
-run_ai_kefu_workbench.bat
+```bash
+python -m moments_inventory.cli orchestrated-run --mode full
 ```
 
-它会自动检查并启动：
+输出：
 
-- 后端接口：`http://127.0.0.1:8787`
-- 前端工作台：`http://127.0.0.1:5173`
+- `优先货源当前库.xlsx`
+- `全量当前库.xlsx`
+- `progress.json`
+- `failed_targets.csv`
 
-后端默认会带热重载，相当于内部执行：
+如果中途断了，可以继续：
 
-```bat
-python -m moments_inventory.cli kefu-dev --host 127.0.0.1 --port 8787 --reload --ai-kefu-config config/ai_kefu.yaml
+```bash
+python -m moments_inventory.cli orchestrated-run --mode full --resume
 ```
 
-如果你只想单独启动后端，也建议保留 `--reload`，否则改完上传逻辑、规则或检索代码后，浏览器可能还会连着旧进程。
+## 5. warmup 说明
 
-## 6.2 AI 客服知识库上传的常见坑
+当前 warmup 是 Windows 微信桌面端 UI 自动化。
 
-如果知识库页面已经显示支持新格式，但上传时仍返回旧报错，比如：
+现阶段已经重点做过这几类优化：
 
-- `shipping_info_excel 暂未实现解析`
-- 明明代码已经改过，页面还是报旧错误
+- 25 人按 `5×5` 分段执行
+- 每个联系人结束后做状态校验
+- 如果恢复失败，会走强制恢复
+- 单个联系人失败后会记录并跳过，不直接把整批带崩
+- 重点提升“打开朋友圈小窗”的命中率
 
-通常不是前端问题，而是本地后端进程没有重启。处理顺序建议固定为：
+但它仍然有边界：
 
-1. 重新运行 `run_ai_kefu_workbench.bat`
-2. 等待后端和前端都启动完成
-3. 刷新浏览器页面
-4. 再重新上传文件
+- 依赖微信桌面端界面结构
+- 受窗口大小、DPI、版本影响
+- 不能承诺 100% 绝对命中
 
-像“供应链发货信息库”现在支持 `.xlsx` 和 `.xls`，如果页面和接口行为对不上，优先检查是不是旧后端实例还占着 `8787` 端口。
+运行 warmup 前，微信先停在通讯录或聊天列表，再开始执行脚本。
+
+如果你只是要快速出表，优先建议：
+
+- `warmup.enabled: false`
+- `task.download_media: false`
+
+## 6. 常用脚本
+
+项目根目录下提供：
+
+- `setup_windows.bat`
+- `run_export.bat`
+- `run_warmup_and_export.bat`
+- `run_batched_warmup_and_export.bat`
+- `run_ai_kefu_workbench.bat`
+
+说明：
+
+- `run_export.bat`
+  适合普通导出
+- `run_warmup_and_export.bat`
+  适合先 warmup 再导出
+- `run_batched_warmup_and_export.bat`
+  适合大量联系人按批 warmup + 导出
 
 ## 7. 常见问题
 
 ### 提示找不到 `.venv\Scripts\python.exe`
 
-说明你还没做初始化。先运行：
+先执行：
 
 ```bat
 setup_windows.bat
@@ -250,46 +324,56 @@ setup_windows.bat
 
 ### 提示没有 `config/config.yaml`
 
-说明配置文件还没准备好。先运行：
+先执行：
 
 ```bat
 setup_windows.bat
 ```
 
-然后编辑 `config/config.yaml`。
-
 ### 提示没有 `WEFLOW_ACCESS_TOKEN`
 
-说明系统环境变量还没配置。执行：
+执行：
 
 ```bat
 setx WEFLOW_ACCESS_TOKEN "你的实际token"
 ```
 
-然后重新打开命令行窗口。
+然后重新打开命令行。
 
-### 运行成功了，但没有导出想要的数据
+### warmup 成功率不稳定
 
-重点检查：
+优先确认：
 
-- `targets` 里的联系人是否填对
-- `weflow.base_url` 是否指向正确的 WeFlow 服务
-- `config/models.txt` 是否覆盖了你实际售卖的型号
+- 微信在当前桌面
+- 微信窗口可见
+- 不要停在搜一搜页
+- 不要让其他窗口遮挡
 
-## 8. 推荐交付方式
+如果只是为了快速出表，建议先关闭 warmup。
 
-如果你要把这个项目交给别人，建议一起提供：
+### Excel 里没有商品数据
 
-- 整个项目目录
-- 正确的 `config/config.yaml` 示例
-- 正确的 `config/models.txt` 词库
+优先检查：
+
+1. 联系人抓取结果里是否真的有朋友圈内容
+2. 原文里是否包含 `💰`
+3. 价格是否 `>= 99`
+4. 型号词库是否覆盖你的实际商品型号
+
+## 8. 交付建议
+
+如果你要把这套工具交给别人，建议一起交付：
+
+- 项目目录
+- `config/config.yaml`
+- `config/models.txt`
 - WeFlow 地址
-- WeFlow token 获取方式，或者直接提供 token
+- WeFlow token 的配置方式
 
-这样对方只需要：
+这样接手的人通常只需要：
 
-1. 跑一次 `setup_windows.bat`
+1. 执行 `setup_windows.bat`
 2. 核对配置
-3. 运行 `run_export.bat`
+3. 运行对应脚本
 
-就能直接拿到 Excel、图片和视频。
+就能直接开始导出。

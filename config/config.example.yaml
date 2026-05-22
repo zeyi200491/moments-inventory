@@ -7,12 +7,15 @@ task:
   days: 30
   merge_window_minutes: 10
   output_dir: "./output"
+  download_media: true
 
 targets:
   - remark_name: "张三"
     wxid: "wxid_123"
+    tier: 1
   - remark_name: "李四"
     wxid: "wxid_456"
+    tier: 2
 
 rules:
   required_fields:
@@ -30,9 +33,32 @@ warmup:
   search_delay_ms: 800
   open_profile_delay_ms: 1000
   open_timeline_delay_ms: 1200
-  scroll_count: 4
+  timeline_sync_wait_ms: 1500
+  scroll_count: 50
   scroll_delay_ms: 900
   back_delay_ms: 600
   max_consecutive_failures: 3
   min_success_count: 1
   auto_export_on_success: true
+  segment_size: 5
+  verify_state_after_each_contact: true
+  force_recovery_on_reset_failure: true
+  log_step_details: true
+
+batch_run:
+  enabled: false
+  batch_size: 25
+  stop_on_batch_failure: true
+  export_only_when_all_batches_succeed: true
+  keep_batch_temp_reports: true
+
+orchestrator:
+  enabled: false
+  mode: "priority_only"
+  batch_size: 25
+  export_priority_after_p1: true
+  export_full_after_all: true
+  resume_enabled: true
+  write_failed_targets: true
+  priority_output_name: "优先货源当前库.xlsx"
+  full_output_name: "全量当前库.xlsx"

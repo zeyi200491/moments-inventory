@@ -8,6 +8,7 @@ from datetime import datetime
 class TargetContact:
     remark_name: str | None
     wxid: str | None
+    tier: int = 2
 
 
 @dataclass(slots=True)

@@ -11,9 +11,6 @@ from moments_inventory.exporter import export_records
 from moments_inventory.models import InventoryRecord
 
 
-PROJECT_ROOT = Path(__file__).resolve().parent.parent
-
-
 def _make_temp_root(prefix: str) -> Path:
     return Path(tempfile.mkdtemp(prefix=prefix))
 
@@ -43,7 +40,11 @@ def _read_sheet_rows(workbook_path: Path) -> list[tuple]:
     return rows
 
 
-def test_export_records_creates_only_current_workbook():
+def _current_status() -> str:
+    return next(iter(exporter.CURRENT_STATUSES))
+
+
+def test_export_records_creates_only_current_workbook() -> None:
     temp_root = _make_temp_root(f"pytest-export-{uuid.uuid4().hex}-")
 
     try:
@@ -56,10 +57,10 @@ def test_export_records_creates_only_current_workbook():
                 model="ixus 95",
                 price=850,
                 serial_no="A12",
-                status="未售出",
+                status=_current_status(),
                 image_urls=[],
                 video_urls=[],
-                content_text="ixus 95 850 A12",
+                content_text="ixus 95 850💰 A12",
                 note="",
                 needs_manual=False,
                 source_moment_ids=["sns_001"],
@@ -67,18 +68,17 @@ def test_export_records_creates_only_current_workbook():
         ]
 
         current_path = export_records(records, temp_root)
-
         current_rows = _read_sheet_rows(current_path)
 
-        assert current_rows[1][2] == "未售出"
+        assert current_rows[1][2] == _current_status()
         assert current_rows[1][0] == "ixus 95"
-        assert current_path.name == "当前在售库.xlsx"
-        assert not (temp_root / "历史总库.xlsx").exists()
+        assert current_path.name == exporter.DEFAULT_WORKBOOK_FILENAME
+        assert current_rows[0] == tuple(exporter.HEADERS)
     finally:
         shutil.rmtree(temp_root, ignore_errors=True)
 
 
-def test_export_records_treats_unsold_status_as_current():
+def test_export_records_treats_unsold_status_as_current() -> None:
     temp_root = _make_temp_root(f"pytest-export-status-{uuid.uuid4().hex}-")
 
     try:
@@ -91,10 +91,10 @@ def test_export_records_treats_unsold_status_as_current():
                 model="ixus 80",
                 price=680,
                 serial_no="B18",
-                status="未售出",
+                status=_current_status(),
                 image_urls=[],
                 video_urls=[],
-                content_text="ixus 80 680 B18",
+                content_text="ixus 80 680💰 B18",
                 note="",
                 needs_manual=False,
                 source_moment_ids=["sns_002"],
@@ -109,11 +109,43 @@ def test_export_records_treats_unsold_status_as_current():
         shutil.rmtree(temp_root, ignore_errors=True)
 
 
-def test_export_records_only_includes_current_status_records_in_workbook():
+def test_export_records_treats_real_unsold_status_as_current() -> None:
+    temp_root = _make_temp_root(f"pytest-export-real-unsold-{uuid.uuid4().hex}-")
+
+    try:
+        records = [
+            InventoryRecord(
+                record_key="record-real-unsold",
+                remark_name="user-a",
+                wxid="wxid_123",
+                published_at=datetime.fromisoformat("2026-04-20T10:00:00+08:00"),
+                model="ixus real unsold",
+                price=699,
+                serial_no="C08",
+                status="未售出",
+                image_urls=[],
+                video_urls=[],
+                content_text="ixus real unsold 699💰 C08",
+                note="",
+                needs_manual=False,
+                source_moment_ids=["sns_003"],
+            )
+        ]
+
+        current_path = export_records(records, temp_root)
+        current_rows = _read_sheet_rows(current_path)
+
+        assert len(current_rows) == 2
+        assert current_rows[1][0] == "ixus real unsold"
+        assert current_rows[1][2] == "未售出"
+    finally:
+        shutil.rmtree(temp_root, ignore_errors=True)
+
+
+def test_export_records_only_includes_current_status_records_in_workbook() -> None:
     temp_root = _make_temp_root(f"pytest-export-mixed-status-{uuid.uuid4().hex}-")
 
     try:
-        current_status = next(iter(exporter.CURRENT_STATUSES))
         records = [
             InventoryRecord(
                 record_key="record-current",
@@ -123,10 +155,10 @@ def test_export_records_only_includes_current_status_records_in_workbook():
                 model="ixus current",
                 price=850,
                 serial_no="A12",
-                status=current_status,
+                status=_current_status(),
                 image_urls=[],
                 video_urls=[],
-                content_text="ixus current 850 A12",
+                content_text="ixus current 850💰 A12",
                 note="",
                 needs_manual=False,
                 source_moment_ids=["sns_001"],
@@ -139,10 +171,10 @@ def test_export_records_only_includes_current_status_records_in_workbook():
                 model="ixus sold",
                 price=680,
                 serial_no="B18",
-                status="已售出",
+                status="宸插敭鍑?",
                 image_urls=[],
                 video_urls=[],
-                content_text="ixus sold 680 B18",
+                content_text="ixus sold 680💰 B18",
                 note="",
                 needs_manual=False,
                 source_moment_ids=["sns_002"],
@@ -154,13 +186,13 @@ def test_export_records_only_includes_current_status_records_in_workbook():
 
         assert len(current_rows) == 2
         assert current_rows[1][0] == "ixus current"
-        assert current_rows[1][2] == current_status
+        assert current_rows[1][2] == _current_status()
         assert all("ixus sold" not in row for row in current_rows[1:])
     finally:
         shutil.rmtree(temp_root, ignore_errors=True)
 
 
-def test_export_records_exports_media_files_and_writes_local_paths():
+def test_export_records_exports_media_files_and_writes_local_paths() -> None:
     temp_root = _make_temp_root(f"pytest-export-media-{uuid.uuid4().hex}-")
 
     responses = {
@@ -199,13 +231,13 @@ def test_export_records_exports_media_files_and_writes_local_paths():
                 model="ixus 95",
                 price=850,
                 serial_no="A12",
-                status="未售出",
+                status=_current_status(),
                 image_urls=[
                     "http://127.0.0.1:5031/api/v1/sns/media/proxy?url=https%3A%2F%2Fexample.com%2Fa.jpg&key=1",
                     "https://example.com/b.png",
                 ],
                 video_urls=["https://example.com/v.mp4"],
-                content_text="ixus 95 850 A12",
+                content_text="ixus 95 850💰 A12",
                 note="",
                 needs_manual=False,
                 source_moment_ids=["sns_001"],
@@ -222,7 +254,6 @@ def test_export_records_exports_media_files_and_writes_local_paths():
         rows = _read_sheet_rows(current_path)
         assert rows[1][7] == "media/record-1/image-1.jpg\nmedia/record-1/image-2.png"
         assert rows[1][8] == "media/record-1/video-1.mp4"
-        assert not (temp_root / "历史总库.xlsx").exists()
         assert (temp_root / "media" / "record-1" / "image-1.jpg").read_bytes() == b"image-a"
         assert (temp_root / "media" / "record-1" / "image-2.png").read_bytes() == b"image-b"
         assert (temp_root / "media" / "record-1" / "video-1.mp4").read_bytes() == b"fake-video"
@@ -236,7 +267,7 @@ def test_export_records_exports_media_files_and_writes_local_paths():
         shutil.rmtree(temp_root, ignore_errors=True)
 
 
-def test_export_records_uses_fixed_failure_text_when_media_download_fails():
+def test_export_records_uses_fixed_failure_text_when_media_download_fails() -> None:
     temp_root = _make_temp_root(f"pytest-export-failed-media-{uuid.uuid4().hex}-")
 
     def fake_urlopen(request, timeout):
@@ -254,10 +285,10 @@ def test_export_records_uses_fixed_failure_text_when_media_download_fails():
                 model="ixus 95",
                 price=850,
                 serial_no="A12",
-                status="未售出",
+                status=_current_status(),
                 image_urls=["https://example.com/a.jpg"],
                 video_urls=["https://example.com/v.mp4"],
-                content_text="ixus 95 850 A12",
+                content_text="ixus 95 850💰 A12",
                 note="",
                 needs_manual=False,
                 source_moment_ids=["sns_001"],
@@ -267,14 +298,53 @@ def test_export_records_uses_fixed_failure_text_when_media_download_fails():
         current_path = export_records(records, temp_root)
         rows = _read_sheet_rows(current_path)
 
-        assert rows[1][7] == "图片未成功下载"
-        assert rows[1][8] == "视频未成功下载"
+        assert rows[1][7] == exporter.IMAGE_FAILURE_TEXT
+        assert rows[1][8] == exporter.VIDEO_FAILURE_TEXT
     finally:
         exporter.urlopen = original_urlopen
         shutil.rmtree(temp_root, ignore_errors=True)
 
 
-def test_export_records_filters_xml_control_characters():
+def test_export_records_skips_media_download_when_disabled() -> None:
+    temp_root = _make_temp_root(f"pytest-export-no-media-{uuid.uuid4().hex}-")
+
+    def fake_urlopen(request, timeout):
+        raise AssertionError("urlopen should not be called when download_media is false")
+
+    original_urlopen = exporter.urlopen
+    exporter.urlopen = fake_urlopen
+    try:
+        records = [
+            InventoryRecord(
+                record_key="record-no-media",
+                remark_name="user-a",
+                wxid="wxid_123",
+                published_at=datetime.fromisoformat("2026-04-20T10:00:00+08:00"),
+                model="ixus 95",
+                price=850,
+                serial_no="A12",
+                status=_current_status(),
+                image_urls=["https://example.com/a.jpg"],
+                video_urls=["https://example.com/v.mp4"],
+                content_text="ixus 95 850💰 A12",
+                note="",
+                needs_manual=False,
+                source_moment_ids=["sns_001"],
+            )
+        ]
+
+        current_path = export_records(records, temp_root, download_media=False)
+        rows = _read_sheet_rows(current_path)
+
+        assert rows[1][7] in ("", None)
+        assert rows[1][8] in ("", None)
+        assert not any((temp_root / "media").rglob("*.*"))
+    finally:
+        exporter.urlopen = original_urlopen
+        shutil.rmtree(temp_root, ignore_errors=True)
+
+
+def test_export_records_filters_xml_control_characters() -> None:
     temp_root = _make_temp_root(f"pytest-export-xml-{uuid.uuid4().hex}-")
 
     try:
@@ -287,10 +357,10 @@ def test_export_records_filters_xml_control_characters():
                 model="ixus 95",
                 price=850,
                 serial_no="A12",
-                status=next(iter(exporter.CURRENT_STATUSES)),
+                status=_current_status(),
                 image_urls=[],
                 video_urls=[],
-                content_text="hello\x01world",
+                content_text="hello\x01world 850💰",
                 note="bad\x02note",
                 needs_manual=False,
                 source_moment_ids=["sns_001"],
@@ -300,7 +370,69 @@ def test_export_records_filters_xml_control_characters():
         current_path = export_records(records, temp_root)
         rows = _read_sheet_rows(current_path)
 
-        assert rows[1][9] == "helloworld"
+        assert rows[1][9] == "helloworld 850💰"
         assert rows[1][10] == "badnote"
+    finally:
+        shutil.rmtree(temp_root, ignore_errors=True)
+
+
+def test_export_records_excludes_records_without_money_symbol() -> None:
+    temp_root = _make_temp_root(f"pytest-export-no-money-symbol-{uuid.uuid4().hex}-")
+
+    try:
+        records = [
+            InventoryRecord(
+                record_key="record-no-money-symbol",
+                remark_name="user-a",
+                wxid="wxid_123",
+                published_at=datetime.fromisoformat("2026-04-20T10:00:00+08:00"),
+                model="ixus no money symbol",
+                price=850,
+                serial_no="A12",
+                status=_current_status(),
+                image_urls=[],
+                video_urls=[],
+                content_text="ixus no money symbol 850 A12",
+                note="",
+                needs_manual=False,
+                source_moment_ids=["sns_010"],
+            )
+        ]
+
+        current_path = export_records(records, temp_root)
+        current_rows = _read_sheet_rows(current_path)
+
+        assert current_rows == [tuple(exporter.HEADERS)]
+    finally:
+        shutil.rmtree(temp_root, ignore_errors=True)
+
+
+def test_export_records_excludes_prices_below_99() -> None:
+    temp_root = _make_temp_root(f"pytest-export-low-price-{uuid.uuid4().hex}-")
+
+    try:
+        records = [
+            InventoryRecord(
+                record_key="record-low-price",
+                remark_name="user-a",
+                wxid="wxid_123",
+                published_at=datetime.fromisoformat("2026-04-20T10:00:00+08:00"),
+                model="ixus low price",
+                price=35,
+                serial_no="A12",
+                status=_current_status(),
+                image_urls=[],
+                video_urls=[],
+                content_text="ixus low price 35💰 A12",
+                note="",
+                needs_manual=False,
+                source_moment_ids=["sns_011"],
+            )
+        ]
+
+        current_path = export_records(records, temp_root)
+        current_rows = _read_sheet_rows(current_path)
+
+        assert current_rows == [tuple(exporter.HEADERS)]
     finally:
         shutil.rmtree(temp_root, ignore_errors=True)

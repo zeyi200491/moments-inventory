@@ -25,6 +25,7 @@ class TaskSettings:
     days: int = 30
     merge_window_minutes: int = 10
     output_dir: str = "./output"
+    download_media: bool = True
 
 
 @dataclass(slots=True)
@@ -47,12 +48,17 @@ class WarmupSettings:
     search_delay_ms: int = 800
     open_profile_delay_ms: int = 1000
     open_timeline_delay_ms: int = 1200
-    scroll_count: int = 4
+    timeline_sync_wait_ms: int = 1500
+    scroll_count: int = 50
     scroll_delay_ms: int = 900
     back_delay_ms: int = 600
     max_consecutive_failures: int = 3
     min_success_count: int = 1
     auto_export_on_success: bool = True
+    segment_size: int = 5
+    verify_state_after_each_contact: bool = True
+    force_recovery_on_reset_failure: bool = True
+    log_step_details: bool = True
 
 
 @dataclass(slots=True)
@@ -65,6 +71,19 @@ class BatchRunSettings:
 
 
 @dataclass(slots=True)
+class OrchestratorSettings:
+    enabled: bool = False
+    mode: str = "priority_only"
+    batch_size: int = 25
+    export_priority_after_p1: bool = True
+    export_full_after_all: bool = True
+    resume_enabled: bool = True
+    write_failed_targets: bool = True
+    priority_output_name: str = "优先货源当前库.xlsx"
+    full_output_name: str = "全量当前库.xlsx"
+
+
+@dataclass(slots=True)
 class Settings:
     weflow: WeFlowSettings
     task: TaskSettings
@@ -73,22 +92,32 @@ class Settings:
     paths: PathSettings
     warmup: WarmupSettings = field(default_factory=WarmupSettings)
     batch_run: BatchRunSettings = field(default_factory=BatchRunSettings)
+    orchestrator: OrchestratorSettings = field(default_factory=OrchestratorSettings)
     model_keywords: list[str] = field(default_factory=list)
 
 
-_WARMUP_BOOL_FIELDS = {"enabled", "auto_export_on_success"}
+_WARMUP_BOOL_FIELDS = {
+    "enabled",
+    "auto_export_on_success",
+    "verify_state_after_each_contact",
+    "force_recovery_on_reset_failure",
+    "log_step_details",
+}
 _WARMUP_INT_FIELDS = {
     "search_delay_ms",
     "open_profile_delay_ms",
     "open_timeline_delay_ms",
+    "timeline_sync_wait_ms",
     "scroll_count",
     "scroll_delay_ms",
     "back_delay_ms",
     "max_consecutive_failures",
     "min_success_count",
+    "segment_size",
 }
 _WARMUP_ALLOWED_KEYS = _WARMUP_BOOL_FIELDS | _WARMUP_INT_FIELDS | {"start_page"}
 _WARMUP_ALLOWED_START_PAGES = {"contacts", "chat_list"}
+
 _BATCH_RUN_BOOL_FIELDS = {
     "enabled",
     "stop_on_batch_failure",
@@ -98,16 +127,31 @@ _BATCH_RUN_BOOL_FIELDS = {
 _BATCH_RUN_INT_FIELDS = {"batch_size"}
 _BATCH_RUN_ALLOWED_KEYS = _BATCH_RUN_BOOL_FIELDS | _BATCH_RUN_INT_FIELDS
 
+_ORCHESTRATOR_BOOL_FIELDS = {
+    "enabled",
+    "export_priority_after_p1",
+    "export_full_after_all",
+    "resume_enabled",
+    "write_failed_targets",
+}
+_ORCHESTRATOR_INT_FIELDS = {"batch_size"}
+_ORCHESTRATOR_STRING_FIELDS = {"mode", "priority_output_name", "full_output_name"}
+_ORCHESTRATOR_ALLOWED_KEYS = (
+    _ORCHESTRATOR_BOOL_FIELDS | _ORCHESTRATOR_INT_FIELDS | _ORCHESTRATOR_STRING_FIELDS
+)
+_ORCHESTRATOR_ALLOWED_MODES = {"priority_only", "full"}
+_TASK_BOOL_FIELDS = {"download_media"}
+
 
 def _expect_mapping(value: object, path: str) -> dict:
     if not isinstance(value, dict):
-        raise ConfigError(f"{path} 必须是对象")
+        raise ConfigError(f"{path} must be a mapping")
     return value
 
 
 def _expect_list(value: object, path: str) -> list:
     if not isinstance(value, list):
-        raise ConfigError(f"{path} 必须是数组")
+        raise ConfigError(f"{path} must be a list")
     return value
 
 
@@ -121,26 +165,26 @@ def _validate_keys(
     allowed_keys = required_keys | optional_keys
 
     for key in sorted(data.keys() - allowed_keys):
-        raise ConfigError(f"存在未知配置字段: {path}.{key}")
+        raise ConfigError(f"unknown config field: {path}.{key}")
     for key in sorted(required_keys - set(data.keys())):
-        raise ConfigError(f"缺少必填配置字段: {path}.{key}")
+        raise ConfigError(f"missing required config field: {path}.{key}")
 
 
 def _expect_non_empty_string(value: object, path: str) -> str:
     if not isinstance(value, str) or not value.strip():
-        raise ConfigError(f"{path} 必须是非空字符串")
+        raise ConfigError(f"{path} must be a non-empty string")
     return value.strip()
 
 
 def _expect_positive_int(value: object, path: str) -> int:
     if not isinstance(value, int) or isinstance(value, bool) or value <= 0:
-        raise ConfigError(f"{path} 必须是正整数")
+        raise ConfigError(f"{path} must be a positive integer")
     return value
 
 
 def _expect_bool(value: object, path: str) -> bool:
     if not isinstance(value, bool):
-        raise ConfigError(f"{path} 必须是布尔值")
+        raise ConfigError(f"{path} must be a boolean")
     return value
 
 
@@ -180,17 +224,21 @@ def _validate_targets(raw_targets: object) -> list[TargetContact]:
     for index, raw_target in enumerate(targets):
         path = f"targets[{index}]"
         target = _expect_mapping(raw_target, path)
-        _validate_keys(path, target, set(), {"remark_name", "wxid"})
+        _validate_keys(path, target, set(), {"remark_name", "wxid", "tier"})
         remark_name = target.get("remark_name")
         wxid = target.get("wxid")
+        tier = target.get("tier", 2)
         if remark_name is not None and not isinstance(remark_name, str):
-            raise ConfigError(f"{path}.remark_name 必须是字符串")
+            raise ConfigError(f"{path}.remark_name must be a string")
         if wxid is not None and not isinstance(wxid, str):
-            raise ConfigError(f"{path}.wxid 必须是字符串")
+            raise ConfigError(f"{path}.wxid must be a string")
+        if not isinstance(tier, int) or isinstance(tier, bool) or tier not in {1, 2}:
+            raise ConfigError(f"{path}.tier must be 1 or 2")
         normalized.append(
             TargetContact(
                 remark_name=remark_name.strip() or None if isinstance(remark_name, str) else None,
                 wxid=wxid.strip() or None if isinstance(wxid, str) else None,
+                tier=tier,
             )
         )
     return normalized
@@ -206,7 +254,7 @@ def _parse_warmup_settings(raw_warmup: object | None) -> WarmupSettings:
         "warmup.start_page",
     )
     if start_page not in _WARMUP_ALLOWED_START_PAGES:
-        raise ConfigError("warmup.start_page 只能是 contacts 或 chat_list")
+        raise ConfigError("warmup.start_page must be contacts or chat_list")
 
     parsed_values: dict[str, object] = {"start_page": start_page}
 
@@ -250,15 +298,49 @@ def _parse_batch_run_settings(raw_batch_run: object | None) -> BatchRunSettings:
     return BatchRunSettings(**parsed_values)
 
 
+def _parse_orchestrator_settings(raw_orchestrator: object | None) -> OrchestratorSettings:
+    defaults = OrchestratorSettings()
+    orchestrator_raw = _expect_mapping(
+        {} if raw_orchestrator is None else raw_orchestrator,
+        "orchestrator",
+    )
+    _validate_keys("orchestrator", orchestrator_raw, set(), _ORCHESTRATOR_ALLOWED_KEYS)
+
+    parsed_values: dict[str, object] = {}
+
+    for field_name in sorted(_ORCHESTRATOR_BOOL_FIELDS):
+        parsed_values[field_name] = _expect_bool(
+            orchestrator_raw.get(field_name, getattr(defaults, field_name)),
+            f"orchestrator.{field_name}",
+        )
+
+    for field_name in sorted(_ORCHESTRATOR_INT_FIELDS):
+        parsed_values[field_name] = _expect_positive_int(
+            orchestrator_raw.get(field_name, getattr(defaults, field_name)),
+            f"orchestrator.{field_name}",
+        )
+
+    for field_name in sorted(_ORCHESTRATOR_STRING_FIELDS):
+        parsed_values[field_name] = _expect_non_empty_string(
+            orchestrator_raw.get(field_name, getattr(defaults, field_name)),
+            f"orchestrator.{field_name}",
+        )
+
+    if parsed_values["mode"] not in _ORCHESTRATOR_ALLOWED_MODES:
+        raise ConfigError("orchestrator.mode must be priority_only or full")
+
+    return OrchestratorSettings(**parsed_values)
+
+
 def load_settings(path: str | Path) -> Settings:
     config_path = Path(path)
     raw = yaml.safe_load(config_path.read_text(encoding="utf-8"))
     raw = _expect_mapping(raw, "config")
     _validate_keys(
-        raw_path := "config",
+        "config",
         raw,
         {"weflow", "task", "targets", "rules", "paths"},
-        {"warmup", "batch_run"},
+        {"warmup", "batch_run", "orchestrator"},
     )
     base_dir = config_path.parent.resolve()
 
@@ -266,7 +348,12 @@ def load_settings(path: str | Path) -> Settings:
     _validate_keys("weflow", weflow_raw, {"base_url"}, {"timeout_seconds", "access_token"})
 
     task_raw = _expect_mapping(raw["task"], "task")
-    _validate_keys("task", task_raw, {"days", "merge_window_minutes", "output_dir"})
+    _validate_keys(
+        "task",
+        task_raw,
+        {"days", "merge_window_minutes", "output_dir"},
+        _TASK_BOOL_FIELDS,
+    )
 
     rules_raw = _expect_mapping(raw["rules"], "rules")
     _validate_keys("rules", rules_raw, {"required_fields"})
@@ -274,9 +361,20 @@ def load_settings(path: str | Path) -> Settings:
     paths_raw = _expect_mapping(raw["paths"], "paths")
     _validate_keys("paths", paths_raw, {"sqlite_db", "model_dict"})
 
-    model_path = Path(_resolve_path(base_dir, _expect_non_empty_string(paths_raw["model_dict"], "paths.model_dict")))
-    sqlite_db = _resolve_path(base_dir, _expect_non_empty_string(paths_raw["sqlite_db"], "paths.sqlite_db"))
-    output_dir = _resolve_path(base_dir, _expect_non_empty_string(task_raw["output_dir"], "task.output_dir"))
+    model_path = Path(
+        _resolve_path(
+            base_dir,
+            _expect_non_empty_string(paths_raw["model_dict"], "paths.model_dict"),
+        )
+    )
+    sqlite_db = _resolve_path(
+        base_dir,
+        _expect_non_empty_string(paths_raw["sqlite_db"], "paths.sqlite_db"),
+    )
+    output_dir = _resolve_path(
+        base_dir,
+        _expect_non_empty_string(task_raw["output_dir"], "task.output_dir"),
+    )
 
     return Settings(
         weflow=WeFlowSettings(
@@ -294,6 +392,10 @@ def load_settings(path: str | Path) -> Settings:
                 "task.merge_window_minutes",
             ),
             output_dir=output_dir,
+            download_media=_expect_bool(
+                task_raw.get("download_media", True),
+                "task.download_media",
+            ),
         ),
         targets=_validate_targets(raw["targets"]),
         rules=RuleSettings(
@@ -305,5 +407,6 @@ def load_settings(path: str | Path) -> Settings:
         paths=PathSettings(sqlite_db=sqlite_db, model_dict=str(model_path)),
         warmup=_parse_warmup_settings(raw.get("warmup")),
         batch_run=_parse_batch_run_settings(raw.get("batch_run")),
+        orchestrator=_parse_orchestrator_settings(raw.get("orchestrator")),
         model_keywords=_read_model_keywords(model_path),
     )

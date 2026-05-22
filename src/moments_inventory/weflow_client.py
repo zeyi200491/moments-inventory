@@ -17,6 +17,8 @@ LOGGER = get_logger(__name__)
 MAX_RETRIES = 3
 RETRY_DELAY_SECONDS = 0.1
 RETRYABLE_STATUS_CODES = {408, 429, 500, 502, 503, 504}
+TIMELINE_PAGE_SIZE = 200
+MAX_TIMELINE_PAGE_COUNT = 50
 
 
 class WeFlowRequestError(RuntimeError):
@@ -350,18 +352,75 @@ class WeFlowClient:
         LOGGER.info("resolved usernames", extra={"target_count": len(targets), "username_count": len(usernames)})
         return usernames
 
+    @staticmethod
+    def _filter_moments_by_time_range(
+        moments: list[RawMoment],
+        start_at: datetime,
+        end_at: datetime,
+    ) -> list[RawMoment]:
+        return [
+            moment
+            for moment in moments
+            if start_at <= moment.published_at <= end_at
+        ]
+
     def fetch_timeline(self, usernames: list[str], start: str, end: str) -> list[RawMoment]:
-        payload = self._get_json(
-            "/api/v1/sns/timeline",
-            {
-                "usernames": ",".join(usernames),
-                "start": start,
-                "end": end,
-                "limit": "500",
-            }
+        start_at = datetime.fromisoformat(start)
+        end_at = datetime.fromisoformat(end)
+        moments: list[RawMoment] = []
+        seen_moment_ids: set[str] = set()
+        page_count = 0
+        raw_moment_count = 0
+
+        for page_index in range(MAX_TIMELINE_PAGE_COUNT):
+            payload = self._get_json(
+                "/api/v1/sns/timeline",
+                {
+                    "usernames": ",".join(usernames),
+                    "start": start,
+                    "end": end,
+                    "limit": str(TIMELINE_PAGE_SIZE),
+                    "offset": str(page_index * TIMELINE_PAGE_SIZE),
+                },
+            )
+            page_moments = parse_timeline_response(payload)
+            if not page_moments:
+                break
+
+            page_count += 1
+            raw_moment_count += len(page_moments)
+            deduplicated_page_moments = [
+                moment
+                for moment in page_moments
+                if moment.moment_id not in seen_moment_ids
+            ]
+            for moment in deduplicated_page_moments:
+                seen_moment_ids.add(moment.moment_id)
+
+            moments.extend(
+                self._filter_moments_by_time_range(
+                    deduplicated_page_moments,
+                    start_at=start_at,
+                    end_at=end_at,
+                )
+            )
+
+            if len(page_moments) < TIMELINE_PAGE_SIZE:
+                break
+            if deduplicated_page_moments and all(
+                moment.published_at < start_at for moment in deduplicated_page_moments
+            ):
+                break
+
+        LOGGER.info(
+            "fetched timeline",
+            extra={
+                "username_count": len(usernames),
+                "page_count": page_count,
+                "raw_moment_count": raw_moment_count,
+                "moment_count": len(moments),
+            },
         )
-        moments = parse_timeline_response(payload)
-        LOGGER.info("fetched timeline", extra={"username_count": len(usernames), "moment_count": len(moments)})
         return moments
 
     def fetch_sessions(self, limit: int = 100) -> list[WeFlowSession]:

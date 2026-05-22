@@ -436,6 +436,64 @@ paths:
         shutil.rmtree(temp_root, ignore_errors=True)
 
 
+def test_sync_service_prefers_configured_target_remark_name_over_weflow_alias():
+    temp_root = _make_temp_root("pytest-service-remark-map-temp-")
+
+    try:
+        model_file = temp_root / "models.txt"
+        model_file.write_text("ixus 95\n", encoding="utf-8")
+        config_file = temp_root / "config.yaml"
+        config_file.write_text(
+            f"""
+weflow:
+  base_url: "http://127.0.0.1:5030"
+  timeout_seconds: 20
+task:
+  days: 30
+  merge_window_minutes: 10
+  output_dir: "{(temp_root / 'output').as_posix()}"
+targets:
+  - remark_name: "Configured Seller"
+    wxid: "wxid_123"
+rules:
+  required_fields:
+    - model
+    - price
+    - serial_no
+paths:
+  sqlite_db: "{(temp_root / 'inventory.db').as_posix()}"
+  model_dict: "{model_file.as_posix()}"
+""",
+            encoding="utf-8",
+        )
+        settings = load_settings(config_file)
+
+        class AliasClient:
+            def resolve_usernames(self, targets):
+                return ["wxid_123"]
+
+            def fetch_timeline(self, usernames, start, end):
+                return [
+                    RawMoment(
+                        "m1",
+                        "WeFlow Alias",
+                        "wxid_123",
+                        datetime.fromisoformat("2026-04-27T12:00:00+08:00"),
+                        "ixus 95 850 A12",
+                        ["a.jpg"],
+                        [],
+                    )
+                ]
+
+        service = SyncService(settings=settings, client=AliasClient())
+
+        records = service.sync(now=datetime.fromisoformat("2026-04-27T12:30:00+08:00"))
+
+        assert [record.remark_name for record in records] == ["Configured Seller"]
+    finally:
+        shutil.rmtree(temp_root, ignore_errors=True)
+
+
 def test_build_parser_supports_sync_export_flag():
     parser = build_parser()
     args = parser.parse_args(["sync", "--export"])

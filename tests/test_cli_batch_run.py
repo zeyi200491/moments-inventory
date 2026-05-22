@@ -19,6 +19,15 @@ def test_build_parser_supports_batch_run_export_flag() -> None:
     assert args.export is True
 
 
+def test_build_parser_supports_orchestrated_run_flags() -> None:
+    parser = build_parser()
+    args = parser.parse_args(["orchestrated-run", "--mode", "full", "--resume"])
+
+    assert args.command == "orchestrated-run"
+    assert args.mode == "full"
+    assert args.resume is True
+
+
 def test_cli_batch_run_export_runs_service_and_exports_records(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -91,7 +100,7 @@ def test_cli_batch_run_export_runs_service_and_exports_records(
 
     monkeypatch.setattr(cli_module, "load_settings", lambda _path: settings)
     monkeypatch.setattr(cli_module, "BatchRunService", FakeBatchRunService)
-    monkeypatch.setattr(cli_module, "PywinautoKeyboardController", FakeController)
+    monkeypatch.setattr(cli_module, "PywinautoWechatController", FakeController)
     monkeypatch.setattr(cli_module, "WeChatWarmupAdapter", FakeAdapter)
     monkeypatch.setattr(cli_module, "WarmupRunner", FakeWarmupRunner)
     monkeypatch.setattr(cli_module, "_export_loaded_records", fake_export_loaded_records)
@@ -147,7 +156,7 @@ def test_build_batch_warmup_runner_raises_when_batch_is_aborted(
                 contact_results=[],
             )
 
-    monkeypatch.setattr(cli_module, "PywinautoKeyboardController", FakeController)
+    monkeypatch.setattr(cli_module, "PywinautoWechatController", FakeController)
     monkeypatch.setattr(cli_module, "WeChatWarmupAdapter", FakeAdapter)
     monkeypatch.setattr(cli_module, "WarmupRunner", FakeWarmupRunner)
 
@@ -186,7 +195,7 @@ def test_build_batch_warmup_runner_raises_when_failures_should_stop(
                 contact_results=[],
             )
 
-    monkeypatch.setattr(cli_module, "PywinautoKeyboardController", FakeController)
+    monkeypatch.setattr(cli_module, "PywinautoWechatController", FakeController)
     monkeypatch.setattr(cli_module, "WeChatWarmupAdapter", FakeAdapter)
     monkeypatch.setattr(cli_module, "WarmupRunner", FakeWarmupRunner)
 
@@ -194,3 +203,69 @@ def test_build_batch_warmup_runner_raises_when_failures_should_stop(
 
     with pytest.raises(RuntimeError, match="batch warmup reported failures"):
         warmup_runner([TargetContact(remark_name="user-a", wxid="wxid_1")])
+
+
+def test_cli_orchestrated_run_uses_service(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    settings = SimpleNamespace(
+        warmup=WarmupSettings(enabled=True),
+        batch_run=BatchRunSettings(enabled=True, stop_on_batch_failure=True),
+        orchestrator=SimpleNamespace(enabled=True),
+        targets=[TargetContact(remark_name="user-a", wxid="wxid_1", tier=1)],
+        task=TaskSettings(output_dir="output-dir"),
+    )
+    state: dict[str, object] = {}
+
+    class FakeController:
+        pass
+
+    class FakeAdapter:
+        def __init__(self, *, settings: object, controller: object) -> None:
+            state["adapter_settings"] = settings
+            state["controller"] = controller
+
+    class FakeWarmupRunner:
+        def __init__(self, *, settings: object, targets: object, adapter: object, output_dir: object) -> None:
+            state["warmup_settings"] = settings
+            state["warmup_output_dir"] = output_dir
+            state["warmup_targets"] = targets
+
+        def run(self) -> WarmupRunResult:
+            return WarmupRunResult(
+                success_count=1,
+                failure_count=0,
+                aborted=False,
+                should_export=False,
+                contact_results=[],
+            )
+
+    class FakeOrchestratedRunService:
+        def __init__(self, settings: object, warmup_runner: object = None) -> None:
+            state["settings"] = settings
+            state["warmup_runner"] = warmup_runner
+
+        def run(self, *, mode: str | None = None, resume: bool = False) -> list[str]:
+            state["mode"] = mode
+            state["resume"] = resume
+            assert callable(state["warmup_runner"])
+            state["warmup_runner"]([TargetContact(remark_name="user-a", wxid="wxid_1", tier=1)])
+            return ["record-1"]
+
+    monkeypatch.setattr(cli_module, "load_settings", lambda _path: settings)
+    monkeypatch.setattr(cli_module, "OrchestratedRunService", FakeOrchestratedRunService)
+    monkeypatch.setattr(cli_module, "PywinautoWechatController", FakeController)
+    monkeypatch.setattr(cli_module, "WeChatWarmupAdapter", FakeAdapter)
+    monkeypatch.setattr(cli_module, "WarmupRunner", FakeWarmupRunner)
+
+    assert (
+        cli_module.main(
+            ["--config", "config/config.yaml", "orchestrated-run", "--mode", "full", "--resume"]
+        )
+        == 0
+    )
+    assert state["settings"] is settings
+    assert state["mode"] == "full"
+    assert state["resume"] is True
+    assert state["warmup_settings"] is settings.warmup
+    assert state["warmup_output_dir"] == settings.task.output_dir
