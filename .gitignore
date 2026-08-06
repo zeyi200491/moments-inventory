@@ -34,6 +34,10 @@ config/data/
 config/output*/
 data/
 media/
+manual/
+site_dist/
+showcase_assets/*
+!showcase_assets/.gitkeep
 docs/superpowers/
 
 # Test / probe temp dirs

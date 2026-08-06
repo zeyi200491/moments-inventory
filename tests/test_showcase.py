@@ -194,3 +194,14 @@ def test_build_showcase_site_filters_hidden_products_and_copies_assets(tmp_path:
     assert (result.output_dir / "assets" / "body" / "p1" / "image-1.jpg").read_bytes() == b"body"
     assert (result.output_dir / "assets" / "samples" / "三星a40" / "sample-1.jpg").read_bytes() == b"sample"
     assert result.missing_assets_path.exists()
+    html = (result.output_dir / "index.html").read_text(encoding="utf-8")
+    css = (result.output_dir / "styles.css").read_text(encoding="utf-8")
+    js = (result.output_dir / "app.js").read_text(encoding="utf-8")
+    assert "CCD 当前库存" in html
+    assert "brandFilter" in html
+    assert "loadMoreButton" in html
+    assert "价格区间" in html
+    assert ".product-card" in css
+    assert "products.json" in js
+    assert "function escapeHtml" in js
+    assert "PAGE_SIZE" in js

@@ -354,22 +354,490 @@ def _write_missing_assets(path: Path, missing_rows: list[dict[str, str]]) -> Non
 
 def _write_static_files(target_dir: Path) -> None:
     (target_dir / "index.html").write_text(
-        '<!doctype html><html lang="zh-CN"><head><meta charset="utf-8">'
-        '<meta name="viewport" content="width=device-width, initial-scale=1">'
-        '<title>CCD 当前库存</title><link rel="stylesheet" href="styles.css">'
-        '</head><body><main><h1>CCD 当前库存</h1><div id="app"></div></main>'
-        '<script src="app.js"></script></body></html>\n',
+        """<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>CCD 当前库存</title>
+  <link rel="stylesheet" href="styles.css">
+</head>
+<body>
+  <main class="page-shell">
+    <header class="inventory-header">
+      <div>
+        <p class="eyebrow">Daily CCD Stock</p>
+        <h1>CCD 当前库存</h1>
+      </div>
+      <p id="resultCount" class="result-count">0 台</p>
+    </header>
+
+    <section class="toolbar" aria-label="库存筛选">
+      <label class="field field-search">
+        <span>搜索</span>
+        <input id="searchInput" type="search" placeholder="型号、品牌、文案关键词">
+      </label>
+      <label class="field">
+        <span>品牌</span>
+        <select id="brandFilter">
+          <option value="">全部品牌</option>
+        </select>
+      </label>
+      <label class="field">
+        <span>价格区间</span>
+        <select id="priceFilter">
+          <option value="">全部价格</option>
+          <option value="0-99">100 以下</option>
+          <option value="100-199">100-199</option>
+          <option value="200-299">200-299</option>
+          <option value="300-499">300-499</option>
+          <option value="500-799">500-799</option>
+          <option value="800-999999">800 以上</option>
+        </select>
+      </label>
+      <label class="field">
+        <span>图片</span>
+        <select id="imageFilter">
+          <option value="">全部商品</option>
+          <option value="body">有机身图</option>
+          <option value="sample">有出片图</option>
+          <option value="both">机身图和出片图都有</option>
+        </select>
+      </label>
+      <label class="field">
+        <span>排序</span>
+        <select id="sortFilter">
+          <option value="latest">最新发布</option>
+          <option value="priceAsc">价格低到高</option>
+          <option value="priceDesc">价格高到低</option>
+        </select>
+      </label>
+    </section>
+
+    <section id="productGrid" class="product-grid" aria-live="polite"></section>
+    <section id="emptyState" class="empty-state" hidden>没有匹配的库存</section>
+    <button id="loadMoreButton" class="load-more-button" type="button" hidden>加载更多</button>
+  </main>
+  <script src="app.js"></script>
+</body>
+</html>
+""",
         encoding="utf-8",
     )
     (target_dir / "styles.css").write_text(
-        "body{margin:0;font-family:Arial,sans-serif;background:#f6f4ef;color:#1d252c}"
-        "main{max-width:1180px;margin:0 auto;padding:24px}"
-        ".product-card{border:1px solid #ddd;background:white;border-radius:8px;padding:16px}\n",
+        """:root {
+  --ink: #192022;
+  --muted: #65706f;
+  --paper: #fbfbf8;
+  --surface: #ffffff;
+  --line: #d9ddd7;
+  --line-strong: #b8c0b9;
+  --pine: #21453f;
+  --mint: #d7e7dd;
+  --coral: #d96f55;
+  --amber: #c79a43;
+  --shadow: 0 18px 38px rgba(25, 32, 34, 0.11);
+}
+
+* {
+  box-sizing: border-box;
+}
+
+body {
+  margin: 0;
+  background:
+    linear-gradient(90deg, rgba(33, 69, 63, 0.06) 1px, transparent 1px),
+    linear-gradient(180deg, #f8faf7 0%, #eef3ee 100%);
+  background-size: 28px 28px, 100% 100%;
+  color: var(--ink);
+  font-family: "Microsoft YaHei", "PingFang SC", "Noto Sans CJK SC", sans-serif;
+}
+
+.page-shell {
+  width: min(1440px, 100%);
+  margin: 0 auto;
+  padding: 22px;
+}
+
+.inventory-header {
+  display: flex;
+  align-items: flex-end;
+  justify-content: space-between;
+  gap: 16px;
+  padding: 18px 0 16px;
+  border-bottom: 2px solid var(--ink);
+}
+
+.eyebrow {
+  margin: 0 0 8px;
+  color: var(--coral);
+  font-size: 12px;
+  font-weight: 800;
+  letter-spacing: 0.12em;
+  text-transform: uppercase;
+}
+
+h1 {
+  margin: 0;
+  font-family: "SimSun", "Songti SC", serif;
+  font-size: clamp(34px, 5vw, 72px);
+  line-height: 0.96;
+  letter-spacing: 0;
+}
+
+.result-count {
+  margin: 0;
+  min-width: 86px;
+  padding: 10px 12px;
+  border: 1px solid var(--line-strong);
+  background: var(--mint);
+  color: var(--pine);
+  font-weight: 800;
+  text-align: center;
+}
+
+.toolbar {
+  position: sticky;
+  top: 0;
+  z-index: 10;
+  display: grid;
+  grid-template-columns: minmax(220px, 1.4fr) repeat(4, minmax(132px, 0.7fr));
+  gap: 10px;
+  padding: 14px 0;
+  background: rgba(248, 250, 247, 0.94);
+  backdrop-filter: blur(12px);
+  border-bottom: 1px solid var(--line);
+}
+
+.field {
+  display: grid;
+  gap: 6px;
+}
+
+.field span {
+  color: var(--muted);
+  font-size: 12px;
+  font-weight: 800;
+}
+
+input,
+select {
+  width: 100%;
+  height: 42px;
+  border: 1px solid var(--line-strong);
+  border-radius: 6px;
+  background: var(--surface);
+  color: var(--ink);
+  font: inherit;
+  font-size: 14px;
+  padding: 0 11px;
+}
+
+input:focus,
+select:focus {
+  outline: 3px solid rgba(33, 69, 63, 0.18);
+  border-color: var(--pine);
+}
+
+.product-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(286px, 1fr));
+  gap: 14px;
+  padding-top: 16px;
+}
+
+.product-card {
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: var(--surface);
+  box-shadow: var(--shadow);
+  overflow: hidden;
+}
+
+.product-main-image {
+  width: 100%;
+  aspect-ratio: 4 / 3;
+  background: #e7ebe6;
+  object-fit: cover;
+  display: block;
+}
+
+.product-content {
+  display: grid;
+  gap: 11px;
+  padding: 14px;
+}
+
+.product-title-row {
+  display: flex;
+  justify-content: space-between;
+  gap: 10px;
+  align-items: flex-start;
+}
+
+.product-title-row h2 {
+  margin: 0;
+  font-size: 18px;
+  line-height: 1.25;
+  letter-spacing: 0;
+}
+
+.price {
+  flex: 0 0 auto;
+  color: var(--coral);
+  font-size: 20px;
+  font-weight: 900;
+}
+
+.meta-row,
+.sample-title {
+  color: var(--muted);
+  font-size: 12px;
+  font-weight: 700;
+}
+
+.copy {
+  margin: 0;
+  color: #2d3435;
+  line-height: 1.62;
+  white-space: pre-wrap;
+  word-break: break-word;
+}
+
+.image-strip {
+  display: grid;
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+  gap: 6px;
+}
+
+.image-strip img {
+  width: 100%;
+  aspect-ratio: 1;
+  border-radius: 6px;
+  object-fit: cover;
+  background: #e7ebe6;
+}
+
+.empty-state {
+  margin-top: 18px;
+  padding: 28px;
+  border: 1px dashed var(--line-strong);
+  background: var(--paper);
+  text-align: center;
+  color: var(--muted);
+}
+
+.load-more-button {
+  display: block;
+  width: min(360px, 100%);
+  margin: 20px auto 0;
+  height: 46px;
+  border: 1px solid var(--pine);
+  border-radius: 6px;
+  background: var(--pine);
+  color: #fff;
+  font: inherit;
+  font-weight: 900;
+  cursor: pointer;
+}
+
+.load-more-button:hover {
+  background: #17322e;
+}
+
+@media (max-width: 860px) {
+  .page-shell {
+    padding: 14px;
+  }
+
+  .inventory-header {
+    align-items: flex-start;
+    flex-direction: column;
+  }
+
+  .toolbar {
+    grid-template-columns: 1fr 1fr;
+  }
+
+  .field-search {
+    grid-column: 1 / -1;
+  }
+}
+
+@media (max-width: 520px) {
+  .toolbar {
+    grid-template-columns: 1fr;
+  }
+
+  .product-grid {
+    grid-template-columns: 1fr;
+  }
+}
+""",
         encoding="utf-8",
     )
     (target_dir / "app.js").write_text(
-        "fetch('products.json').then((response)=>response.json()).then((data)=>{"
-        "document.getElementById('app').textContent=`共 ${data.products.length} 台`;});\n",
+        """const state = {
+  products: [],
+  query: "",
+  brand: "",
+  price: "",
+  image: "",
+  sort: "latest",
+};
+
+const searchInput = document.getElementById("searchInput");
+const brandFilter = document.getElementById("brandFilter");
+const priceFilter = document.getElementById("priceFilter");
+const imageFilter = document.getElementById("imageFilter");
+const sortFilter = document.getElementById("sortFilter");
+const productGrid = document.getElementById("productGrid");
+const emptyState = document.getElementById("emptyState");
+const resultCount = document.getElementById("resultCount");
+const loadMoreButton = document.getElementById("loadMoreButton");
+
+const PAGE_SIZE = 120;
+let visibleLimit = PAGE_SIZE;
+
+function priceText(value) {
+  return Number.isFinite(value) ? `${value} 元` : "询价";
+}
+
+function escapeHtml(value) {
+  return String(value ?? "")
+    .replaceAll("&", "&amp;")
+    .replaceAll("<", "&lt;")
+    .replaceAll(">", "&gt;")
+    .replaceAll('"', "&quot;")
+    .replaceAll("'", "&#039;");
+}
+
+function inPriceRange(product) {
+  if (!state.price) return true;
+  const [min, max] = state.price.split("-").map((part) => Number.parseInt(part, 10));
+  const price = product.displayPrice;
+  return Number.isFinite(price) && price >= min && price <= max;
+}
+
+function matchesImages(product) {
+  if (!state.image) return true;
+  const hasBody = product.bodyImages.length > 0;
+  const hasSample = product.sampleImages.length > 0;
+  if (state.image === "body") return hasBody;
+  if (state.image === "sample") return hasSample;
+  if (state.image === "both") return hasBody && hasSample;
+  return true;
+}
+
+function matchesSearch(product) {
+  if (!state.query) return true;
+  const haystack = [
+    product.model,
+    product.brand,
+    product.displayCopy,
+    product.rawCopy,
+    product.source,
+  ].join(" ").toLowerCase();
+  return haystack.includes(state.query);
+}
+
+function filteredProducts() {
+  const products = state.products
+    .filter((product) => !state.brand || product.brand === state.brand)
+    .filter(inPriceRange)
+    .filter(matchesImages)
+    .filter(matchesSearch);
+  products.sort((left, right) => {
+    if (state.sort === "priceAsc") return (left.displayPrice || 0) - (right.displayPrice || 0);
+    if (state.sort === "priceDesc") return (right.displayPrice || 0) - (left.displayPrice || 0);
+    return String(right.publishedAt).localeCompare(String(left.publishedAt));
+  });
+  return products;
+}
+
+function renderBrands() {
+  const brands = [...new Set(state.products.map((product) => product.brand).filter(Boolean))].sort();
+  for (const brand of brands) {
+    const option = document.createElement("option");
+    option.value = brand;
+    option.textContent = brand;
+    brandFilter.appendChild(option);
+  }
+}
+
+function renderImages(images, className) {
+  if (images.length === 0) return "";
+  return `<div class="${className}">${images.map((src) => `<img src="${src}" alt="">`).join("")}</div>`;
+}
+
+function renderProduct(product) {
+  const mainImage = product.bodyImages[0]
+    ? `<img class="product-main-image" src="${product.bodyImages[0]}" alt="">`
+    : `<div class="product-main-image" aria-label="暂无机身图"></div>`;
+  const sampleStrip = product.sampleImages.length
+    ? `<div class="sample-title">出片参考</div>${renderImages(product.sampleImages.slice(0, 4), "image-strip")}`
+    : "";
+  return `<article class="product-card">
+    ${mainImage}
+    <div class="product-content">
+      <div class="product-title-row">
+        <h2>${escapeHtml(product.model)}</h2>
+        <div class="price">${priceText(product.displayPrice)}</div>
+      </div>
+      <div class="meta-row">${escapeHtml(product.brand || "未识别品牌")} · ${escapeHtml(product.source || "未知来源")}</div>
+      <p class="copy">${escapeHtml(product.displayCopy || product.rawCopy || "")}</p>
+      ${sampleStrip}
+    </div>
+  </article>`;
+}
+
+function render() {
+  const products = filteredProducts();
+  const visibleProducts = products.slice(0, visibleLimit);
+  resultCount.textContent = `${visibleProducts.length} / ${products.length} 台`;
+  productGrid.innerHTML = visibleProducts.map(renderProduct).join("");
+  emptyState.hidden = products.length !== 0;
+  loadMoreButton.hidden = visibleLimit >= products.length;
+}
+
+function resetAndRender() {
+  visibleLimit = PAGE_SIZE;
+  render();
+}
+
+searchInput.addEventListener("input", (event) => {
+  state.query = event.target.value.trim().toLowerCase();
+  resetAndRender();
+});
+brandFilter.addEventListener("change", (event) => {
+  state.brand = event.target.value;
+  resetAndRender();
+});
+priceFilter.addEventListener("change", (event) => {
+  state.price = event.target.value;
+  resetAndRender();
+});
+imageFilter.addEventListener("change", (event) => {
+  state.image = event.target.value;
+  resetAndRender();
+});
+sortFilter.addEventListener("change", (event) => {
+  state.sort = event.target.value;
+  resetAndRender();
+});
+loadMoreButton.addEventListener("click", () => {
+  visibleLimit += PAGE_SIZE;
+  render();
+});
+
+fetch("products.json")
+  .then((response) => response.json())
+  .then((data) => {
+    state.products = Array.isArray(data.products) ? data.products : [];
+    renderBrands();
+    render();
+  });
+""",
         encoding="utf-8",
     )
 
