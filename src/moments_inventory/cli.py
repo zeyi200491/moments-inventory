@@ -19,6 +19,7 @@ from moments_inventory.exporter import export_records
 from moments_inventory.logging_utils import configure_logging
 from moments_inventory.orchestrator import OrchestratedRunService
 from moments_inventory.service import SyncService
+from moments_inventory.showcase import build_showcase_site, merge_showcase_workbook
 from moments_inventory.wechat_ui_adapter import (
     PywinautoWechatController,
     WeChatWarmupAdapter,
@@ -88,6 +89,21 @@ def build_parser() -> argparse.ArgumentParser:
         default="config/ai_kefu.yaml",
         help="AI kefu config file path",
     )
+
+    showcase_merge_parser = subparsers.add_parser(
+        "showcase-merge",
+        help="merge raw inventory Excel into manual showcase Excel",
+    )
+    showcase_merge_parser.add_argument("--source-xlsx", default="output/全量当前库.xlsx")
+    showcase_merge_parser.add_argument("--manual-xlsx", default="manual/客户展示库存.xlsx")
+
+    showcase_build_parser = subparsers.add_parser(
+        "showcase-build",
+        help="build static CCD showcase site from manual showcase Excel",
+    )
+    showcase_build_parser.add_argument("--manual-xlsx", default="manual/客户展示库存.xlsx")
+    showcase_build_parser.add_argument("--sample-assets-dir", default="showcase_assets")
+    showcase_build_parser.add_argument("--output-dir", default="site_dist")
 
     import_knowledge_parser = subparsers.add_parser(
         "import-knowledge",
@@ -208,6 +224,14 @@ def main(argv: list[str] | None = None) -> int:
         settings = load_ai_kefu_settings(args.ai_kefu_config)
         repository = SQLiteKefuRepository(settings.database_path)
         repository.replace_products(import_products_from_xlsx(args.xlsx))
+        return 0
+
+    if args.command == "showcase-merge":
+        merge_showcase_workbook(args.source_xlsx, args.manual_xlsx)
+        return 0
+
+    if args.command == "showcase-build":
+        build_showcase_site(args.manual_xlsx, args.sample_assets_dir, args.output_dir)
         return 0
 
     if args.command == "import-knowledge":
