@@ -21,6 +21,13 @@ _BRAND_ALIASES: tuple[tuple[str, tuple[str, ...]], ...] = (
     ("卡西欧", ("卡西欧", "casio")),
     ("三星", ("三星", "samsung")),
     ("松下", ("松下", "panasonic")),
+    ("宾得", ("宾得", "pentax")),
+    ("理光", ("理光", "ricoh")),
+    ("拍得丽", ("拍得丽", "premier")),
+    ("惠普", ("惠普", "hp", "hewlettpackard")),
+    ("美能达", ("美能达", "minolta", "konica minolta", "konicaminolta")),
+    ("明基", ("明基", "benq")),
+    ("徕卡", ("徕卡", "leica")),
 )
 
 SHOWCASE_HEADERS = [
@@ -71,7 +78,10 @@ def normalize_showcase_model_key(value: str) -> str:
         for alias in aliases:
             alias_key = re.sub(r"[\s\-_]+", "", alias).lower()
             if compact.startswith(alias_key):
-                return f"{brand}{compact[len(alias_key):]}"
+                remainder = compact[len(alias_key):]
+                if remainder.startswith(brand):
+                    remainder = remainder[len(brand):]
+                return f"{brand}{remainder}"
     return compact
 
 

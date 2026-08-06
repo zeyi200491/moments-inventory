@@ -33,6 +33,19 @@ def test_normalize_showcase_model_key_collapses_spacing_and_brand_aliases() -> N
     assert normalize_showcase_model_key("samsung-a40") == "三星a40"
     assert normalize_showcase_model_key("佳能 IXUS 95") == "佳能ixus95"
     assert normalize_showcase_model_key("Canon_ixus95") == "佳能ixus95"
+    assert normalize_showcase_model_key("宾得 Optio S45") == "宾得optios45"
+    assert normalize_showcase_model_key("pentax-w90") == "宾得w90"
+    assert normalize_showcase_model_key("理光 rr30") == "理光rr30"
+    assert normalize_showcase_model_key("ricoh-cx2") == "理光cx2"
+    assert normalize_showcase_model_key("拍得丽 dm-7362") == "拍得丽dm7362"
+    assert normalize_showcase_model_key("premier-dc6360") == "拍得丽dc6360"
+    assert normalize_showcase_model_key("惠普 hp635") == "惠普hp635"
+    assert normalize_showcase_model_key("HP m527") == "惠普m527"
+    assert normalize_showcase_model_key("美能达 xg") == "美能达xg"
+    assert normalize_showcase_model_key("minolta-g400") == "美能达g400"
+    assert normalize_showcase_model_key("明基 dc c740i") == "明基dcc740i"
+    assert normalize_showcase_model_key("benq-c740i") == "明基c740i"
+    assert normalize_showcase_model_key("Leica 徕卡 D-LUX2") == "徕卡dlux2"
 
 
 def test_merge_showcase_workbook_creates_manual_sheet(tmp_path: Path) -> None:
