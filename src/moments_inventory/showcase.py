@@ -46,6 +46,7 @@ SHOWCASE_HEADERS = [
     "出片图型号",
     "备注",
 ]
+PUBLIC_SOURCE_LABEL = "星星ccd货源"
 
 _SOURCE_ALIASES: dict[str, tuple[str, ...]] = {
     "型号": ("型号",),
@@ -346,7 +347,7 @@ def _catalog_product(
         "costPrice": _parse_int(row["成本价"]),
         "displayPrice": _parse_int(row["展示价"]),
         "publishedAt": row["发布时间"],
-        "source": row["来源"],
+        "source": PUBLIC_SOURCE_LABEL,
         "rawCopy": row["原文文案"],
         "displayCopy": row["展示文案"] or row["原文文案"],
         "sampleModelKey": row["出片图型号"],

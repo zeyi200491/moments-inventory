@@ -202,6 +202,7 @@ def test_build_showcase_site_filters_hidden_products_and_copies_assets(tmp_path:
 
     products = json.loads((result.output_dir / "products.json").read_text(encoding="utf-8"))
     assert [item["productId"] for item in products["products"]] == ["p1"]
+    assert products["products"][0]["source"] == "星星ccd货源"
     assert products["products"][0]["bodyImages"] == ["assets/body/p1/image-1.jpg"]
     assert products["products"][0]["sampleImages"] == ["assets/samples/三星a40/sample-1.jpg"]
     assert (result.output_dir / "assets" / "body" / "p1" / "image-1.jpg").read_bytes() == b"body"
