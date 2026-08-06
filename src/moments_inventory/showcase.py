@@ -1,7 +1,11 @@
 from __future__ import annotations
 
+import csv
+from dataclasses import dataclass
+import json
 from pathlib import Path
 import re
+import shutil
 
 from moments_inventory.ai_kefu.products import read_xlsx_rows_from_bytes
 from moments_inventory.exporter import _write_workbook
@@ -51,6 +55,15 @@ _SOURCE_ALIASES: dict[str, tuple[str, ...]] = {
     "是否需要人工复核": ("是否需要人工复核", "是否待人工补充"),
 }
 
+_IMAGE_EXTENSIONS = {".jpg", ".jpeg", ".png", ".webp", ".gif"}
+
+
+@dataclass(slots=True)
+class ShowcaseBuildResult:
+    output_dir: Path
+    product_count: int
+    missing_assets_path: Path
+
 
 def normalize_showcase_model_key(value: str) -> str:
     compact = re.sub(r"[\s\-_]+", "", value.strip()).lower()
@@ -99,6 +112,37 @@ def merge_showcase_workbook(source_xlsx: str | Path, manual_xlsx: str | Path) ->
 
     _write_workbook(manual_path, output_rows)
     return manual_path
+
+
+def build_showcase_site(
+    manual_xlsx: str | Path,
+    sample_assets_dir: str | Path,
+    output_dir: str | Path,
+    *,
+    workspace_root: str | Path | None = None,
+) -> ShowcaseBuildResult:
+    root = Path(workspace_root or ".").resolve()
+    target_dir = Path(output_dir)
+    target_dir.mkdir(parents=True, exist_ok=True)
+    rows = _read_rows(Path(manual_xlsx))
+    products: list[dict[str, object]] = []
+    missing_rows: list[dict[str, str]] = []
+
+    for row in _manual_records(rows):
+        if row["是否展示"].strip() != "是":
+            continue
+        body_images = _copy_body_images(row, root, target_dir, missing_rows)
+        sample_images = _copy_sample_images(row, Path(sample_assets_dir), target_dir, missing_rows)
+        products.append(_catalog_product(row, body_images, sample_images))
+
+    _write_static_files(target_dir)
+    (target_dir / "products.json").write_text(
+        json.dumps({"products": products}, ensure_ascii=False, indent=2) + "\n",
+        encoding="utf-8",
+    )
+    missing_path = target_dir / "showcase_missing_assets.csv"
+    _write_missing_assets(missing_path, missing_rows)
+    return ShowcaseBuildResult(target_dir, len(products), missing_path)
 
 
 def _read_rows(path: Path) -> list[list[object]]:
@@ -160,6 +204,21 @@ def _manual_rows_by_product_id(rows: list[list[object]]) -> dict[str, dict[str, 
     return mapped
 
 
+def _manual_records(rows: list[list[object]]) -> list[dict[str, str]]:
+    if not rows:
+        return []
+    header = [str(value or "").strip() for value in rows[0]]
+    indexes = {name: index for index, name in enumerate(header)}
+    return [
+        {
+            header_name: _get_by_index(row, indexes.get(header_name))
+            for header_name in SHOWCASE_HEADERS
+        }
+        for row in rows[1:]
+        if _get_by_index(row, indexes.get("商品ID"))
+    ]
+
+
 def _build_product_id(source_row: dict[str, str]) -> str:
     parts = [
         source_row["备注名wxid"] or source_row["备注名"],
@@ -191,3 +250,130 @@ def _get_by_index(row: list[object], index: int | None) -> str:
     if value is None:
         return ""
     return str(value).strip()
+
+
+def _split_path_lines(value: str) -> list[str]:
+    return [line.strip() for line in value.splitlines() if line.strip()]
+
+
+def _copy_body_images(
+    row: dict[str, str],
+    workspace_root: Path,
+    target_dir: Path,
+    missing_rows: list[dict[str, str]],
+) -> list[str]:
+    copied: list[str] = []
+    product_id = _safe_asset_segment(row["商品ID"])
+    for raw_path in _split_path_lines(row["机身图路径"]):
+        source = Path(raw_path)
+        if not source.is_absolute():
+            source = workspace_root / source
+        if not source.exists():
+            missing_rows.append(
+                {
+                    "商品ID": row["商品ID"],
+                    "型号": row["型号"],
+                    "类型": "机身图",
+                    "路径": raw_path,
+                }
+            )
+            continue
+        destination = target_dir / "assets" / "body" / product_id / source.name
+        destination.parent.mkdir(parents=True, exist_ok=True)
+        shutil.copy2(source, destination)
+        copied.append(destination.relative_to(target_dir).as_posix())
+    return copied
+
+
+def _copy_sample_images(
+    row: dict[str, str],
+    sample_assets_dir: Path,
+    target_dir: Path,
+    missing_rows: list[dict[str, str]],
+) -> list[str]:
+    sample_key = row["出片图型号"] or normalize_showcase_model_key(row["型号"])
+    source_dir = sample_assets_dir / sample_key
+    if not source_dir.exists():
+        missing_rows.append(
+            {
+                "商品ID": row["商品ID"],
+                "型号": row["型号"],
+                "类型": "出片图",
+                "路径": source_dir.as_posix(),
+            }
+        )
+        return []
+
+    copied: list[str] = []
+    for source in sorted(source_dir.iterdir()):
+        if not source.is_file() or source.suffix.lower() not in _IMAGE_EXTENSIONS:
+            continue
+        destination = target_dir / "assets" / "samples" / sample_key / source.name
+        destination.parent.mkdir(parents=True, exist_ok=True)
+        shutil.copy2(source, destination)
+        copied.append(destination.relative_to(target_dir).as_posix())
+    if not copied:
+        missing_rows.append(
+            {
+                "商品ID": row["商品ID"],
+                "型号": row["型号"],
+                "类型": "出片图",
+                "路径": source_dir.as_posix(),
+            }
+        )
+    return copied
+
+
+def _catalog_product(
+    row: dict[str, str],
+    body_images: list[str],
+    sample_images: list[str],
+) -> dict[str, object]:
+    return {
+        "productId": row["商品ID"],
+        "model": row["型号"],
+        "brand": row["品牌"],
+        "costPrice": _parse_int(row["成本价"]),
+        "displayPrice": _parse_int(row["展示价"]),
+        "publishedAt": row["发布时间"],
+        "source": row["来源"],
+        "rawCopy": row["原文文案"],
+        "displayCopy": row["展示文案"] or row["原文文案"],
+        "sampleModelKey": row["出片图型号"],
+        "bodyImages": body_images,
+        "sampleImages": sample_images,
+    }
+
+
+def _write_missing_assets(path: Path, missing_rows: list[dict[str, str]]) -> None:
+    with path.open("w", encoding="utf-8", newline="") as handle:
+        writer = csv.DictWriter(handle, fieldnames=["商品ID", "型号", "类型", "路径"])
+        writer.writeheader()
+        writer.writerows(missing_rows)
+
+
+def _write_static_files(target_dir: Path) -> None:
+    (target_dir / "index.html").write_text(
+        '<!doctype html><html lang="zh-CN"><head><meta charset="utf-8">'
+        '<meta name="viewport" content="width=device-width, initial-scale=1">'
+        '<title>CCD 当前库存</title><link rel="stylesheet" href="styles.css">'
+        '</head><body><main><h1>CCD 当前库存</h1><div id="app"></div></main>'
+        '<script src="app.js"></script></body></html>\n',
+        encoding="utf-8",
+    )
+    (target_dir / "styles.css").write_text(
+        "body{margin:0;font-family:Arial,sans-serif;background:#f6f4ef;color:#1d252c}"
+        "main{max-width:1180px;margin:0 auto;padding:24px}"
+        ".product-card{border:1px solid #ddd;background:white;border-radius:8px;padding:16px}\n",
+        encoding="utf-8",
+    )
+    (target_dir / "app.js").write_text(
+        "fetch('products.json').then((response)=>response.json()).then((data)=>{"
+        "document.getElementById('app').textContent=`共 ${data.products.length} 台`;});\n",
+        encoding="utf-8",
+    )
+
+
+def _safe_asset_segment(value: str) -> str:
+    cleaned = re.sub(r"[^A-Za-z0-9._\-\u4e00-\u9fff]+", "_", value).strip("._")
+    return cleaned or "product"
