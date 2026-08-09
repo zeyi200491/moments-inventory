@@ -4,7 +4,8 @@ from dataclasses import dataclass, field
 from pathlib import Path
 import re
 import time
-from typing import Callable, Iterable, Protocol
+from typing import Any, Callable, Iterable, Protocol
+from urllib.parse import urljoin, urlparse
 
 import openpyxl
 
@@ -98,6 +99,273 @@ class RateLimiter:
                 self._sleep(remaining)
                 now = self._monotonic()
         self._last_request_at = now
+
+
+class HttpImageDownloader:
+    def __init__(self, timeout_seconds: float = 30.0):
+        import httpx
+
+        self._client = httpx.Client(
+            follow_redirects=True,
+            timeout=timeout_seconds,
+            headers={
+                "User-Agent": (
+                    "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
+                    "AppleWebKit/537.36 (KHTML, like Gecko) "
+                    "Chrome/124.0.0.0 Safari/537.36"
+                ),
+                "Accept": "image/avif,image/webp,image/apng,image/svg+xml,image/*,*/*;q=0.8",
+                "Referer": XHS_HOME_URL,
+            },
+        )
+
+    def download(self, url: str) -> bytes | None:
+        response = self._client.get(url)
+        response.raise_for_status()
+        content_type = response.headers.get("content-type", "").lower()
+        if "image" not in content_type:
+            raise RuntimeError(f"unexpected content-type: {content_type or '<missing>'}")
+        return response.content or None
+
+    def close(self) -> None:
+        self._client.close()
+
+
+class XhsBrowser:
+    SEARCH_INPUT_SELECTORS = [
+        "input.search-input",
+        "input[placeholder*='搜索']",
+        "input[placeholder*='搜']",
+        "input[type='search']",
+        "input",
+    ]
+    NOTE_LINK_SELECTOR = "a[href*='/explore/'], a[href*='/discovery/item/']"
+    LOGIN_SELECTORS = [
+        "button:has-text('登录')",
+        "text=登录后查看",
+        "text=扫码登录",
+        "text=验证码登录",
+        "text=手机登录",
+    ]
+    CAPTCHA_KEYWORDS = ["验证码", "安全验证", "滑块", "访问异常", "操作频繁", "请通过验证"]
+    VIDEO_SELECTORS = ["video", ".video-player", "[class*='video']", "text=视频"]
+
+    def __init__(
+        self,
+        user_data_dir: str | Path | None = None,
+        timeout_ms: int = 30_000,
+        slow_mo_ms: int = 0,
+        manual_retries: int = 3,
+    ):
+        from playwright.sync_api import sync_playwright
+
+        self.timeout_ms = timeout_ms
+        self.manual_retries = manual_retries
+        self.user_data_dir = Path(user_data_dir) if user_data_dir else Path.home() / ".xhs_ccd_image_browser"
+        self.user_data_dir.mkdir(parents=True, exist_ok=True)
+        self._playwright = sync_playwright().start()
+        self._context = self._playwright.chromium.launch_persistent_context(
+            str(self.user_data_dir),
+            headless=False,
+            slow_mo=slow_mo_ms,
+            viewport={"width": 1400, "height": 900},
+            locale="zh-CN",
+            args=["--disable-blink-features=AutomationControlled"],
+        )
+        self._context.set_default_timeout(timeout_ms)
+        self._page = self._context.pages[0] if self._context.pages else self._context.new_page()
+
+    def close(self) -> None:
+        try:
+            self._context.close()
+        finally:
+            self._playwright.stop()
+
+    def ensure_login(self) -> None:
+        self._page.goto(XHS_HOME_URL, wait_until="domcontentloaded", timeout=self.timeout_ms)
+        self._page.wait_for_timeout(1_000)
+        self._handle_manual_intervention(self._page)
+
+    def image_urls_for_query(self, query: str, limit: int) -> list[str]:
+        self.ensure_login()
+        self._submit_search(query)
+        links = self._collect_note_links(limit=max(limit * 4, 20))
+        image_urls: list[str] = []
+        seen: set[str] = set()
+
+        for link in links:
+            if len(image_urls) >= limit:
+                break
+            for image_url in self._image_urls_for_note(link):
+                if image_url in seen:
+                    continue
+                seen.add(image_url)
+                image_urls.append(image_url)
+                if len(image_urls) >= limit:
+                    break
+
+        return image_urls
+
+    def search_image_urls(self, query: str, limit: int) -> list[str]:
+        return self.image_urls_for_query(query, limit)
+
+    def image_urls(self, query: str, limit: int) -> list[str]:
+        return self.image_urls_for_query(query, limit)
+
+    def _submit_search(self, query: str) -> None:
+        search_input = self._first_visible_locator(self._page, self.SEARCH_INPUT_SELECTORS)
+        if search_input is None:
+            self._handle_manual_intervention(self._page, "未找到搜索框，请确认页面可搜索")
+            search_input = self._first_visible_locator(self._page, self.SEARCH_INPUT_SELECTORS)
+        if search_input is None:
+            raise RuntimeError("未找到小红书搜索框")
+
+        search_input.click()
+        search_input.fill(query)
+        search_input.press("Enter")
+        self._page.wait_for_load_state("domcontentloaded")
+        self._page.wait_for_timeout(2_000)
+        self._handle_manual_intervention(self._page)
+
+    def _collect_note_links(self, limit: int) -> list[str]:
+        links: list[str] = []
+        seen: set[str] = set()
+        for _ in range(8):
+            for href in self._hrefs_from_page(self._page):
+                normalized = self._normalize_note_url(href)
+                if not normalized or normalized in seen:
+                    continue
+                seen.add(normalized)
+                links.append(normalized)
+                if len(links) >= limit:
+                    return links
+            self._page.mouse.wheel(0, 1_200)
+            self._page.wait_for_timeout(1_000)
+        return links
+
+    def _image_urls_for_note(self, note_url: str) -> list[str]:
+        page = self._context.new_page()
+        try:
+            page.goto(note_url, wait_until="domcontentloaded", timeout=self.timeout_ms)
+            page.wait_for_timeout(1_500)
+            self._handle_manual_intervention(page)
+            if self._is_video_note(page):
+                print(f"SKIP video note {note_url}")
+                return []
+            return self._extract_image_urls(page)
+        finally:
+            page.close()
+
+    def _extract_image_urls(self, page: Any) -> list[str]:
+        raw_urls = page.evaluate(
+            """
+            () => {
+                const urls = [];
+                for (const img of document.querySelectorAll('img')) {
+                    urls.push(img.currentSrc, img.src, img.dataset.src, img.getAttribute('data-original'));
+                }
+                for (const source of document.querySelectorAll('source[srcset]')) {
+                    urls.push(...source.srcset.split(',').map(item => item.trim().split(/\\s+/)[0]));
+                }
+                return urls.filter(Boolean);
+            }
+            """
+        )
+        image_urls: list[str] = []
+        seen: set[str] = set()
+        for raw_url in raw_urls:
+            normalized = self._normalize_image_url(str(raw_url))
+            if not normalized or normalized in seen:
+                continue
+            seen.add(normalized)
+            image_urls.append(normalized)
+        return image_urls
+
+    def _hrefs_from_page(self, page: Any) -> list[str]:
+        locator = page.locator(self.NOTE_LINK_SELECTOR)
+        hrefs: list[str] = []
+        for index in range(locator.count()):
+            href = locator.nth(index).get_attribute("href")
+            if href:
+                hrefs.append(href)
+        return hrefs
+
+    def _normalize_note_url(self, href: str) -> str | None:
+        url = urljoin(XHS_HOME_URL, href)
+        parsed = urlparse(url)
+        if parsed.netloc and "xiaohongshu.com" not in parsed.netloc:
+            return None
+        if "/explore/" not in parsed.path and "/discovery/item/" not in parsed.path:
+            return None
+        return url
+
+    def _normalize_image_url(self, url: str) -> str | None:
+        if url.startswith("//"):
+            url = f"https:{url}"
+        elif url.startswith("/"):
+            url = urljoin(XHS_HOME_URL, url)
+
+        parsed = urlparse(url)
+        if parsed.scheme not in {"http", "https"}:
+            return None
+        lowered = url.lower()
+        if lowered.endswith(".svg") or "data:image/svg" in lowered:
+            return None
+        if any(token in lowered for token in ("avatar", "icon", "logo")):
+            return None
+        return url
+
+    def _is_video_note(self, page: Any) -> bool:
+        return any(self._locator_is_visible(page, selector) for selector in self.VIDEO_SELECTORS)
+
+    def _handle_manual_intervention(self, page: Any, fallback_reason: str | None = None) -> None:
+        reason = self._manual_intervention_reason(page) or fallback_reason
+        if reason is None:
+            return
+
+        for attempt in range(1, self.manual_retries + 1):
+            print(f"NEED_MANUAL {reason}，请在浏览器处理后按 Enter 继续（{attempt}/{self.manual_retries}）")
+            try:
+                input()
+            except EOFError as exc:
+                raise RuntimeError(f"需要人工处理：{reason}") from exc
+            page.wait_for_timeout(1_000)
+            reason = self._manual_intervention_reason(page)
+            if reason is None:
+                return
+        raise RuntimeError(f"人工处理后仍无法继续：{reason}")
+
+    def _manual_intervention_reason(self, page: Any) -> str | None:
+        body_text = self._body_text(page)
+        for keyword in self.CAPTCHA_KEYWORDS:
+            if keyword in body_text:
+                return keyword
+        for selector in self.LOGIN_SELECTORS:
+            if self._locator_is_visible(page, selector):
+                return "登录"
+        return None
+
+    def _first_visible_locator(self, page: Any, selectors: Iterable[str]) -> Any | None:
+        for selector in selectors:
+            locator = page.locator(selector).first
+            try:
+                if locator.is_visible(timeout=1_000):
+                    return locator
+            except Exception:
+                continue
+        return None
+
+    def _locator_is_visible(self, page: Any, selector: str) -> bool:
+        try:
+            return page.locator(selector).first.is_visible(timeout=1_000)
+        except Exception:
+            return False
+
+    def _body_text(self, page: Any) -> str:
+        try:
+            return page.locator("body").inner_text(timeout=2_000)
+        except Exception:
+            return ""
 
 
 def clean_cell(value: object) -> str:
