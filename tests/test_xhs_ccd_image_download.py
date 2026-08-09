@@ -159,7 +159,11 @@ def test_supported_image_content_accepts_only_jpeg_and_png_magic_numbers():
 def test_http_downloader_accept_header_prefers_jpeg_and_png():
     downloader = xhs.HttpImageDownloader()
     try:
-        assert downloader._client.headers["accept"] == "image/jpeg,image/png,*/*;q=0.8"
+        accept = downloader._client.headers["accept"]
+        assert accept == "image/jpeg,image/png"
+        assert "*/*" not in accept
+        assert "image/webp" not in accept
+        assert "image/avif" not in accept
     finally:
         downloader.close()
 

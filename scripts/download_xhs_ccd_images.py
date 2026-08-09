@@ -195,7 +195,7 @@ class HttpImageDownloader:
                     "AppleWebKit/537.36 (KHTML, like Gecko) "
                     "Chrome/124.0.0.0 Safari/537.36"
                 ),
-                "Accept": "image/jpeg,image/png,*/*;q=0.8",
+                "Accept": "image/jpeg,image/png",
                 "Referer": XHS_HOME_URL,
             },
         )
