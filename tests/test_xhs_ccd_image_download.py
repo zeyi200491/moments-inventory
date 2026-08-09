@@ -69,3 +69,35 @@ def test_load_model_tasks_reports_missing_headers(tmp_path: Path):
 
     assert "统一物理机型/规范名" in str(exc.value)
     assert "欧亚/中国常见名" in str(exc.value)
+
+
+def test_load_model_tasks_closes_workbook_after_success(tmp_path: Path):
+    workbook = make_workbook(
+        tmp_path / "canon.xlsx",
+        [
+            ["1", "Canon 佳能", "PowerShot A720 IS", "相机", "A", "佳能A720", "CCD"],
+        ],
+    )
+
+    xhs.load_model_tasks(workbook)
+
+    workbook.unlink()
+    assert not workbook.exists()
+
+
+def test_load_model_tasks_reports_duplicate_headers(tmp_path: Path):
+    wb = openpyxl.Workbook()
+    ws = wb.active
+    ws.append(["品牌", "品牌", "统一物理机型/规范名", "欧亚/中国常见名", "传感器"])
+    path = tmp_path / "duplicate.xlsx"
+    wb.save(path)
+
+    with pytest.raises(xhs.ExcelFormatError) as exc:
+        xhs.load_model_tasks(path)
+
+    assert "Excel 存在重复字段：品牌" in str(exc.value)
+
+
+def test_safe_path_part_prefixes_windows_reserved_device_names():
+    assert xhs.safe_path_part("CON") == "_CON"
+    assert xhs.safe_path_part("NUL.txt") == "_NUL.txt"
