@@ -45,6 +45,28 @@ def test_parse_args_rejects_missing_file(tmp_path: Path):
     assert exc.value.code == 2
 
 
+def test_parse_args_rejects_non_xlsx_file(tmp_path: Path, capsys):
+    txt_path = tmp_path / "models.txt"
+    txt_path.write_text("not an excel file", encoding="utf-8")
+
+    with pytest.raises(SystemExit) as exc:
+        xhs.parse_args([str(txt_path)])
+
+    assert exc.value.code == 2
+    assert "xlsx" in capsys.readouterr().err.lower()
+
+
+def test_parse_args_strips_matching_outer_quotes_from_excel_path(tmp_path: Path):
+    xlsx_path = tmp_path / "models.xlsx"
+    xlsx_path.write_bytes(b"placeholder")
+
+    double_quoted_args = xhs.parse_args([f'"{xlsx_path}"'])
+    single_quoted_args = xhs.parse_args([f"'{xlsx_path}'"])
+
+    assert double_quoted_args.excel_path == xlsx_path
+    assert single_quoted_args.excel_path == xlsx_path
+
+
 def test_load_model_tasks_prefers_common_name_and_filters_ccd(tmp_path: Path):
     workbook = make_workbook(
         tmp_path / "canon.xlsx",

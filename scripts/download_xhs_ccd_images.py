@@ -647,8 +647,17 @@ def process_tasks(
     return summary
 
 
+def _strip_matching_outer_quotes(value: str) -> str:
+    stripped = value.strip()
+    if len(stripped) >= 2 and stripped[0] == stripped[-1] and stripped[0] in {"'", '"'}:
+        return stripped[1:-1]
+    return stripped
+
+
 def _existing_file_path(value: str) -> Path:
-    path = Path(value).expanduser()
+    path = Path(_strip_matching_outer_quotes(value)).expanduser()
+    if path.suffix.lower() != ".xlsx":
+        raise argparse.ArgumentTypeError(f"请选择 .xlsx 文件：{path}")
     if not path.is_file():
         raise argparse.ArgumentTypeError(f"Excel 文件不存在：{path}")
     return path
