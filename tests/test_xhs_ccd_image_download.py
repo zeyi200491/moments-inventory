@@ -104,24 +104,52 @@ def test_safe_path_part_prefixes_windows_reserved_device_names():
 
 
 def test_existing_image_numbers_count_only_target_jpgs(tmp_path: Path):
-    for name in ["1.jpg", "2.jpeg", "03.JPG", "4.png", "note.jpg", "8.jpg", "0.jpeg"]:
+    for name in [
+        "01.jpg",
+        "07.jpeg",
+        "1.jpg",
+        "2.jpg",
+        "001.jpg",
+        "08.jpg",
+        "00.jpeg",
+        "01.png",
+        "note.jpg",
+    ]:
         (tmp_path / name).write_bytes(b"image")
 
-    assert xhs.existing_image_numbers(tmp_path) == {1, 2, 3}
+    assert xhs.existing_image_numbers(tmp_path) == {1, 7}
 
 
 def test_next_image_number_returns_none_when_full(tmp_path: Path):
     for number in range(1, xhs.TARGET_IMAGES_PER_MODEL + 1):
-        (tmp_path / f"{number}.jpg").write_bytes(b"image")
+        (tmp_path / f"{number:02d}.jpg").write_bytes(b"image")
 
     assert xhs.next_image_number(tmp_path) is None
 
 
-def test_save_image_bytes_uses_next_available_number(tmp_path: Path):
-    (tmp_path / "1.jpg").write_bytes(b"old")
-    (tmp_path / "3.jpeg").write_bytes(b"old")
+def test_save_image_bytes_starts_with_zero_padded_one(tmp_path: Path):
+    saved_path = xhs.save_image_bytes(tmp_path, b"new image")
+
+    assert saved_path == tmp_path / "01.jpg"
+    assert saved_path.read_bytes() == b"new image"
+
+
+def test_save_image_bytes_uses_next_available_zero_padded_number(tmp_path: Path):
+    (tmp_path / "01.jpg").write_bytes(b"old")
+    (tmp_path / "03.jpeg").write_bytes(b"old")
 
     saved_path = xhs.save_image_bytes(tmp_path, b"new image")
 
-    assert saved_path == tmp_path / "2.jpg"
+    assert saved_path == tmp_path / "02.jpg"
     assert saved_path.read_bytes() == b"new image"
+
+
+def test_save_image_bytes_returns_none_when_full_without_adding_files(tmp_path: Path):
+    for number in range(1, xhs.TARGET_IMAGES_PER_MODEL + 1):
+        (tmp_path / f"{number:02d}.jpg").write_bytes(b"image")
+    before = sorted(path.name for path in tmp_path.iterdir())
+
+    saved_path = xhs.save_image_bytes(tmp_path, b"new image")
+
+    assert saved_path is None
+    assert sorted(path.name for path in tmp_path.iterdir()) == before

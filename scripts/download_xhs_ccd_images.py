@@ -141,7 +141,7 @@ def existing_image_numbers(folder: Path) -> set[int]:
             continue
         if path.suffix.lower() not in IMAGE_SUFFIXES:
             continue
-        if not path.stem.isdigit():
+        if not re.fullmatch(r"\d{2}", path.stem):
             continue
 
         number = int(path.stem)
@@ -165,6 +165,6 @@ def save_image_bytes(folder: Path, content: bytes) -> Path | None:
         return None
 
     folder.mkdir(parents=True, exist_ok=True)
-    output_path = folder / f"{number}.jpg"
+    output_path = folder / f"{number:02d}.jpg"
     output_path.write_bytes(content)
     return output_path
