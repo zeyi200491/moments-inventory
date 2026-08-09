@@ -156,13 +156,16 @@ def test_save_image_bytes_returns_none_when_full_without_adding_files(tmp_path: 
 
 
 class FakeBrowser:
-    def __init__(self, results_by_query: dict[str, list[str]]):
+    def __init__(self, results_by_query: dict[str, list[str] | Exception]):
         self.results_by_query = results_by_query
-        self.queries: list[str] = []
+        self.queries: list[tuple[str, int]] = []
 
-    def search_images(self, query: str) -> list[str]:
-        self.queries.append(query)
-        return self.results_by_query[query]
+    def image_urls_for_query(self, query: str, limit: int) -> list[str]:
+        self.queries.append((query, limit))
+        result = self.results_by_query[query]
+        if isinstance(result, Exception):
+            raise result
+        return result
 
 
 class FakeDownloader:
@@ -242,12 +245,14 @@ def test_process_tasks_skips_full_folder_and_saves_until_seven(tmp_path: Path, c
 
     summary = xhs.process_tasks(tasks, browser, downloader, rate_limiter)
 
-    assert summary.total_tasks == 2
+    assert summary.total == 2
     assert summary.skipped_full == 1
-    assert summary.searched_tasks == 1
-    assert summary.saved_images == 5
+    assert summary.searched == 1
+    assert summary.saved == 5
+    assert summary.incomplete == 0
+    assert summary.failed == 0
     assert len(summary.failed_downloads) == 2
-    assert browser.queries == ["partial query"]
+    assert browser.queries == [("partial query", xhs.TARGET_IMAGES_PER_MODEL)]
     assert downloader.urls == ["none", "error", "image-1", "image-2", "image-3", "image-4", "image-5"]
     assert rate_limiter.calls == 7
     assert sorted(path.name for path in partial_dir.iterdir()) == [
@@ -263,3 +268,80 @@ def test_process_tasks_skips_full_folder_and_saves_until_seven(tmp_path: Path, c
     assert "SKIP full-model" in output
     assert "FAIL partial-model none" in output
     assert "SAVE partial-model 07.jpg" in output
+
+
+def test_run_summary_exposes_task_six_attribute_names():
+    summary = xhs.RunSummary(total=1, skipped_full=2, saved=3, incomplete=4, failed=5)
+
+    assert summary.total == 1
+    assert summary.skipped_full == 2
+    assert summary.saved == 3
+    assert summary.incomplete == 4
+    assert summary.failed == 5
+
+
+def test_process_tasks_counts_empty_urls_as_incomplete(tmp_path: Path):
+    task = make_task("empty-model", "empty query", tmp_path / "empty")
+    browser = FakeBrowser({"empty query": []})
+    downloader = FakeDownloader({})
+    rate_limiter = NoSleepRateLimiter()
+
+    summary = xhs.process_tasks([task], browser, downloader, rate_limiter)
+
+    assert summary.total == 1
+    assert summary.saved == 0
+    assert summary.incomplete == 1
+    assert summary.failed == 0
+    assert downloader.urls == []
+    assert rate_limiter.calls == 0
+
+
+def test_process_tasks_counts_search_error_as_failed_and_continues(tmp_path: Path):
+    first_dir = tmp_path / "first"
+    second_dir = tmp_path / "second"
+    tasks = [
+        make_task("broken-model", "broken query", first_dir),
+        make_task("next-model", "next query", second_dir),
+    ]
+    browser = FakeBrowser(
+        {
+            "broken query": RuntimeError("search failed"),
+            "next query": [
+                "image-1",
+                "image-2",
+                "image-3",
+                "image-4",
+                "image-5",
+                "image-6",
+                "image-7",
+            ],
+        }
+    )
+    downloader = FakeDownloader(
+        {
+            "image-1": b"image 1",
+            "image-2": b"image 2",
+            "image-3": b"image 3",
+            "image-4": b"image 4",
+            "image-5": b"image 5",
+            "image-6": b"image 6",
+            "image-7": b"image 7",
+        }
+    )
+    rate_limiter = NoSleepRateLimiter()
+
+    summary = xhs.process_tasks(tasks, browser, downloader, rate_limiter)
+
+    assert summary.total == 2
+    assert summary.failed == 1
+    assert summary.incomplete == 1
+    assert summary.saved == 7
+    assert sorted(path.name for path in second_dir.iterdir()) == [
+        "01.jpg",
+        "02.jpg",
+        "03.jpg",
+        "04.jpg",
+        "05.jpg",
+        "06.jpg",
+        "07.jpg",
+    ]

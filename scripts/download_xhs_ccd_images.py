@@ -4,7 +4,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 import re
 import time
-from typing import Iterable
+from typing import Callable, Iterable, Protocol
 
 import openpyxl
 
@@ -39,28 +39,64 @@ class ModelTask:
     output_dir: Path
 
 
+class ImageBrowser(Protocol):
+    def image_urls_for_query(self, query: str, limit: int) -> list[str]:
+        ...
+
+
+class ImageDownloader(Protocol):
+    def download(self, url: str) -> bytes | None:
+        ...
+
+
+class Waiter(Protocol):
+    def wait(self) -> None:
+        ...
+
+
 @dataclass
 class RunSummary:
-    total_tasks: int = 0
-    searched_tasks: int = 0
+    total: int = 0
     skipped_full: int = 0
-    saved_images: int = 0
+    saved: int = 0
+    incomplete: int = 0
+    failed: int = 0
+    searched: int = 0
     failed_downloads: list[tuple[str, str, str]] = field(default_factory=list)
+
+    @property
+    def total_tasks(self) -> int:
+        return self.total
+
+    @property
+    def searched_tasks(self) -> int:
+        return self.searched
+
+    @property
+    def saved_images(self) -> int:
+        return self.saved
 
 
 class RateLimiter:
-    def __init__(self, min_interval_seconds: float = 1.0):
+    def __init__(
+        self,
+        min_interval_seconds: float = 1.0,
+        sleep: Callable[[float], None] = time.sleep,
+        monotonic: Callable[[], float] = time.monotonic,
+    ):
         self.min_interval_seconds = min_interval_seconds
+        self._sleep = sleep
+        self._monotonic = monotonic
         self._last_request_at: float | None = None
 
     def wait(self) -> None:
-        now = time.monotonic()
+        now = self._monotonic()
         if self._last_request_at is not None:
             elapsed = now - self._last_request_at
             remaining = self.min_interval_seconds - elapsed
             if remaining > 0:
-                time.sleep(remaining)
-                now = time.monotonic()
+                self._sleep(remaining)
+                now = self._monotonic()
         self._last_request_at = now
 
 
@@ -196,9 +232,14 @@ def save_image_bytes(folder: Path, content: bytes) -> Path | None:
     return output_path
 
 
-def process_tasks(tasks, browser, downloader, rate_limiter) -> RunSummary:
+def process_tasks(
+    tasks: Iterable[ModelTask],
+    browser: ImageBrowser,
+    downloader: ImageDownloader,
+    rate_limiter: Waiter,
+) -> RunSummary:
     task_list = list(tasks)
-    summary = RunSummary(total_tasks=len(task_list))
+    summary = RunSummary(total=len(task_list))
 
     for task in task_list:
         if next_image_number(task.output_dir) is None:
@@ -206,9 +247,15 @@ def process_tasks(tasks, browser, downloader, rate_limiter) -> RunSummary:
             print(f"SKIP {task.model_name} already has {TARGET_IMAGES_PER_MODEL} images")
             continue
 
-        summary.searched_tasks += 1
+        summary.searched += 1
         print(f"SEARCH {task.model_name} {task.search_query}")
-        image_urls = browser.search_images(task.search_query)
+        try:
+            image_urls = browser.image_urls_for_query(task.search_query, TARGET_IMAGES_PER_MODEL)
+        except Exception as exc:
+            summary.failed += 1
+            summary.incomplete += 1
+            print(f"FAIL {task.model_name} search {exc}")
+            continue
 
         for image_url in image_urls:
             if next_image_number(task.output_dir) is None:
@@ -232,7 +279,10 @@ def process_tasks(tasks, browser, downloader, rate_limiter) -> RunSummary:
             if saved_path is None:
                 break
 
-            summary.saved_images += 1
+            summary.saved += 1
             print(f"SAVE {task.model_name} {saved_path.name}")
+
+        if next_image_number(task.output_dir) is not None:
+            summary.incomplete += 1
 
     return summary
