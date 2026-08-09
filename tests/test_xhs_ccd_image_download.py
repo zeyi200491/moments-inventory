@@ -101,3 +101,27 @@ def test_load_model_tasks_reports_duplicate_headers(tmp_path: Path):
 def test_safe_path_part_prefixes_windows_reserved_device_names():
     assert xhs.safe_path_part("CON") == "_CON"
     assert xhs.safe_path_part("NUL.txt") == "_NUL.txt"
+
+
+def test_existing_image_numbers_count_only_target_jpgs(tmp_path: Path):
+    for name in ["1.jpg", "2.jpeg", "03.JPG", "4.png", "note.jpg", "8.jpg", "0.jpeg"]:
+        (tmp_path / name).write_bytes(b"image")
+
+    assert xhs.existing_image_numbers(tmp_path) == {1, 2, 3}
+
+
+def test_next_image_number_returns_none_when_full(tmp_path: Path):
+    for number in range(1, xhs.TARGET_IMAGES_PER_MODEL + 1):
+        (tmp_path / f"{number}.jpg").write_bytes(b"image")
+
+    assert xhs.next_image_number(tmp_path) is None
+
+
+def test_save_image_bytes_uses_next_available_number(tmp_path: Path):
+    (tmp_path / "1.jpg").write_bytes(b"old")
+    (tmp_path / "3.jpeg").write_bytes(b"old")
+
+    saved_path = xhs.save_image_bytes(tmp_path, b"new image")
+
+    assert saved_path == tmp_path / "2.jpg"
+    assert saved_path.read_bytes() == b"new image"

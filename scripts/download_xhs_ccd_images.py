@@ -19,6 +19,7 @@ WINDOWS_RESERVED_DEVICE_NAMES = {
 }
 OUTPUT_ROOT = Path(r"E:\Ai jjfajgsw\AIkefu\output\ccdcpt")
 TARGET_IMAGES_PER_MODEL = 7
+IMAGE_SUFFIXES = {".jpg", ".jpeg"}
 XHS_HOME_URL = "https://www.xiaohongshu.com"
 
 
@@ -128,3 +129,42 @@ def load_model_tasks(excel_path: str | Path, output_root: Path = OUTPUT_ROOT) ->
         return tasks
     finally:
         workbook.close()
+
+
+def existing_image_numbers(folder: Path) -> set[int]:
+    numbers: set[int] = set()
+    if not folder.exists():
+        return numbers
+
+    for path in folder.iterdir():
+        if not path.is_file():
+            continue
+        if path.suffix.lower() not in IMAGE_SUFFIXES:
+            continue
+        if not path.stem.isdigit():
+            continue
+
+        number = int(path.stem)
+        if 1 <= number <= TARGET_IMAGES_PER_MODEL:
+            numbers.add(number)
+
+    return numbers
+
+
+def next_image_number(folder: Path) -> int | None:
+    existing_numbers = existing_image_numbers(folder)
+    for number in range(1, TARGET_IMAGES_PER_MODEL + 1):
+        if number not in existing_numbers:
+            return number
+    return None
+
+
+def save_image_bytes(folder: Path, content: bytes) -> Path | None:
+    number = next_image_number(folder)
+    if number is None:
+        return None
+
+    folder.mkdir(parents=True, exist_ok=True)
+    output_path = folder / f"{number}.jpg"
+    output_path.write_bytes(content)
+    return output_path
