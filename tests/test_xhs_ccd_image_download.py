@@ -103,6 +103,33 @@ def test_safe_path_part_prefixes_windows_reserved_device_names():
     assert xhs.safe_path_part("NUL.txt") == "_NUL.txt"
 
 
+def test_supported_image_content_accepts_only_jpeg_and_png_magic_numbers():
+    assert xhs.is_supported_image_content("image/jpeg", b"\xff\xd8\xff\xe0jpeg")
+    assert xhs.is_supported_image_content("image/png", b"\x89PNG\r\n\x1a\npng")
+    assert xhs.is_supported_image_content("", b"\xff\xd8\xff\xe0jpeg")
+    assert xhs.is_supported_image_content("application/octet-stream", b"\x89PNG\r\n\x1a\npng")
+
+    assert not xhs.is_supported_image_content("image/webp", b"RIFFxxxxWEBP")
+    assert not xhs.is_supported_image_content("image/svg+xml", b"<svg></svg>")
+    assert not xhs.is_supported_image_content("image/jpeg", b"not actually jpeg")
+
+
+def test_normalize_candidate_image_url_filters_noise_and_dedupes_variants():
+    first = xhs.normalize_candidate_image_url(
+        "https://sns-img-qc.xhscdn.com/photo.jpg?imageView2/2/w/1080/format/jpg#crop"
+    )
+    second = xhs.normalize_candidate_image_url(
+        "https://sns-img-qc.xhscdn.com/photo.jpg?xsec_token=abc&imageView2/2/w/720"
+    )
+
+    assert first == "https://sns-img-qc.xhscdn.com/photo.jpg?imageView2/2/w/1080/format/jpg"
+    assert xhs.image_url_dedupe_key(first) == xhs.image_url_dedupe_key(second)
+    assert xhs.normalize_candidate_image_url("data:image/png;base64,abc") is None
+    assert xhs.normalize_candidate_image_url("https://example.com/avatar.png") is None
+    assert xhs.normalize_candidate_image_url("https://example.com/icon.svg") is None
+    assert xhs.normalize_candidate_image_url("") is None
+
+
 def test_existing_image_numbers_count_only_target_jpgs(tmp_path: Path):
     for name in [
         "01.jpg",

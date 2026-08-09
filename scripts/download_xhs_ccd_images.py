@@ -5,7 +5,7 @@ from pathlib import Path
 import re
 import time
 from typing import Any, Callable, Iterable, Protocol
-from urllib.parse import urljoin, urlparse
+from urllib.parse import unquote_plus, urljoin, urlparse, urlunparse
 
 import openpyxl
 
@@ -23,6 +23,17 @@ OUTPUT_ROOT = Path(r"E:\Ai jjfajgsw\AIkefu\output\ccdcpt")
 TARGET_IMAGES_PER_MODEL = 7
 IMAGE_SUFFIXES = {".jpg", ".jpeg"}
 XHS_HOME_URL = "https://www.xiaohongshu.com"
+SUPPORTED_IMAGE_CONTENT_TYPES = {"", "application/octet-stream", "image/jpeg", "image/jpg", "image/png"}
+IMAGE_NOISE_TOKENS = ("avatar", "icon", "logo", "emoji")
+IGNORED_IMAGE_QUERY_KEYS = {
+    "xsec_token",
+    "xsec_source",
+    "from",
+    "share_from_user_hidden",
+    "type",
+    "appuid",
+    "apptime",
+}
 
 
 class ExcelFormatError(ValueError):
@@ -101,6 +112,57 @@ class RateLimiter:
         self._last_request_at = now
 
 
+def image_content_kind(content: bytes) -> str | None:
+    if content.startswith(b"\xff\xd8\xff"):
+        return "jpeg"
+    if content.startswith(b"\x89PNG\r\n\x1a\n"):
+        return "png"
+    return None
+
+
+def is_supported_image_content(content_type: str | None, content: bytes) -> bool:
+    normalized_content_type = (content_type or "").split(";", 1)[0].strip().lower()
+    if normalized_content_type not in SUPPORTED_IMAGE_CONTENT_TYPES:
+        return False
+    return image_content_kind(content) in {"jpeg", "png"}
+
+
+def normalize_candidate_image_url(url: str) -> str | None:
+    candidate = url.strip()
+    if not candidate or candidate.startswith("data:"):
+        return None
+    if candidate.startswith("//"):
+        candidate = f"https:{candidate}"
+    elif candidate.startswith("/"):
+        candidate = urljoin(XHS_HOME_URL, candidate)
+
+    parsed = urlparse(candidate)
+    if parsed.scheme not in {"http", "https"} or not parsed.netloc:
+        return None
+
+    lowered = candidate.lower()
+    if "data:image" in lowered or lowered.endswith(".svg") or ".svg?" in lowered:
+        return None
+    if any(token in lowered for token in IMAGE_NOISE_TOKENS):
+        return None
+
+    query_parts = []
+    for part in parsed.query.split("&"):
+        if not part:
+            continue
+        key = unquote_plus(part.split("=", 1)[0]).lower()
+        if key in IGNORED_IMAGE_QUERY_KEYS:
+            continue
+        query_parts.append(part)
+    query = "&".join(query_parts)
+    return urlunparse((parsed.scheme, parsed.netloc, parsed.path, "", query, ""))
+
+
+def image_url_dedupe_key(url: str) -> str:
+    parsed = urlparse(url)
+    return urlunparse((parsed.scheme, parsed.netloc, parsed.path, "", "", ""))
+
+
 class HttpImageDownloader:
     def __init__(self, timeout_seconds: float = 30.0):
         import httpx
@@ -122,10 +184,12 @@ class HttpImageDownloader:
     def download(self, url: str) -> bytes | None:
         response = self._client.get(url)
         response.raise_for_status()
-        content_type = response.headers.get("content-type", "").lower()
-        if "image" not in content_type:
-            raise RuntimeError(f"unexpected content-type: {content_type or '<missing>'}")
-        return response.content or None
+        content = response.content
+        content_type = response.headers.get("content-type")
+        if not is_supported_image_content(content_type, content):
+            kind = image_content_kind(content) or "unknown"
+            raise RuntimeError(f"unsupported image content: {content_type or '<missing>'}, magic={kind}")
+        return content or None
 
     def close(self) -> None:
         self._client.close()
@@ -164,20 +228,28 @@ class XhsBrowser:
         self.user_data_dir = Path(user_data_dir) if user_data_dir else Path.home() / ".xhs_ccd_image_browser"
         self.user_data_dir.mkdir(parents=True, exist_ok=True)
         self._playwright = sync_playwright().start()
-        self._context = self._playwright.chromium.launch_persistent_context(
-            str(self.user_data_dir),
-            headless=False,
-            slow_mo=slow_mo_ms,
-            viewport={"width": 1400, "height": 900},
-            locale="zh-CN",
-            args=["--disable-blink-features=AutomationControlled"],
-        )
-        self._context.set_default_timeout(timeout_ms)
-        self._page = self._context.pages[0] if self._context.pages else self._context.new_page()
+        self._context = None
+        try:
+            self._context = self._playwright.chromium.launch_persistent_context(
+                str(self.user_data_dir),
+                headless=False,
+                slow_mo=slow_mo_ms,
+                viewport={"width": 1400, "height": 900},
+                locale="zh-CN",
+                args=["--disable-blink-features=AutomationControlled"],
+            )
+            self._context.set_default_timeout(timeout_ms)
+            self._page = self._context.pages[0] if self._context.pages else self._context.new_page()
+        except Exception:
+            if self._context is not None:
+                self._context.close()
+            self._playwright.stop()
+            raise
 
     def close(self) -> None:
         try:
-            self._context.close()
+            if self._context is not None:
+                self._context.close()
         finally:
             self._playwright.stop()
 
@@ -196,7 +268,7 @@ class XhsBrowser:
         for link in links:
             if len(image_urls) >= limit:
                 break
-            for image_url in self._image_urls_for_note(link):
+            for image_url in self._image_urls_from_note(link):
                 if image_url in seen:
                     continue
                 seen.add(image_url)
@@ -244,6 +316,9 @@ class XhsBrowser:
         return links
 
     def _image_urls_for_note(self, note_url: str) -> list[str]:
+        return self._image_urls_from_note(note_url)
+
+    def _image_urls_from_note(self, note_url: str) -> list[str]:
         page = self._context.new_page()
         try:
             page.goto(note_url, wait_until="domcontentloaded", timeout=self.timeout_ms)
@@ -260,12 +335,35 @@ class XhsBrowser:
         raw_urls = page.evaluate(
             """
             () => {
-                const urls = [];
-                for (const img of document.querySelectorAll('img')) {
-                    urls.push(img.currentSrc, img.src, img.dataset.src, img.getAttribute('data-original'));
+                const mainSelectors = [
+                    'main',
+                    '[class*="note"]',
+                    '[class*="media"]',
+                    '[class*="swiper"]',
+                    '[class*="carousel"]',
+                    '[class*="content"]',
+                    '[role="main"]'
+                ];
+                let root = document;
+                for (const selector of mainSelectors) {
+                    const candidate = document.querySelector(selector);
+                    if (candidate && candidate.querySelectorAll('img').length > 0) {
+                        root = candidate;
+                        break;
+                    }
                 }
-                for (const source of document.querySelectorAll('source[srcset]')) {
-                    urls.push(...source.srcset.split(',').map(item => item.trim().split(/\\s+/)[0]));
+                const urls = [];
+                for (const img of root.querySelectorAll('img')) {
+                    const width = img.naturalWidth || img.width || 0;
+                    const height = img.naturalHeight || img.height || 0;
+                    if (width < 300 || height < 300 || width * height < 90000) {
+                        continue;
+                    }
+                    urls.push(img.currentSrc, img.src, img.dataset.src, img.getAttribute('data-original'));
+                    const srcset = img.getAttribute('srcset');
+                    if (srcset) {
+                        urls.push(...srcset.split(',').map(item => item.trim().split(/\\s+/)[0]));
+                    }
                 }
                 return urls.filter(Boolean);
             }
@@ -274,10 +372,13 @@ class XhsBrowser:
         image_urls: list[str] = []
         seen: set[str] = set()
         for raw_url in raw_urls:
-            normalized = self._normalize_image_url(str(raw_url))
-            if not normalized or normalized in seen:
+            normalized = normalize_candidate_image_url(str(raw_url))
+            if not normalized:
                 continue
-            seen.add(normalized)
+            dedupe_key = image_url_dedupe_key(normalized)
+            if dedupe_key in seen:
+                continue
+            seen.add(dedupe_key)
             image_urls.append(normalized)
         return image_urls
 
@@ -300,20 +401,7 @@ class XhsBrowser:
         return url
 
     def _normalize_image_url(self, url: str) -> str | None:
-        if url.startswith("//"):
-            url = f"https:{url}"
-        elif url.startswith("/"):
-            url = urljoin(XHS_HOME_URL, url)
-
-        parsed = urlparse(url)
-        if parsed.scheme not in {"http", "https"}:
-            return None
-        lowered = url.lower()
-        if lowered.endswith(".svg") or "data:image/svg" in lowered:
-            return None
-        if any(token in lowered for token in ("avatar", "icon", "logo")):
-            return None
-        return url
+        return normalize_candidate_image_url(url)
 
     def _is_video_note(self, page: Any) -> bool:
         return any(self._locator_is_visible(page, selector) for selector in self.VIDEO_SELECTORS)
