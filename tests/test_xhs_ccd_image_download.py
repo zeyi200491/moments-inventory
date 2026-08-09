@@ -25,6 +25,26 @@ def make_workbook(path: Path, rows: list[list[str]]) -> Path:
     return path
 
 
+def test_parse_args_accepts_excel_path(tmp_path: Path):
+    excel_path = tmp_path / "models.xlsx"
+    excel_path.write_bytes(b"placeholder")
+
+    args = xhs.parse_args([str(excel_path)])
+
+    assert args.excel_path == excel_path
+    assert args.output_dir == xhs.OUTPUT_ROOT
+    assert args.profile_dir == xhs.DEFAULT_PROFILE_DIR
+
+
+def test_parse_args_rejects_missing_file(tmp_path: Path):
+    missing_path = tmp_path / "missing.xlsx"
+
+    with pytest.raises(SystemExit) as exc:
+        xhs.parse_args([str(missing_path)])
+
+    assert exc.value.code == 2
+
+
 def test_load_model_tasks_prefers_common_name_and_filters_ccd(tmp_path: Path):
     workbook = make_workbook(
         tmp_path / "canon.xlsx",

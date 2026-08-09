@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import argparse
 from dataclasses import dataclass, field
 from pathlib import Path
 import re
@@ -34,6 +35,8 @@ IGNORED_IMAGE_QUERY_KEYS = {
     "appuid",
     "apptime",
 }
+PROJECT_ROOT = Path(__file__).resolve().parents[1]
+DEFAULT_PROFILE_DIR = PROJECT_ROOT / ".playwright-mcp" / "xhs-ccd-profile"
 
 
 class ExcelFormatError(ValueError):
@@ -642,3 +645,63 @@ def process_tasks(
             summary.incomplete += 1
 
     return summary
+
+
+def _existing_file_path(value: str) -> Path:
+    path = Path(value).expanduser()
+    if not path.is_file():
+        raise argparse.ArgumentTypeError(f"Excel 文件不存在：{path}")
+    return path
+
+
+def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
+    parser = argparse.ArgumentParser(description="下载小红书 CCD 相机样张图片")
+    parser.add_argument("excel_path", type=_existing_file_path, help="CCD 型号 Excel 文件路径")
+    parser.add_argument(
+        "--output-dir",
+        type=Path,
+        default=OUTPUT_ROOT,
+        help=f"图片输出目录，默认：{OUTPUT_ROOT}",
+    )
+    parser.add_argument(
+        "--profile-dir",
+        type=Path,
+        default=DEFAULT_PROFILE_DIR,
+        help=f"浏览器独立用户数据目录，默认：{DEFAULT_PROFILE_DIR}",
+    )
+    return parser.parse_args(argv)
+
+
+def main(argv: list[str] | None = None) -> int:
+    args = parse_args(argv)
+    browser: XhsBrowser | None = None
+    downloader: HttpImageDownloader | None = None
+
+    try:
+        tasks = load_model_tasks(args.excel_path, args.output_dir)
+        browser = XhsBrowser(user_data_dir=args.profile_dir)
+        downloader = HttpImageDownloader()
+        summary = process_tasks(tasks, browser, downloader, RateLimiter())
+        print(
+            "SUMMARY "
+            f"total={summary.total} "
+            f"searched={summary.searched} "
+            f"skipped_full={summary.skipped_full} "
+            f"saved={summary.saved} "
+            f"incomplete={summary.incomplete} "
+            f"failed={summary.failed} "
+            f"failed_downloads={len(summary.failed_downloads)}"
+        )
+        return 1 if summary.failed or summary.incomplete else 0
+    except Exception as exc:
+        print(f"ERROR {exc}")
+        return 1
+    finally:
+        if downloader is not None:
+            downloader.close()
+        if browser is not None:
+            browser.close()
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())
