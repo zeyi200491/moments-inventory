@@ -3,6 +3,7 @@ from __future__ import annotations
 import argparse
 from dataclasses import dataclass, field
 from pathlib import Path
+import random
 import re
 import time
 from typing import Any, Callable, Iterable, Protocol
@@ -64,8 +65,17 @@ class ImageDownloader(Protocol):
         ...
 
 
-class Waiter(Protocol):
-    def wait(self) -> None:
+class RateController(Protocol):
+    def after_search(self) -> None:
+        ...
+
+    def after_note_open(self) -> None:
+        ...
+
+    def after_image_save(self) -> None:
+        ...
+
+    def after_model(self, processed_count: int) -> None:
         ...
 
 
@@ -95,24 +105,30 @@ class RunSummary:
 class RateLimiter:
     def __init__(
         self,
-        min_interval_seconds: float = 1.0,
         sleep: Callable[[float], None] = time.sleep,
-        monotonic: Callable[[], float] = time.monotonic,
+        random_uniform: Callable[[float, float], float] = random.uniform,
     ):
-        self.min_interval_seconds = min_interval_seconds
         self._sleep = sleep
-        self._monotonic = monotonic
-        self._last_request_at: float | None = None
+        self._random_uniform = random_uniform
+
+    def _sleep_between(self, minimum_seconds: float, maximum_seconds: float) -> None:
+        self._sleep(self._random_uniform(minimum_seconds, maximum_seconds))
+
+    def after_search(self) -> None:
+        self._sleep_between(3.0, 6.0)
+
+    def after_note_open(self) -> None:
+        self._sleep_between(2.0, 5.0)
+
+    def after_image_save(self) -> None:
+        self._sleep_between(0.5, 1.5)
+
+    def after_model(self, processed_count: int) -> None:
+        if processed_count > 0 and processed_count % 10 == 0:
+            self._sleep_between(60.0, 120.0)
 
     def wait(self) -> None:
-        now = self._monotonic()
-        if self._last_request_at is not None:
-            elapsed = now - self._last_request_at
-            remaining = self.min_interval_seconds - elapsed
-            if remaining > 0:
-                self._sleep(remaining)
-                now = self._monotonic()
-        self._last_request_at = now
+        self.after_image_save()
 
 
 def image_content_kind(content: bytes) -> str | None:
@@ -179,7 +195,7 @@ class HttpImageDownloader:
                     "AppleWebKit/537.36 (KHTML, like Gecko) "
                     "Chrome/124.0.0.0 Safari/537.36"
                 ),
-                "Accept": "image/avif,image/webp,image/apng,image/svg+xml,image/*,*/*;q=0.8",
+                "Accept": "image/jpeg,image/png,*/*;q=0.8",
                 "Referer": XHS_HOME_URL,
             },
         )
@@ -223,11 +239,13 @@ class XhsBrowser:
         timeout_ms: int = 30_000,
         slow_mo_ms: int = 0,
         manual_retries: int = 3,
+        rate_limiter: RateController | None = None,
     ):
         from playwright.sync_api import sync_playwright
 
         self.timeout_ms = timeout_ms
         self.manual_retries = manual_retries
+        self._rate_limiter = rate_limiter or RateLimiter()
         self.user_data_dir = Path(user_data_dir) if user_data_dir else Path.home() / ".xhs_ccd_image_browser"
         self.user_data_dir.mkdir(parents=True, exist_ok=True)
         self._playwright = sync_playwright().start()
@@ -271,7 +289,15 @@ class XhsBrowser:
         for link in links:
             if len(image_urls) >= limit:
                 break
-            for image_url in self._image_urls_from_note(link):
+            try:
+                note_image_urls = self._image_urls_from_note(link)
+            except Exception as exc:
+                print(f"跳过笔记：{link}，原因：{exc}")
+                continue
+            finally:
+                self._rate_limiter.after_note_open()
+
+            for image_url in note_image_urls:
                 if image_url in seen:
                     continue
                 seen.add(image_url)
@@ -595,10 +621,11 @@ def process_tasks(
     tasks: Iterable[ModelTask],
     browser: ImageBrowser,
     downloader: ImageDownloader,
-    rate_limiter: Waiter,
+    rate_limiter: RateController,
 ) -> RunSummary:
     task_list = list(tasks)
     summary = RunSummary(total=len(task_list))
+    processed_count = 0
 
     for task in task_list:
         if next_image_number(task.output_dir) is None:
@@ -606,21 +633,24 @@ def process_tasks(
             print(f"SKIP {task.model_name} already has {TARGET_IMAGES_PER_MODEL} images")
             continue
 
+        processed_count += 1
         summary.searched += 1
         print(f"SEARCH {task.model_name} {task.search_query}")
         try:
             image_urls = browser.image_urls_for_query(task.search_query, TARGET_IMAGES_PER_MODEL)
         except Exception as exc:
+            rate_limiter.after_search()
             summary.failed += 1
             summary.incomplete += 1
             print(f"FAIL {task.model_name} search {exc}")
+            rate_limiter.after_model(processed_count)
             continue
+        rate_limiter.after_search()
 
         for image_url in image_urls:
             if next_image_number(task.output_dir) is None:
                 break
 
-            rate_limiter.wait()
             try:
                 content = downloader.download(image_url)
             except Exception as exc:
@@ -640,9 +670,15 @@ def process_tasks(
 
             summary.saved += 1
             print(f"SAVE {task.model_name} {saved_path.name}")
+            rate_limiter.after_image_save()
 
         if next_image_number(task.output_dir) is not None:
             summary.incomplete += 1
+            current_count = len(existing_image_numbers(task.output_dir))
+            missing_count = TARGET_IMAGES_PER_MODEL - current_count
+            print(f"不足 7 张 {task.model_name} 当前数量={current_count} 缺口={missing_count}")
+
+        rate_limiter.after_model(processed_count)
 
     return summary
 
@@ -681,6 +717,10 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     return parser.parse_args(argv)
 
 
+def exit_code_for_summary(summary: RunSummary) -> int:
+    return 1 if summary.failed else 0
+
+
 def main(argv: list[str] | None = None) -> int:
     args = parse_args(argv)
     browser: XhsBrowser | None = None
@@ -701,7 +741,7 @@ def main(argv: list[str] | None = None) -> int:
             f"failed={summary.failed} "
             f"failed_downloads={len(summary.failed_downloads)}"
         )
-        return 1 if summary.failed or summary.incomplete else 0
+        return exit_code_for_summary(summary)
     except Exception as exc:
         print(f"ERROR {exc}")
         return 1

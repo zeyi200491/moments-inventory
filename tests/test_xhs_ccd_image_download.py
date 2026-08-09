@@ -156,6 +156,14 @@ def test_supported_image_content_accepts_only_jpeg_and_png_magic_numbers():
     assert not xhs.is_supported_image_content("image/jpeg", b"not actually jpeg")
 
 
+def test_http_downloader_accept_header_prefers_jpeg_and_png():
+    downloader = xhs.HttpImageDownloader()
+    try:
+        assert downloader._client.headers["accept"] == "image/jpeg,image/png,*/*;q=0.8"
+    finally:
+        downloader.close()
+
+
 def test_normalize_candidate_image_url_filters_noise_and_dedupes_variants():
     first = xhs.normalize_candidate_image_url(
         "https://sns-img-qc.xhscdn.com/photo.jpg?imageView2/2/w/1080/format/jpg#crop"
@@ -252,10 +260,78 @@ class FakeDownloader:
 
 class NoSleepRateLimiter:
     def __init__(self):
-        self.calls = 0
+        self.searches = 0
+        self.note_opens = 0
+        self.image_saves = 0
+        self.models: list[int] = []
 
     def wait(self) -> None:
-        self.calls += 1
+        self.after_image_save()
+
+    def after_search(self) -> None:
+        self.searches += 1
+
+    def after_note_open(self) -> None:
+        self.note_opens += 1
+
+    def after_image_save(self) -> None:
+        self.image_saves += 1
+
+    def after_model(self, processed_count: int) -> None:
+        self.models.append(processed_count)
+
+
+class FakeNoteBrowser(xhs.XhsBrowser):
+    def __init__(self):
+        self.opened: list[str] = []
+        self._rate_limiter = NoSleepRateLimiter()
+
+    def ensure_login(self) -> None:
+        pass
+
+    def _submit_search(self, query: str) -> None:
+        pass
+
+    def _collect_note_links(self, limit: int) -> list[str]:
+        return ["https://www.xiaohongshu.com/explore/broken", "https://www.xiaohongshu.com/explore/ok"]
+
+    def _image_urls_from_note(self, note_url: str) -> list[str]:
+        self.opened.append(note_url)
+        if note_url.endswith("/broken"):
+            raise RuntimeError("note parse failed")
+        return ["https://sns-img-qc.xhscdn.com/ok.jpg"]
+
+
+def test_rate_limiter_waits_for_expected_runtime_events():
+    sleeps: list[float] = []
+
+    def choose_lower_bound(low: float, high: float) -> float:
+        return low
+
+    limiter = xhs.RateLimiter(sleep=sleeps.append, random_uniform=choose_lower_bound)
+
+    limiter.after_search()
+    limiter.after_note_open()
+    limiter.after_image_save()
+    limiter.after_model(9)
+    limiter.after_model(10)
+
+    assert sleeps == [3.0, 2.0, 0.5, 60.0]
+
+
+def test_browser_skips_failed_note_and_keeps_collecting_images(capsys):
+    browser = FakeNoteBrowser()
+
+    urls = browser.image_urls_for_query("query", 1)
+
+    assert urls == ["https://sns-img-qc.xhscdn.com/ok.jpg"]
+    assert browser.opened == [
+        "https://www.xiaohongshu.com/explore/broken",
+        "https://www.xiaohongshu.com/explore/ok",
+    ]
+    assert browser._rate_limiter.note_opens == 2
+    output = capsys.readouterr().out
+    assert "跳过笔记：https://www.xiaohongshu.com/explore/broken，原因：note parse failed" in output
 
 
 def make_task(model_name: str, search_query: str, output_dir: Path):
@@ -323,7 +399,9 @@ def test_process_tasks_skips_full_folder_and_saves_until_seven(tmp_path: Path, c
     assert len(summary.failed_downloads) == 2
     assert browser.queries == [("partial query", xhs.TARGET_IMAGES_PER_MODEL)]
     assert downloader.urls == ["none", "error", "image-1", "image-2", "image-3", "image-4", "image-5"]
-    assert rate_limiter.calls == 7
+    assert rate_limiter.searches == 1
+    assert rate_limiter.image_saves == 5
+    assert rate_limiter.models == [1]
     assert sorted(path.name for path in partial_dir.iterdir()) == [
         "01.jpg",
         "02.jpg",
@@ -362,7 +440,30 @@ def test_process_tasks_counts_empty_urls_as_incomplete(tmp_path: Path):
     assert summary.incomplete == 1
     assert summary.failed == 0
     assert downloader.urls == []
-    assert rate_limiter.calls == 0
+    assert rate_limiter.searches == 1
+    assert rate_limiter.image_saves == 0
+    assert rate_limiter.models == [1]
+
+
+def test_process_tasks_prints_shortfall_without_marking_failed(tmp_path: Path, capsys):
+    task = make_task("short-model", "short query", tmp_path / "short")
+    browser = FakeBrowser({"short query": ["image-1", "image-2"]})
+    downloader = FakeDownloader({"image-1": b"image 1", "image-2": b"image 2"})
+    rate_limiter = NoSleepRateLimiter()
+
+    summary = xhs.process_tasks([task], browser, downloader, rate_limiter)
+
+    assert summary.incomplete == 1
+    assert summary.failed == 0
+    output = capsys.readouterr().out
+    assert "short-model" in output
+    assert "当前数量=2" in output
+    assert "缺口=5" in output
+
+
+def test_incomplete_summary_keeps_success_exit_code():
+    assert xhs.exit_code_for_summary(xhs.RunSummary(incomplete=1, failed=0)) == 0
+    assert xhs.exit_code_for_summary(xhs.RunSummary(incomplete=0, failed=1)) == 1
 
 
 def test_process_tasks_counts_search_error_as_failed_and_continues(tmp_path: Path):
