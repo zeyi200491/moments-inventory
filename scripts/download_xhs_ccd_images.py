@@ -1,8 +1,9 @@
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
 import re
+import time
 from typing import Iterable
 
 import openpyxl
@@ -36,6 +37,31 @@ class ModelTask:
     common_name: str
     search_query: str
     output_dir: Path
+
+
+@dataclass
+class RunSummary:
+    total_tasks: int = 0
+    searched_tasks: int = 0
+    skipped_full: int = 0
+    saved_images: int = 0
+    failed_downloads: list[tuple[str, str, str]] = field(default_factory=list)
+
+
+class RateLimiter:
+    def __init__(self, min_interval_seconds: float = 1.0):
+        self.min_interval_seconds = min_interval_seconds
+        self._last_request_at: float | None = None
+
+    def wait(self) -> None:
+        now = time.monotonic()
+        if self._last_request_at is not None:
+            elapsed = now - self._last_request_at
+            remaining = self.min_interval_seconds - elapsed
+            if remaining > 0:
+                time.sleep(remaining)
+                now = time.monotonic()
+        self._last_request_at = now
 
 
 def clean_cell(value: object) -> str:
@@ -168,3 +194,45 @@ def save_image_bytes(folder: Path, content: bytes) -> Path | None:
     output_path = folder / f"{number:02d}.jpg"
     output_path.write_bytes(content)
     return output_path
+
+
+def process_tasks(tasks, browser, downloader, rate_limiter) -> RunSummary:
+    task_list = list(tasks)
+    summary = RunSummary(total_tasks=len(task_list))
+
+    for task in task_list:
+        if next_image_number(task.output_dir) is None:
+            summary.skipped_full += 1
+            print(f"SKIP {task.model_name} already has {TARGET_IMAGES_PER_MODEL} images")
+            continue
+
+        summary.searched_tasks += 1
+        print(f"SEARCH {task.model_name} {task.search_query}")
+        image_urls = browser.search_images(task.search_query)
+
+        for image_url in image_urls:
+            if next_image_number(task.output_dir) is None:
+                break
+
+            rate_limiter.wait()
+            try:
+                content = downloader.download(image_url)
+            except Exception as exc:
+                summary.failed_downloads.append((task.model_name, image_url, str(exc)))
+                print(f"FAIL {task.model_name} {image_url} {exc}")
+                continue
+
+            if not content:
+                reason = "empty image content"
+                summary.failed_downloads.append((task.model_name, image_url, reason))
+                print(f"FAIL {task.model_name} {image_url} {reason}")
+                continue
+
+            saved_path = save_image_bytes(task.output_dir, content)
+            if saved_path is None:
+                break
+
+            summary.saved_images += 1
+            print(f"SAVE {task.model_name} {saved_path.name}")
+
+    return summary

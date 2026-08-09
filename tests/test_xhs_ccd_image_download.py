@@ -153,3 +153,113 @@ def test_save_image_bytes_returns_none_when_full_without_adding_files(tmp_path: 
 
     assert saved_path is None
     assert sorted(path.name for path in tmp_path.iterdir()) == before
+
+
+class FakeBrowser:
+    def __init__(self, results_by_query: dict[str, list[str]]):
+        self.results_by_query = results_by_query
+        self.queries: list[str] = []
+
+    def search_images(self, query: str) -> list[str]:
+        self.queries.append(query)
+        return self.results_by_query[query]
+
+
+class FakeDownloader:
+    def __init__(self, payloads_by_url: dict[str, bytes | Exception | None]):
+        self.payloads_by_url = payloads_by_url
+        self.urls: list[str] = []
+
+    def download(self, url: str) -> bytes | None:
+        self.urls.append(url)
+        payload = self.payloads_by_url[url]
+        if isinstance(payload, Exception):
+            raise payload
+        return payload
+
+
+class NoSleepRateLimiter:
+    def __init__(self):
+        self.calls = 0
+
+    def wait(self) -> None:
+        self.calls += 1
+
+
+def make_task(model_name: str, search_query: str, output_dir: Path):
+    return xhs.ModelTask(
+        brand="Canon",
+        brand_dir="Canon",
+        model_name=model_name,
+        canonical_name=model_name,
+        common_name=model_name,
+        search_query=search_query,
+        output_dir=output_dir,
+    )
+
+
+def test_process_tasks_skips_full_folder_and_saves_until_seven(tmp_path: Path, capsys):
+    full_dir = tmp_path / "full"
+    partial_dir = tmp_path / "partial"
+    full_dir.mkdir()
+    partial_dir.mkdir()
+    for number in range(1, xhs.TARGET_IMAGES_PER_MODEL + 1):
+        (full_dir / f"{number:02d}.jpg").write_bytes(b"existing")
+    (partial_dir / "01.jpg").write_bytes(b"existing")
+    (partial_dir / "03.jpeg").write_bytes(b"existing")
+
+    tasks = [
+        make_task("full-model", "full query", full_dir),
+        make_task("partial-model", "partial query", partial_dir),
+    ]
+    browser = FakeBrowser(
+        {
+            "partial query": [
+                "none",
+                "error",
+                "image-1",
+                "image-2",
+                "image-3",
+                "image-4",
+                "image-5",
+                "unused",
+            ]
+        }
+    )
+    downloader = FakeDownloader(
+        {
+            "none": None,
+            "error": RuntimeError("network failed"),
+            "image-1": b"image 1",
+            "image-2": b"image 2",
+            "image-3": b"image 3",
+            "image-4": b"image 4",
+            "image-5": b"image 5",
+            "unused": b"unused",
+        }
+    )
+    rate_limiter = NoSleepRateLimiter()
+
+    summary = xhs.process_tasks(tasks, browser, downloader, rate_limiter)
+
+    assert summary.total_tasks == 2
+    assert summary.skipped_full == 1
+    assert summary.searched_tasks == 1
+    assert summary.saved_images == 5
+    assert len(summary.failed_downloads) == 2
+    assert browser.queries == ["partial query"]
+    assert downloader.urls == ["none", "error", "image-1", "image-2", "image-3", "image-4", "image-5"]
+    assert rate_limiter.calls == 7
+    assert sorted(path.name for path in partial_dir.iterdir()) == [
+        "01.jpg",
+        "02.jpg",
+        "03.jpeg",
+        "04.jpg",
+        "05.jpg",
+        "06.jpg",
+        "07.jpg",
+    ]
+    output = capsys.readouterr().out
+    assert "SKIP full-model" in output
+    assert "FAIL partial-model none" in output
+    assert "SAVE partial-model 07.jpg" in output
