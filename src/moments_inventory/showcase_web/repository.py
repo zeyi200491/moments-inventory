@@ -4,7 +4,7 @@ import sqlite3
 import threading
 from pathlib import Path
 
-from moments_inventory.showcase_web.models import ShowcaseProduct
+from moments_inventory.showcase_web.models import ShowcaseProduct, ShowcaseProductImage
 
 
 class SQLiteShowcaseRepository:
@@ -203,6 +203,139 @@ class SQLiteShowcaseRepository:
                 """
             ).fetchall()
         return [_product_from_row(row) for row in rows]
+
+    def update_product_price(self, product_id: str, display_price: int) -> bool:
+        self.initialize()
+        with self._lock:
+            with self._get_connection() as conn:
+                cursor = conn.execute(
+                    """
+                    update showcase_products
+                    set display_price = ?
+                    where product_id = ?
+                    """,
+                    (display_price, product_id),
+                )
+                return cursor.rowcount > 0
+
+    def set_product_visibility(self, product_id: str, visible: bool) -> bool:
+        self.initialize()
+        with self._lock:
+            with self._get_connection() as conn:
+                cursor = conn.execute(
+                    """
+                    update showcase_products
+                    set visible = ?
+                    where product_id = ?
+                    """,
+                    (int(visible), product_id),
+                )
+                return cursor.rowcount > 0
+
+    def add_product_image(
+        self,
+        image_id: str,
+        product_id: str,
+        image_path: str,
+        image_type: str,
+        sort_order: int,
+        is_cover: bool,
+    ) -> None:
+        self.initialize()
+        with self._lock:
+            with self._get_connection() as conn:
+                conn.execute(
+                    """
+                    insert into showcase_product_images (
+                      image_id,
+                      product_id,
+                      image_path,
+                      image_type,
+                      sort_order,
+                      is_cover
+                    )
+                    values (?, ?, ?, ?, ?, ?)
+                    on conflict(image_id) do update set
+                      product_id = excluded.product_id,
+                      image_path = excluded.image_path,
+                      image_type = excluded.image_type,
+                      sort_order = excluded.sort_order,
+                      is_cover = excluded.is_cover
+                    """,
+                    (image_id, product_id, image_path, image_type, sort_order, int(is_cover)),
+                )
+
+    def list_product_images(self, product_id: str) -> list[ShowcaseProductImage]:
+        self.initialize()
+        with self._lock:
+            rows = self._get_connection().execute(
+                """
+                select image_id,
+                       product_id,
+                       image_path,
+                       image_type,
+                       sort_order,
+                       is_cover
+                from showcase_product_images
+                where product_id = ?
+                order by sort_order asc, image_id asc
+                """,
+                (product_id,),
+            ).fetchall()
+        return [
+            ShowcaseProductImage(
+                image_id=str(row[0]),
+                product_id=str(row[1]),
+                image_path=str(row[2]),
+                image_type=str(row[3]),
+                sort_order=int(row[4]),
+                is_cover=bool(row[5]),
+            )
+            for row in rows
+        ]
+
+    def save_import_log(
+        self,
+        *,
+        import_id: str,
+        source_path: str,
+        imported_at: str,
+        inserted_count: int,
+        updated_count: int,
+        missing_count: int,
+    ) -> None:
+        self.initialize()
+        with self._lock:
+            with self._get_connection() as conn:
+                conn.execute(
+                    """
+                    insert into showcase_import_logs (
+                      import_id,
+                      source_path,
+                      imported_at,
+                      inserted_count,
+                      updated_count,
+                      missing_count
+                    )
+                    values (?, ?, ?, ?, ?, ?)
+                    """,
+                    (
+                        import_id,
+                        source_path,
+                        imported_at,
+                        inserted_count,
+                        updated_count,
+                        missing_count,
+                    ),
+                )
+
+    def list_product_ids(self) -> set[str]:
+        self.initialize()
+        with self._lock:
+            rows = self._get_connection().execute(
+                "select product_id from showcase_products"
+            ).fetchall()
+        return {str(row[0]) for row in rows}
 
 
 def _product_to_row(product: ShowcaseProduct) -> tuple[object, ...]:

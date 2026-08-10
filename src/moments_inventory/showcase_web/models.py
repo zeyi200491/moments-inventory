@@ -37,3 +37,11 @@ class ShowcaseSettings:
     watermark_text: str
     customer_password_hash: str
     inventory_updated_at: str
+
+
+@dataclass(slots=True)
+class ShowcaseImportResult:
+    import_id: str
+    inserted_count: int
+    updated_count: int
+    missing_count: int
