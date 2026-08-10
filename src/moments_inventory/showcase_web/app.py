@@ -6,7 +6,7 @@ from fastapi import FastAPI
 from fastapi.responses import FileResponse
 from fastapi.staticfiles import StaticFiles
 
-from moments_inventory.showcase_web.api import create_public_router
+from moments_inventory.showcase_web.api import create_admin_router, create_public_router
 from moments_inventory.showcase_web.repository import SQLiteShowcaseRepository
 
 
@@ -20,6 +20,7 @@ def create_showcase_app(
     repo.initialize()
     app = FastAPI(title="星星CCD库存展示系统")
     app.include_router(create_public_router(repo))
+    app.include_router(create_admin_router(repo))
 
     static_dir = Path(__file__).with_name("static")
     storage_path = Path(storage_dir)

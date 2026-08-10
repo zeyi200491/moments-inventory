@@ -1,8 +1,13 @@
 from __future__ import annotations
 
+from datetime import datetime, timedelta, timezone
+import secrets
+
 from fastapi import APIRouter, Depends, HTTPException
+from fastapi import Response
 from pydantic import BaseModel, Field
 
+from moments_inventory.showcase_web.auth import verify_password
 from moments_inventory.showcase_web.models import ShowcaseProduct, ShowcaseProductImage
 from moments_inventory.showcase_web.repository import SQLiteShowcaseRepository
 
@@ -69,6 +74,14 @@ class PublicProductDetailResponse(PublicProductResponse):
         )
 
 
+class AdminLoginRequest(BaseModel):
+    password: str = Field(min_length=1, max_length=256)
+
+
+class AdminLoginResponse(BaseModel):
+    ok: bool
+
+
 def create_public_router(
     repository: SQLiteShowcaseRepository,
 ) -> APIRouter:
@@ -102,5 +115,37 @@ def create_public_router(
             product,
             repo.list_product_images(product_id),
         )
+
+    return router
+
+
+def create_admin_router(
+    repository: SQLiteShowcaseRepository,
+) -> APIRouter:
+    router = APIRouter(prefix="/api/admin")
+
+    def get_repository() -> SQLiteShowcaseRepository:
+        return repository
+
+    @router.post("/login", response_model=AdminLoginResponse)
+    def admin_login(
+        request: AdminLoginRequest,
+        response: Response,
+        repo: SQLiteShowcaseRepository = Depends(get_repository),
+    ) -> AdminLoginResponse:
+        password_hash = repo.get_setting("admin_password_hash")
+        if not password_hash or not verify_password(request.password, password_hash):
+            raise HTTPException(status_code=401, detail="invalid password")
+        session_id = secrets.token_urlsafe(32)
+        expires_at = datetime.now(timezone.utc) + timedelta(hours=12)
+        repo.save_admin_session(session_id, expires_at.isoformat())
+        response.set_cookie(
+            "showcase_admin_session",
+            session_id,
+            httponly=True,
+            samesite="lax",
+            max_age=12 * 60 * 60,
+        )
+        return AdminLoginResponse(ok=True)
 
     return router

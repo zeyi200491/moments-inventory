@@ -97,6 +97,14 @@ class SQLiteShowcaseRepository:
                     )
                     """
                 )
+                conn.execute(
+                    """
+                    create table if not exists showcase_admin_sessions (
+                      session_id text primary key,
+                      expires_at text not null
+                    )
+                    """
+                )
 
     def list_table_names(self) -> set[str]:
         self.initialize()
@@ -336,6 +344,45 @@ class SQLiteShowcaseRepository:
                 "select product_id from showcase_products"
             ).fetchall()
         return {str(row[0]) for row in rows}
+
+    def set_setting(self, key: str, value: str) -> None:
+        self.initialize()
+        with self._lock:
+            with self._get_connection() as conn:
+                conn.execute(
+                    """
+                    insert into showcase_settings (setting_key, setting_value)
+                    values (?, ?)
+                    on conflict(setting_key) do update set
+                      setting_value = excluded.setting_value
+                    """,
+                    (key, value),
+                )
+
+    def get_setting(self, key: str) -> str | None:
+        self.initialize()
+        with self._lock:
+            row = self._get_connection().execute(
+                """
+                select setting_value
+                from showcase_settings
+                where setting_key = ?
+                """,
+                (key,),
+            ).fetchone()
+        return str(row[0]) if row is not None else None
+
+    def save_admin_session(self, session_id: str, expires_at: str) -> None:
+        self.initialize()
+        with self._lock:
+            with self._get_connection() as conn:
+                conn.execute(
+                    """
+                    insert into showcase_admin_sessions (session_id, expires_at)
+                    values (?, ?)
+                    """,
+                    (session_id, expires_at),
+                )
 
 
 def _product_to_row(product: ShowcaseProduct) -> tuple[object, ...]:
