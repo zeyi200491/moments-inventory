@@ -49,11 +49,14 @@ def test_cli_accepts_showcase_commands() -> None:
             "showcase_assets",
             "--output-dir",
             "site_dist",
+            "--access-password",
+            "week-pass",
         ]
     )
 
     assert merge_args.command == "showcase-merge"
     assert build_args.command == "showcase-build"
+    assert build_args.access_password == "week-pass"
 
 
 def test_cli_batch_run_export_runs_service_and_exports_records(

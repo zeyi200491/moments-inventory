@@ -9,7 +9,14 @@ if not exist ".venv\Scripts\python.exe" (
 )
 
 echo [INFO] Building CCD showcase site...
-".venv\Scripts\python.exe" -m moments_inventory.cli showcase-build --sample-assets-dir "showcase_assets" --output-dir "site_dist"
+set /p SHOWCASE_PASSWORD=Enter this week access password: 
+if "%SHOWCASE_PASSWORD%"=="" (
+  echo [ERROR] Access password is required for customer publishing.
+  pause
+  exit /b 1
+)
+
+".venv\Scripts\python.exe" -m moments_inventory.cli showcase-build --sample-assets-dir "showcase_assets" --output-dir "site_dist" --access-password "%SHOWCASE_PASSWORD%"
 if errorlevel 1 (
   echo [ERROR] Showcase site build failed.
   pause

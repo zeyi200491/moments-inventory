@@ -104,6 +104,11 @@ def build_parser() -> argparse.ArgumentParser:
     showcase_build_parser.add_argument("--manual-xlsx", default="manual/客户展示库存.xlsx")
     showcase_build_parser.add_argument("--sample-assets-dir", default="showcase_assets")
     showcase_build_parser.add_argument("--output-dir", default="site_dist")
+    showcase_build_parser.add_argument(
+        "--access-password",
+        default=None,
+        help="encrypt showcase product data with this customer access password",
+    )
 
     import_knowledge_parser = subparsers.add_parser(
         "import-knowledge",
@@ -231,7 +236,12 @@ def main(argv: list[str] | None = None) -> int:
         return 0
 
     if args.command == "showcase-build":
-        build_showcase_site(args.manual_xlsx, args.sample_assets_dir, args.output_dir)
+        build_showcase_site(
+            args.manual_xlsx,
+            args.sample_assets_dir,
+            args.output_dir,
+            access_password=args.access_password,
+        )
         return 0
 
     if args.command == "import-knowledge":

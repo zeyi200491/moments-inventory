@@ -18,6 +18,7 @@ frontend/workbench/node_modules/
 .claude/
 .codex/
 .playwright-mcp/
+.playwright-cli/
 .test-tmp/
 .probe-temp-hidden/
 probe_temp_visible/

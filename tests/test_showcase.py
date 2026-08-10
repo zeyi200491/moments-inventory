@@ -3,7 +3,7 @@ from pathlib import Path
 
 from moments_inventory.ai_kefu.products import read_xlsx_rows_from_bytes
 from moments_inventory.exporter import _write_workbook
-from moments_inventory.showcase import build_showcase_site
+from moments_inventory.showcase import build_showcase_site, decrypt_showcase_payload
 from moments_inventory.showcase import SHOWCASE_HEADERS, merge_showcase_workbook
 from moments_inventory.showcase import normalize_showcase_model_key
 
@@ -219,3 +219,53 @@ def test_build_showcase_site_filters_hidden_products_and_copies_assets(tmp_path:
     assert "products.json" in js
     assert "function escapeHtml" in js
     assert "PAGE_SIZE" in js
+
+
+def test_build_showcase_site_can_encrypt_products_with_access_password(tmp_path: Path) -> None:
+    manual = tmp_path / "manual.xlsx"
+    _write_workbook(
+        manual,
+        [
+            SHOWCASE_HEADERS,
+            [
+                "p1",
+                "三星a40",
+                "三星",
+                99,
+                168,
+                "是",
+                "2026-07-15T20:25:55+08:00",
+                "晨曦",
+                "原文",
+                "展示文案",
+                "",
+                "",
+                "三星a40",
+                "",
+            ],
+        ],
+    )
+
+    result = build_showcase_site(
+        manual,
+        tmp_path / "sample_assets",
+        tmp_path / "site_dist",
+        workspace_root=tmp_path,
+        access_password="week-pass",
+    )
+
+    assert not (result.output_dir / "products.json").exists()
+    encrypted = json.loads((result.output_dir / "products.encrypted.json").read_text(encoding="utf-8"))
+    decoded = json.loads(decrypt_showcase_payload(encrypted, "week-pass").decode("utf-8"))
+    assert decoded["products"][0]["productId"] == "p1"
+    assert decoded["products"][0]["source"] == "星星ccd货源"
+    assert decrypt_showcase_payload(encrypted, "wrong-pass") is None
+    html = (result.output_dir / "index.html").read_text(encoding="utf-8")
+    css = (result.output_dir / "styles.css").read_text(encoding="utf-8")
+    js = (result.output_dir / "app.js").read_text(encoding="utf-8")
+    assert "本周口令" in html
+    assert "本库存展示页归星星CCD所有" in html
+    assert "当前授权合作方：星星CCD直营" in html
+    assert "[hidden]" in css
+    assert "display: none !important" in css
+    assert "products.encrypted.json" in js

@@ -170,8 +170,8 @@ python -m moments_inventory.cli kefu-dev --host 127.0.0.1 --port 8787 --reload -
 1. 双击 `run_showcase_full_mode.bat`，刷全量朋友圈库存并更新 `manual/客户展示库存.xlsx`
 2. 打开 `manual/客户展示库存.xlsx`，调整 `展示价`、`是否展示`、`展示文案`、`出片图型号`
 3. 把出片图放到 `showcase_assets/<出片图型号>/`，例如 `showcase_assets/三星a40/sample-1.jpg`
-4. 双击 `publish_showcase_site.bat`，生成 `site_dist/`
-5. 将 `site_dist/` 发布到线上静态托管，客户打开固定链接查看
+4. 双击 `publish_showcase_site.bat`，按提示输入本周口令，生成加密版 `site_dist/`
+5. 将 `site_dist/` 发布到线上静态托管，客户打开固定链接并输入本周口令查看
 
 关键规则：
 
@@ -180,12 +180,14 @@ python -m moments_inventory.cli kefu-dev --host 127.0.0.1 --port 8787 --reload -
 - 朋友圈机身图按单台商品绑定，路径来自库存表的 `机身图路径`。
 - 出片图按型号复用，目录名来自 `出片图型号`。
 - `是否展示` 填 `否` 的商品不会出现在客户网页里。
+- 客户发布版会生成 `products.encrypted.json`，不会直接暴露明文 `products.json`。
+- 本周口令建议每周更换一次；发现同行盗用时可以临时更换并重新发布。
 
 也可以手动运行：
 
 ```bash
 python -m moments_inventory.cli showcase-merge
-python -m moments_inventory.cli showcase-build --sample-assets-dir showcase_assets --output-dir site_dist
+python -m moments_inventory.cli showcase-build --sample-assets-dir showcase_assets --output-dir site_dist --access-password 本周口令
 ```
 
 ## 4. 建议的接手顺序

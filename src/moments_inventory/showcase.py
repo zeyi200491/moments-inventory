@@ -1,14 +1,18 @@
 from __future__ import annotations
 
 import csv
+import base64
 from dataclasses import dataclass
+import hashlib
 import json
+import os
 from pathlib import Path
 import re
 import shutil
 
 from moments_inventory.ai_kefu.products import read_xlsx_rows_from_bytes
 from moments_inventory.exporter import _write_workbook
+from cryptography.hazmat.primitives.ciphers.aead import AESGCM
 
 
 _BRAND_ALIASES: tuple[tuple[str, tuple[str, ...]], ...] = (
@@ -131,6 +135,7 @@ def build_showcase_site(
     output_dir: str | Path,
     *,
     workspace_root: str | Path | None = None,
+    access_password: str | None = None,
 ) -> ShowcaseBuildResult:
     root = Path(workspace_root or ".").resolve()
     target_dir = Path(output_dir)
@@ -146,14 +151,67 @@ def build_showcase_site(
         sample_images = _copy_sample_images(row, Path(sample_assets_dir), target_dir, missing_rows)
         products.append(_catalog_product(row, body_images, sample_images))
 
-    _write_static_files(target_dir)
-    (target_dir / "products.json").write_text(
-        json.dumps({"products": products}, ensure_ascii=False, indent=2) + "\n",
-        encoding="utf-8",
-    )
+    _write_static_files(target_dir, encrypted=bool(access_password))
+    products_payload = json.dumps({"products": products}, ensure_ascii=False, indent=2).encode("utf-8")
+    products_path = target_dir / "products.json"
+    encrypted_path = target_dir / "products.encrypted.json"
+    if access_password:
+        if products_path.exists():
+            products_path.unlink()
+        encrypted_path.write_text(
+            json.dumps(encrypt_showcase_payload(products_payload, access_password), ensure_ascii=False, indent=2) + "\n",
+            encoding="utf-8",
+        )
+    else:
+        if encrypted_path.exists():
+            encrypted_path.unlink()
+        products_path.write_text(products_payload.decode("utf-8") + "\n", encoding="utf-8")
     missing_path = target_dir / "showcase_missing_assets.csv"
     _write_missing_assets(missing_path, missing_rows)
     return ShowcaseBuildResult(target_dir, len(products), missing_path)
+
+
+def encrypt_showcase_payload(plaintext: bytes, password: str) -> dict[str, object]:
+    if not password:
+        raise ValueError("access password must not be empty")
+    salt = os.urandom(16)
+    nonce = os.urandom(12)
+    iterations = 200_000
+    key = hashlib.pbkdf2_hmac("sha256", password.encode("utf-8"), salt, iterations, dklen=32)
+    ciphertext = AESGCM(key).encrypt(nonce, plaintext, salt)
+    return {
+        "version": 1,
+        "kdf": "PBKDF2-HMAC-SHA256",
+        "iterations": iterations,
+        "cipher": "AES-256-GCM",
+        "salt": _b64(salt),
+        "nonce": _b64(nonce),
+        "ciphertext": _b64(ciphertext),
+    }
+
+
+def decrypt_showcase_payload(payload: dict[str, object], password: str) -> bytes | None:
+    try:
+        salt = _unb64(str(payload["salt"]))
+        nonce = _unb64(str(payload["nonce"]))
+        ciphertext = _unb64(str(payload["ciphertext"]))
+        iterations = int(payload["iterations"])
+    except (KeyError, TypeError, ValueError):
+        return None
+
+    key = hashlib.pbkdf2_hmac("sha256", password.encode("utf-8"), salt, iterations, dklen=32)
+    try:
+        return AESGCM(key).decrypt(nonce, ciphertext, salt)
+    except Exception:
+        return None
+
+
+def _b64(value: bytes) -> str:
+    return base64.b64encode(value).decode("ascii")
+
+
+def _unb64(value: str) -> bytes:
+    return base64.b64decode(value.encode("ascii"), validate=True)
 
 
 def _read_rows(path: Path) -> list[list[object]]:
@@ -363,25 +421,59 @@ def _write_missing_assets(path: Path, missing_rows: list[dict[str, str]]) -> Non
         writer.writerows(missing_rows)
 
 
-def _write_static_files(target_dir: Path) -> None:
+def _write_static_files(target_dir: Path, *, encrypted: bool = False) -> None:
     (target_dir / "index.html").write_text(
-        """<!doctype html>
+        f"""<!doctype html>
 <html lang="zh-CN">
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
-  <title>CCD 当前库存</title>
+  <title>星星CCD 当前库存</title>
+  <link rel="icon" href="data:,">
   <link rel="stylesheet" href="styles.css">
 </head>
 <body>
   <main class="page-shell">
+    <section id="accessGate" class="access-gate" {"hidden" if not encrypted else ""}>
+      <div class="gate-panel">
+        <p class="eyebrow">Xingxing CCD</p>
+        <h1>星星CCD库存展示</h1>
+        <p class="gate-copy">请输入本周口令查看当前库存。口令错误或过期时，请私信星星CCD获取最新口令。</p>
+        <form id="accessForm" class="access-form">
+          <input type="hidden" name="username" autocomplete="username" value="xingxing-ccd-customer">
+          <label class="field">
+            <span>本周口令</span>
+            <input id="accessPasswordInput" name="password" type="password" autocomplete="current-password" placeholder="输入本周口令">
+          </label>
+          <label class="remember-row">
+            <input id="rememberAccessInput" type="checkbox" checked>
+            <span>记住本设备 7 天</span>
+          </label>
+          <button class="access-button" type="submit">进入库存</button>
+          <p id="accessError" class="access-error" hidden></p>
+        </form>
+      </div>
+    </section>
+
+    <section id="inventoryApp" {"hidden" if encrypted else ""}>
     <header class="inventory-header">
       <div>
-        <p class="eyebrow">Daily CCD Stock</p>
-        <h1>CCD 当前库存</h1>
+        <p class="eyebrow">Xingxing CCD Stock</p>
+        <h1>星星CCD 当前库存</h1>
       </div>
       <p id="resultCount" class="result-count">0 台</p>
     </header>
+
+    <section class="ownership-notice" aria-label="库存归属声明">
+      <div>
+        <h2>星星CCD库存声明</h2>
+        <p>本库存展示页归星星CCD所有，仅供星星CCD客户查看。未经许可，任何代理、货源、同行不得复制、转发或用于二次销售。</p>
+        <p>非授权渠道转发的库存信息可能存在价格错误、库存过期、无法发货、售后无法保障等问题。授权合作方名单以本页面公示为准。</p>
+      </div>
+      <div class="authorized-list">
+        <span>当前授权合作方：星星CCD直营</span>
+      </div>
+    </section>
 
     <section class="toolbar" aria-label="库存筛选">
       <label class="field field-search">
@@ -428,6 +520,7 @@ def _write_static_files(target_dir: Path) -> None:
     <section id="productGrid" class="product-grid" aria-live="polite"></section>
     <section id="emptyState" class="empty-state" hidden>没有匹配的库存</section>
     <button id="loadMoreButton" class="load-more-button" type="button" hidden>加载更多</button>
+    </section>
   </main>
   <script src="app.js"></script>
 </body>
@@ -454,6 +547,10 @@ def _write_static_files(target_dir: Path) -> None:
   box-sizing: border-box;
 }
 
+[hidden] {
+  display: none !important;
+}
+
 body {
   margin: 0;
   background:
@@ -468,6 +565,64 @@ body {
   width: min(1440px, 100%);
   margin: 0 auto;
   padding: 22px;
+}
+
+.access-gate {
+  min-height: 100vh;
+  display: grid;
+  place-items: center;
+  padding: 28px 0;
+}
+
+.gate-panel {
+  width: min(520px, 100%);
+  padding: 30px;
+  border: 2px solid var(--ink);
+  background: rgba(255, 255, 255, 0.94);
+  box-shadow: var(--shadow);
+}
+
+.gate-copy {
+  margin: 16px 0 22px;
+  color: var(--muted);
+  line-height: 1.75;
+}
+
+.access-form {
+  display: grid;
+  gap: 14px;
+}
+
+.remember-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  color: var(--muted);
+  font-size: 14px;
+}
+
+.access-button,
+.load-more-button {
+  min-height: 44px;
+  border: 0;
+  background: var(--pine);
+  color: #fff;
+  font-weight: 900;
+  cursor: pointer;
+}
+
+.access-button:hover,
+.load-more-button:hover {
+  background: #17322e;
+}
+
+.access-error {
+  margin: 0;
+  padding: 10px 12px;
+  border: 1px solid rgba(217, 111, 85, 0.45);
+  background: rgba(217, 111, 85, 0.1);
+  color: #9d3e2e;
+  font-weight: 700;
 }
 
 .inventory-header {
@@ -505,6 +660,48 @@ h1 {
   color: var(--pine);
   font-weight: 800;
   text-align: center;
+}
+
+.ownership-notice {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) 220px;
+  gap: 18px;
+  margin: 18px 0;
+  padding: 18px;
+  border: 1px solid var(--line-strong);
+  background: rgba(255, 255, 255, 0.78);
+}
+
+.ownership-notice h2 {
+  margin: 0 0 8px;
+  font-size: 18px;
+}
+
+.ownership-notice p {
+  margin: 6px 0;
+  color: var(--muted);
+  line-height: 1.7;
+}
+
+.authorized-list {
+  align-self: stretch;
+  display: grid;
+  align-content: center;
+  gap: 8px;
+  padding: 14px;
+  border: 1px solid var(--line);
+  background: var(--mint);
+}
+
+.authorized-list span {
+  color: var(--muted);
+  font-size: 12px;
+  font-weight: 800;
+}
+
+.authorized-list strong {
+  color: var(--pine);
+  font-size: 18px;
 }
 
 .toolbar {
@@ -666,6 +863,10 @@ select:focus {
     flex-direction: column;
   }
 
+  .ownership-notice {
+    grid-template-columns: 1fr;
+  }
+
   .toolbar {
     grid-template-columns: 1fr 1fr;
   }
@@ -688,7 +889,12 @@ select:focus {
         encoding="utf-8",
     )
     (target_dir / "app.js").write_text(
-        """const state = {
+        ("""const PRODUCTS_URL = "__PRODUCTS_URL__";
+const PRODUCTS_ENCRYPTED = __PRODUCTS_ENCRYPTED__;
+const ACCESS_STORAGE_KEY = "xingxing-ccd-access-password";
+const ACCESS_STORAGE_EXPIRES_KEY = "xingxing-ccd-access-expires";
+
+const state = {
   products: [],
   query: "",
   brand: "",
@@ -706,6 +912,12 @@ const productGrid = document.getElementById("productGrid");
 const emptyState = document.getElementById("emptyState");
 const resultCount = document.getElementById("resultCount");
 const loadMoreButton = document.getElementById("loadMoreButton");
+const accessGate = document.getElementById("accessGate");
+const inventoryApp = document.getElementById("inventoryApp");
+const accessForm = document.getElementById("accessForm");
+const accessPasswordInput = document.getElementById("accessPasswordInput");
+const rememberAccessInput = document.getElementById("rememberAccessInput");
+const accessError = document.getElementById("accessError");
 
 const PAGE_SIZE = 120;
 let visibleLimit = PAGE_SIZE;
@@ -841,14 +1053,142 @@ loadMoreButton.addEventListener("click", () => {
   render();
 });
 
-fetch("products.json")
-  .then((response) => response.json())
-  .then((data) => {
-    state.products = Array.isArray(data.products) ? data.products : [];
-    renderBrands();
-    render();
-  });
-""",
+async function loadPlainProducts() {
+  const response = await fetch(PRODUCTS_URL);
+  if (!response.ok) throw new Error("库存文件加载失败");
+  return response.json();
+}
+
+function base64ToBytes(value) {
+  const binary = atob(value);
+  const bytes = new Uint8Array(binary.length);
+  for (let index = 0; index < binary.length; index += 1) {
+    bytes[index] = binary.charCodeAt(index);
+  }
+  return bytes;
+}
+
+async function decryptProductsPayload(payload, password) {
+  const encoder = new TextEncoder();
+  const passwordKey = await crypto.subtle.importKey(
+    "raw",
+    encoder.encode(password),
+    "PBKDF2",
+    false,
+    ["deriveKey"],
+  );
+  const key = await crypto.subtle.deriveKey(
+    {
+      name: "PBKDF2",
+      salt: base64ToBytes(payload.salt),
+      iterations: Number(payload.iterations),
+      hash: "SHA-256",
+    },
+    passwordKey,
+    { name: "AES-GCM", length: 256 },
+    false,
+    ["decrypt"],
+  );
+  const plaintext = await crypto.subtle.decrypt(
+    {
+      name: "AES-GCM",
+      iv: base64ToBytes(payload.nonce),
+      additionalData: base64ToBytes(payload.salt),
+    },
+    key,
+    base64ToBytes(payload.ciphertext),
+  );
+  return JSON.parse(new TextDecoder().decode(plaintext));
+}
+
+function showAccessError(message) {
+  accessError.textContent = message;
+  accessError.hidden = false;
+}
+
+function rememberPassword(password) {
+  if (!rememberAccessInput.checked) return;
+  const expiresAt = Date.now() + 7 * 24 * 60 * 60 * 1000;
+  localStorage.setItem(ACCESS_STORAGE_KEY, password);
+  localStorage.setItem(ACCESS_STORAGE_EXPIRES_KEY, String(expiresAt));
+}
+
+function readRememberedPassword() {
+  const expiresAt = Number(localStorage.getItem(ACCESS_STORAGE_EXPIRES_KEY) || "0");
+  if (!expiresAt || Date.now() > expiresAt) {
+    localStorage.removeItem(ACCESS_STORAGE_KEY);
+    localStorage.removeItem(ACCESS_STORAGE_EXPIRES_KEY);
+    return "";
+  }
+  return localStorage.getItem(ACCESS_STORAGE_KEY) || "";
+}
+
+function enterInventory(data) {
+  state.products = Array.isArray(data.products) ? data.products : [];
+  accessGate.hidden = true;
+  inventoryApp.hidden = false;
+  renderBrands();
+  render();
+}
+
+async function unlockEncryptedProducts(password) {
+  const response = await fetch(PRODUCTS_URL);
+  if (!response.ok) throw new Error("库存文件加载失败");
+  const encryptedPayload = await response.json();
+  return decryptProductsPayload(encryptedPayload, password);
+}
+
+async function loadProducts() {
+  if (!PRODUCTS_ENCRYPTED) {
+    enterInventory(await loadPlainProducts());
+    return;
+  }
+
+  const rememberedPassword = readRememberedPassword();
+  if (rememberedPassword) {
+    try {
+      enterInventory(await unlockEncryptedProducts(rememberedPassword));
+      return;
+    } catch {
+      localStorage.removeItem(ACCESS_STORAGE_KEY);
+      localStorage.removeItem(ACCESS_STORAGE_EXPIRES_KEY);
+    }
+  }
+
+  accessGate.hidden = false;
+  inventoryApp.hidden = true;
+}
+
+accessForm.addEventListener("submit", async (event) => {
+  event.preventDefault();
+  accessError.hidden = true;
+  const password = accessPasswordInput.value.trim();
+  if (!password) {
+    showAccessError("请输入本周口令。");
+    return;
+  }
+  try {
+    const data = await unlockEncryptedProducts(password);
+    rememberPassword(password);
+    enterInventory(data);
+  } catch {
+    showAccessError("口令错误或已过期，请私信星星CCD获取最新口令。");
+  }
+});
+
+loadProducts().catch(() => {
+  if (PRODUCTS_ENCRYPTED) {
+    showAccessError("库存文件加载失败，请稍后重试。");
+    accessGate.hidden = false;
+    inventoryApp.hidden = true;
+    return;
+  }
+  emptyState.hidden = false;
+  emptyState.textContent = "库存文件加载失败，请稍后重试。";
+});
+""")
+        .replace("__PRODUCTS_URL__", "products.encrypted.json" if encrypted else "products.json")
+        .replace("__PRODUCTS_ENCRYPTED__", "true" if encrypted else "false"),
         encoding="utf-8",
     )
 
