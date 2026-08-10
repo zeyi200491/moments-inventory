@@ -1,0 +1,51 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>星星CCD 当前库存</title>
+  <link rel="icon" href="data:,">
+  <link rel="stylesheet" href="/static/showcase.css">
+</head>
+<body>
+  <div class="site-watermark" aria-hidden="true"></div>
+  <main class="page-shell">
+    <header class="inventory-header">
+      <div>
+        <p class="eyebrow">Xingxing CCD Stock</p>
+        <h1>星星CCD 当前库存</h1>
+      </div>
+      <p id="resultCount" class="result-count">0 台</p>
+    </header>
+
+    <section class="toolbar" aria-label="库存筛选">
+      <label class="field field-search">
+        <span>搜索</span>
+        <input id="searchInput" type="search" placeholder="型号、品牌、文案关键词">
+      </label>
+      <label class="field">
+        <span>品牌</span>
+        <select id="brandFilter">
+          <option value="">全部品牌</option>
+        </select>
+      </label>
+      <label class="field">
+        <span>价格区间</span>
+        <select id="priceFilter">
+          <option value="">全部价格</option>
+          <option value="0-99">100 以下</option>
+          <option value="100-199">100-199</option>
+          <option value="200-299">200-299</option>
+          <option value="300-499">300-499</option>
+          <option value="500-799">500-799</option>
+          <option value="800-999999">800 以上</option>
+        </select>
+      </label>
+    </section>
+
+    <section id="productGrid" class="product-grid" aria-live="polite"></section>
+    <section id="emptyState" class="empty-state" hidden>没有匹配的库存</section>
+  </main>
+  <script src="/static/showcase.js"></script>
+</body>
+</html>

@@ -1,0 +1,240 @@
+:root {
+  --ink: #192022;
+  --muted: #65706f;
+  --surface: #ffffff;
+  --line: #d9ddd7;
+  --pine: #21453f;
+  --mint: #d7e7dd;
+  --coral: #d96f55;
+  --shadow: 0 18px 38px rgba(25, 32, 34, 0.11);
+}
+
+* {
+  box-sizing: border-box;
+}
+
+[hidden] {
+  display: none !important;
+}
+
+body {
+  margin: 0;
+  background:
+    linear-gradient(90deg, rgba(33, 69, 63, 0.06) 1px, transparent 1px),
+    linear-gradient(180deg, #f8faf7 0%, #eef3ee 100%);
+  background-size: 28px 28px, 100% 100%;
+  color: var(--ink);
+  font-family: "Microsoft YaHei", "PingFang SC", "Noto Sans CJK SC", sans-serif;
+}
+
+.site-watermark {
+  position: fixed;
+  inset: -80px;
+  z-index: 20;
+  pointer-events: none;
+  opacity: 0.13;
+  transform: rotate(-24deg);
+  transform-origin: center;
+}
+
+.site-watermark::before {
+  content: "星星CCD  星星CCD  星星CCD  星星CCD";
+  position: absolute;
+  inset: 0;
+  color: rgba(25, 32, 34, 0.54);
+  font-size: 28px;
+  font-weight: 900;
+  line-height: 150px;
+  letter-spacing: 0.18em;
+  word-spacing: 46px;
+  white-space: pre-wrap;
+}
+
+.page-shell {
+  position: relative;
+  z-index: 1;
+  width: min(1440px, 100%);
+  margin: 0 auto;
+  padding: 22px;
+}
+
+.inventory-header {
+  display: flex;
+  align-items: flex-end;
+  justify-content: space-between;
+  gap: 16px;
+  padding: 18px 0 16px;
+  border-bottom: 2px solid var(--ink);
+}
+
+.eyebrow {
+  margin: 0 0 8px;
+  color: var(--coral);
+  font-size: 12px;
+  font-weight: 800;
+  letter-spacing: 0.12em;
+  text-transform: uppercase;
+}
+
+h1 {
+  margin: 0;
+  font-family: "SimSun", "Songti SC", serif;
+  font-size: clamp(34px, 5vw, 72px);
+  line-height: 0.96;
+  letter-spacing: 0;
+}
+
+.result-count {
+  margin: 0;
+  min-width: 86px;
+  padding: 10px 12px;
+  border: 1px solid #b8c0b9;
+  background: var(--mint);
+  color: var(--pine);
+  font-weight: 800;
+  text-align: center;
+}
+
+.toolbar {
+  display: grid;
+  grid-template-columns: minmax(240px, 1.4fr) repeat(2, minmax(150px, 0.7fr));
+  gap: 12px;
+  margin: 18px 0;
+}
+
+.field {
+  display: grid;
+  gap: 6px;
+}
+
+.field span {
+  color: var(--muted);
+  font-size: 12px;
+  font-weight: 800;
+}
+
+input,
+select {
+  width: 100%;
+  min-height: 42px;
+  border: 1px solid var(--line);
+  background: var(--surface);
+  color: var(--ink);
+  font: inherit;
+  padding: 8px 10px;
+}
+
+.product-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(260px, 1fr));
+  gap: 16px;
+}
+
+.product-card {
+  display: grid;
+  gap: 12px;
+  border: 1px solid var(--line);
+  background: rgba(255, 255, 255, 0.86);
+  box-shadow: var(--shadow);
+  color: inherit;
+  text-decoration: none;
+}
+
+.product-card img,
+.product-placeholder {
+  width: 100%;
+  aspect-ratio: 4 / 3;
+  object-fit: cover;
+  background: linear-gradient(135deg, #eef3ee, #d7e7dd);
+}
+
+.product-placeholder::after {
+  content: "暂无机身图";
+  display: grid;
+  place-items: center;
+  height: 100%;
+  color: var(--muted);
+}
+
+.product-content {
+  padding: 0 14px 14px;
+}
+
+.product-title-row {
+  display: flex;
+  justify-content: space-between;
+  gap: 12px;
+}
+
+.product-title-row h2 {
+  margin: 0;
+  font-size: 18px;
+}
+
+.price {
+  color: var(--coral);
+  font-weight: 900;
+}
+
+.meta-row,
+.copy {
+  color: var(--muted);
+  line-height: 1.65;
+}
+
+.copy {
+  display: -webkit-box;
+  margin: 8px 0 0;
+  overflow: hidden;
+  -webkit-box-orient: vertical;
+  -webkit-line-clamp: 4;
+}
+
+.empty-state {
+  padding: 28px;
+  border: 1px dashed var(--line);
+  background: rgba(255, 255, 255, 0.74);
+  color: var(--muted);
+  text-align: center;
+}
+
+.back-link {
+  display: inline-block;
+  margin: 12px 0 22px;
+  color: var(--pine);
+  font-weight: 800;
+}
+
+.product-detail {
+  display: grid;
+  gap: 18px;
+}
+
+.detail-images {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(180px, 1fr));
+  gap: 10px;
+}
+
+.detail-images img {
+  width: 100%;
+  aspect-ratio: 1 / 1;
+  object-fit: cover;
+  background: #eef3ee;
+}
+
+@media (max-width: 760px) {
+  .page-shell {
+    padding: 14px;
+  }
+
+  .inventory-header,
+  .product-title-row {
+    align-items: flex-start;
+    flex-direction: column;
+  }
+
+  .toolbar {
+    grid-template-columns: 1fr;
+  }
+}
