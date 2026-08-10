@@ -1,0 +1,84 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>星星CCD 管理后台</title>
+  <link rel="icon" href="data:,">
+  <link rel="stylesheet" href="/static/showcase.css">
+</head>
+<body>
+  <main class="page-shell admin-shell">
+    <header class="inventory-header">
+      <div>
+        <p class="eyebrow">Admin</p>
+        <h1>星星CCD 管理后台</h1>
+      </div>
+      <a class="back-link" href="/">查看客户页</a>
+    </header>
+
+    <section id="loginPanel" class="admin-panel">
+      <h2>管理员登录</h2>
+      <form id="loginForm" class="admin-form">
+        <input type="hidden" name="username" autocomplete="username" value="xingxing-admin">
+        <label class="field">
+          <span>管理员密码</span>
+          <input id="adminPasswordInput" name="password" type="password" autocomplete="current-password">
+        </label>
+        <button class="access-button" type="submit">登录</button>
+        <p id="loginError" class="access-error" hidden></p>
+      </form>
+    </section>
+
+    <section id="adminApp" hidden>
+      <section class="admin-panel">
+        <h2>批量加价</h2>
+        <form id="batchPriceForm" class="admin-form admin-grid">
+          <label class="field">
+            <span>品牌</span>
+            <input id="batchBrandInput" placeholder="留空代表全部">
+          </label>
+          <label class="field">
+            <span>加价金额</span>
+            <input id="batchAmountInput" type="number" min="0" value="30">
+          </label>
+          <button class="access-button" type="submit">执行加价</button>
+        </form>
+      </section>
+
+      <section class="admin-panel">
+        <h2>新增商品</h2>
+        <form id="createProductForm" class="admin-form admin-grid">
+          <label class="field">
+            <span>商品ID</span>
+            <input id="createProductIdInput" required>
+          </label>
+          <label class="field">
+            <span>型号</span>
+            <input id="createModelInput" required>
+          </label>
+          <label class="field">
+            <span>品牌</span>
+            <input id="createBrandInput" required>
+          </label>
+          <label class="field">
+            <span>展示价</span>
+            <input id="createPriceInput" type="number" min="0" required>
+          </label>
+          <label class="field field-wide">
+            <span>展示文案</span>
+            <textarea id="createCopyInput"></textarea>
+          </label>
+          <button class="access-button" type="submit">新增</button>
+        </form>
+      </section>
+
+      <section class="admin-panel">
+        <h2>商品管理</h2>
+        <div id="adminProductList" class="admin-product-list"></div>
+      </section>
+    </section>
+  </main>
+  <script src="/static/admin.js"></script>
+</body>
+</html>

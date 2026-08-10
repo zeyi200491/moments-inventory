@@ -36,4 +36,8 @@ def create_showcase_app(
     def product_detail() -> FileResponse:
         return FileResponse(static_dir / "product.html")
 
+    @app.get("/admin-xingxing")
+    def admin() -> FileResponse:
+        return FileResponse(static_dir / "admin.html")
+
     return app

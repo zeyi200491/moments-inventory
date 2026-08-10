@@ -384,6 +384,33 @@ class SQLiteShowcaseRepository:
                     (session_id, expires_at),
                 )
 
+    def get_admin_session_expires_at(self, session_id: str) -> str | None:
+        self.initialize()
+        with self._lock:
+            row = self._get_connection().execute(
+                """
+                select expires_at
+                from showcase_admin_sessions
+                where session_id = ?
+                """,
+                (session_id,),
+            ).fetchone()
+        return str(row[0]) if row is not None else None
+
+    def delete_product(self, product_id: str) -> bool:
+        self.initialize()
+        with self._lock:
+            with self._get_connection() as conn:
+                conn.execute(
+                    "delete from showcase_product_images where product_id = ?",
+                    (product_id,),
+                )
+                cursor = conn.execute(
+                    "delete from showcase_products where product_id = ?",
+                    (product_id,),
+                )
+                return cursor.rowcount > 0
+
 
 def _product_to_row(product: ShowcaseProduct) -> tuple[object, ...]:
     return (

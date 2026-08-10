@@ -114,7 +114,8 @@ h1 {
 }
 
 input,
-select {
+select,
+textarea {
   width: 100%;
   min-height: 42px;
   border: 1px solid var(--line);
@@ -122,6 +123,33 @@ select {
   color: var(--ink);
   font: inherit;
   padding: 8px 10px;
+}
+
+textarea {
+  min-height: 96px;
+  resize: vertical;
+}
+
+.access-button {
+  min-height: 42px;
+  border: 0;
+  background: var(--pine);
+  color: #fff;
+  font-weight: 900;
+  cursor: pointer;
+}
+
+.access-button:hover {
+  background: #17322e;
+}
+
+.access-error {
+  margin: 0;
+  padding: 10px 12px;
+  border: 1px solid rgba(217, 111, 85, 0.45);
+  background: rgba(217, 111, 85, 0.1);
+  color: #9d3e2e;
+  font-weight: 700;
 }
 
 .product-grid {
@@ -210,6 +238,55 @@ select {
   gap: 18px;
 }
 
+.admin-panel {
+  margin: 18px 0;
+  padding: 18px;
+  border: 1px solid var(--line);
+  background: rgba(255, 255, 255, 0.84);
+  box-shadow: var(--shadow);
+}
+
+.admin-panel h2 {
+  margin: 0 0 14px;
+  font-size: 20px;
+}
+
+.admin-form {
+  display: grid;
+  gap: 12px;
+}
+
+.admin-grid {
+  grid-template-columns: repeat(auto-fit, minmax(180px, 1fr));
+  align-items: end;
+}
+
+.field-wide {
+  grid-column: 1 / -1;
+}
+
+.admin-product-list {
+  display: grid;
+  gap: 10px;
+}
+
+.admin-product-row {
+  display: grid;
+  grid-template-columns: minmax(180px, 1fr) 110px repeat(3, auto);
+  gap: 8px;
+  align-items: center;
+  padding: 10px;
+  border: 1px solid var(--line);
+  background: var(--surface);
+}
+
+.admin-product-row button {
+  min-height: 36px;
+  border: 1px solid var(--line);
+  background: #fff;
+  cursor: pointer;
+}
+
 .detail-images {
   display: grid;
   grid-template-columns: repeat(auto-fill, minmax(180px, 1fr));
@@ -235,6 +312,10 @@ select {
   }
 
   .toolbar {
+    grid-template-columns: 1fr;
+  }
+
+  .admin-product-row {
     grid-template-columns: 1fr;
   }
 }
