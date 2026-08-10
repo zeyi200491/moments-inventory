@@ -433,6 +433,7 @@ def _write_static_files(target_dir: Path, *, encrypted: bool = False) -> None:
   <link rel="stylesheet" href="styles.css">
 </head>
 <body>
+  <div class="site-watermark" aria-hidden="true"></div>
   <main class="page-shell">
     <section id="accessGate" class="access-gate" {"hidden" if not encrypted else ""}>
       <div class="gate-panel">
@@ -561,7 +562,41 @@ body {
   font-family: "Microsoft YaHei", "PingFang SC", "Noto Sans CJK SC", sans-serif;
 }
 
+.site-watermark {
+  position: fixed;
+  inset: -80px;
+  z-index: 20;
+  pointer-events: none;
+  opacity: 0.13;
+  transform: rotate(-24deg);
+  transform-origin: center;
+  background-image: repeating-linear-gradient(
+    0deg,
+    transparent 0,
+    transparent 74px,
+    rgba(25, 32, 34, 0.34) 75px,
+    rgba(25, 32, 34, 0.34) 76px,
+    transparent 77px,
+    transparent 150px
+  );
+}
+
+.site-watermark::before {
+  content: "星星CCD  星星CCD  星星CCD  星星CCD";
+  position: absolute;
+  inset: 0;
+  color: rgba(25, 32, 34, 0.54);
+  font-size: 28px;
+  font-weight: 900;
+  line-height: 150px;
+  letter-spacing: 0.18em;
+  word-spacing: 46px;
+  white-space: pre-wrap;
+}
+
 .page-shell {
+  position: relative;
+  z-index: 1;
   width: min(1440px, 100%);
   margin: 0 auto;
   padding: 22px;
@@ -959,7 +994,6 @@ function matchesSearch(product) {
     product.brand,
     product.displayCopy,
     product.rawCopy,
-    product.source,
   ].join(" ").toLowerCase();
   return haystack.includes(state.query);
 }
@@ -1007,7 +1041,7 @@ function renderProduct(product) {
         <h2>${escapeHtml(product.model)}</h2>
         <div class="price">${priceText(product.displayPrice)}</div>
       </div>
-      <div class="meta-row">${escapeHtml(product.brand || "未识别品牌")} · ${escapeHtml(product.source || "未知来源")}</div>
+      <div class="meta-row">${escapeHtml(product.brand || "未识别品牌")}</div>
       <p class="copy">${escapeHtml(product.displayCopy || product.rawCopy || "")}</p>
       ${sampleStrip}
     </div>

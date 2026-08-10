@@ -215,10 +215,14 @@ def test_build_showcase_site_filters_hidden_products_and_copies_assets(tmp_path:
     assert "brandFilter" in html
     assert "loadMoreButton" in html
     assert "价格区间" in html
+    assert "site-watermark" in html
     assert ".product-card" in css
+    assert ".site-watermark" in css
+    assert "rotate(-24deg)" in css
     assert "products.json" in js
     assert "function escapeHtml" in js
     assert "PAGE_SIZE" in js
+    assert 'product.source || "未知来源"' not in js
 
 
 def test_build_showcase_site_can_encrypt_products_with_access_password(tmp_path: Path) -> None:
@@ -266,6 +270,9 @@ def test_build_showcase_site_can_encrypt_products_with_access_password(tmp_path:
     assert "本周口令" in html
     assert "本库存展示页归星星CCD所有" in html
     assert "当前授权合作方：星星CCD直营" in html
+    assert "site-watermark" in html
+    assert ".site-watermark" in css
+    assert 'product.source || "未知来源"' not in js
     assert "[hidden]" in css
     assert "display: none !important" in css
     assert "products.encrypted.json" in js
