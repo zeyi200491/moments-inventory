@@ -20,7 +20,7 @@ def create_showcase_app(
     repo.initialize()
     app = FastAPI(title="星星CCD库存展示系统")
     app.include_router(create_public_router(repo))
-    app.include_router(create_admin_router(repo))
+    app.include_router(create_admin_router(repo, storage_dir=storage_dir))
 
     static_dir = Path(__file__).with_name("static")
     storage_path = Path(storage_dir)

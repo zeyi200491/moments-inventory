@@ -287,6 +287,41 @@ textarea {
   cursor: pointer;
 }
 
+.admin-image-tools {
+  grid-column: 1 / -1;
+  display: grid;
+  grid-template-columns: minmax(180px, 1fr) auto auto;
+  gap: 8px;
+  align-items: center;
+  padding-top: 8px;
+  border-top: 1px dashed var(--line);
+}
+
+.admin-image-list {
+  grid-column: 1 / -1;
+  display: grid;
+  gap: 6px;
+}
+
+.admin-image-row {
+  display: grid;
+  grid-template-columns: minmax(120px, 1fr) repeat(4, auto);
+  gap: 6px;
+  align-items: center;
+}
+
+.admin-image-row button,
+.admin-image-tools button {
+  min-height: 32px;
+  border: 1px solid var(--line);
+  background: #fff;
+  cursor: pointer;
+}
+
+.admin-image-file {
+  min-height: 36px;
+}
+
 .detail-images {
   display: grid;
   grid-template-columns: repeat(auto-fill, minmax(180px, 1fr));

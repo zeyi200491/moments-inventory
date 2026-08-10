@@ -2,9 +2,11 @@ from __future__ import annotations
 
 from dataclasses import replace
 from datetime import datetime, timedelta, timezone
+from pathlib import Path
 import secrets
+import uuid
 
-from fastapi import APIRouter, Cookie, Depends, HTTPException
+from fastapi import APIRouter, Cookie, Depends, File, Form, HTTPException, UploadFile
 from fastapi import Response
 from pydantic import BaseModel, Field
 
@@ -135,6 +137,14 @@ class AdminBatchPriceResponse(BaseModel):
     updatedCount: int
 
 
+class AdminImageReorderRequest(BaseModel):
+    imageIds: list[str] = Field(min_length=1, max_length=50)
+
+
+class AdminImagesResponse(BaseModel):
+    images: list[PublicProductImageResponse] = Field(default_factory=list)
+
+
 def create_public_router(
     repository: SQLiteShowcaseRepository,
 ) -> APIRouter:
@@ -174,8 +184,11 @@ def create_public_router(
 
 def create_admin_router(
     repository: SQLiteShowcaseRepository,
+    *,
+    storage_dir: str | Path = "storage/showcase_images",
 ) -> APIRouter:
     router = APIRouter(prefix="/api/admin")
+    storage_path = Path(storage_dir)
 
     def get_repository() -> SQLiteShowcaseRepository:
         return repository
@@ -338,6 +351,106 @@ def create_admin_router(
             )
             updated_count += 1
         return AdminBatchPriceResponse(updatedCount=updated_count)
+
+    @router.get(
+        "/products/{product_id}/images",
+        response_model=AdminImagesResponse,
+        dependencies=[Depends(require_admin)],
+    )
+    def list_admin_product_images(
+        product_id: str,
+        repo: SQLiteShowcaseRepository = Depends(get_repository),
+    ) -> AdminImagesResponse:
+        if repo.get_product(product_id) is None:
+            raise HTTPException(status_code=404, detail="product not found")
+        return AdminImagesResponse(
+            images=[
+                PublicProductImageResponse.from_image(image)
+                for image in repo.list_product_images(product_id)
+            ]
+        )
+
+    @router.post(
+        "/products/{product_id}/images",
+        response_model=PublicProductImageResponse,
+        status_code=201,
+        dependencies=[Depends(require_admin)],
+    )
+    async def upload_admin_product_image(
+        product_id: str,
+        imageType: str = Form(default="detail"),
+        file: UploadFile = File(...),
+        repo: SQLiteShowcaseRepository = Depends(get_repository),
+    ) -> PublicProductImageResponse:
+        product = repo.get_product(product_id)
+        if product is None:
+            raise HTTPException(status_code=404, detail="product not found")
+        suffix = Path(file.filename or "").suffix.lower()
+        if suffix not in {".jpg", ".jpeg", ".png", ".webp"}:
+            raise HTTPException(status_code=400, detail="unsupported image type")
+        image_id = uuid.uuid4().hex
+        product_dir = storage_path / product_id
+        product_dir.mkdir(parents=True, exist_ok=True)
+        destination = product_dir / f"{image_id}{suffix}"
+        destination.write_bytes(await file.read())
+        image_path = f"storage/showcase_images/{product_id}/{destination.name}"
+        sort_order = len(repo.list_product_images(product_id))
+        is_cover = not product.cover_image_path
+        repo.add_product_image(
+            image_id,
+            product_id,
+            image_path,
+            imageType,
+            sort_order,
+            is_cover,
+        )
+        if is_cover:
+            repo.upsert_product(replace(product, cover_image_path=image_path))
+        image = repo.list_product_images(product_id)[-1]
+        return PublicProductImageResponse.from_image(image)
+
+    @router.post(
+        "/products/{product_id}/images/reorder",
+        response_model=AdminLoginResponse,
+        dependencies=[Depends(require_admin)],
+    )
+    def reorder_admin_product_images(
+        product_id: str,
+        request: AdminImageReorderRequest,
+        repo: SQLiteShowcaseRepository = Depends(get_repository),
+    ) -> AdminLoginResponse:
+        if repo.get_product(product_id) is None:
+            raise HTTPException(status_code=404, detail="product not found")
+        repo.reorder_product_images(product_id, request.imageIds)
+        return AdminLoginResponse(ok=True)
+
+    @router.post(
+        "/products/{product_id}/images/{image_id}/cover",
+        response_model=AdminLoginResponse,
+        dependencies=[Depends(require_admin)],
+    )
+    def set_admin_product_cover_image(
+        product_id: str,
+        image_id: str,
+        repo: SQLiteShowcaseRepository = Depends(get_repository),
+    ) -> AdminLoginResponse:
+        if not repo.set_product_cover_image(product_id, image_id):
+            raise HTTPException(status_code=404, detail="image not found")
+        return AdminLoginResponse(ok=True)
+
+    @router.delete(
+        "/products/{product_id}/images/{image_id}",
+        response_model=AdminLoginResponse,
+        dependencies=[Depends(require_admin)],
+    )
+    def delete_admin_product_image(
+        product_id: str,
+        image_id: str,
+        repo: SQLiteShowcaseRepository = Depends(get_repository),
+    ) -> AdminLoginResponse:
+        if not repo.delete_product_image(product_id, image_id):
+            raise HTTPException(status_code=404, detail="image not found")
+        return AdminLoginResponse(ok=True)
 
     return router
 

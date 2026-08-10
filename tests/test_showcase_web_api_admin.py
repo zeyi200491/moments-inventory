@@ -120,3 +120,54 @@ def test_admin_can_create_and_delete_product(
     delete_response = authenticated_client.delete("/api/admin/products/manual-1")
     assert delete_response.status_code == 200
     assert repo.get_product("manual-1") is None
+
+
+def test_admin_can_upload_product_image(
+    tmp_path: Path,
+    repo: SQLiteShowcaseRepository,
+) -> None:
+    repo.upsert_product(_product("p1", visible=True, display_price=558))
+    client = TestClient(
+        create_showcase_app(
+            repository=repo,
+            storage_dir=tmp_path / "storage" / "showcase_images",
+        )
+    )
+    login = client.post("/api/admin/login", json={"password": "admin-pass"})
+    assert login.status_code == 200
+
+    response = client.post(
+        "/api/admin/products/p1/images",
+        files={"file": ("body.jpg", b"image-bytes", "image/jpeg")},
+        data={"imageType": "detail"},
+    )
+
+    assert response.status_code == 201
+    image = repo.list_product_images("p1")[0]
+    assert image.image_type == "detail"
+    assert (tmp_path / image.image_path).read_bytes() == b"image-bytes"
+
+
+def test_admin_can_reorder_set_cover_and_delete_images(
+    authenticated_client: TestClient,
+    repo: SQLiteShowcaseRepository,
+) -> None:
+    repo.upsert_product(_product("p1", visible=True, display_price=558))
+    repo.add_product_image("a", "p1", "storage/showcase_images/p1/a.jpg", "detail", 0, True)
+    repo.add_product_image("b", "p1", "storage/showcase_images/p1/b.jpg", "detail", 1, False)
+
+    reorder = authenticated_client.post(
+        "/api/admin/products/p1/images/reorder",
+        json={"imageIds": ["b", "a"]},
+    )
+    assert reorder.status_code == 200
+    assert [image.image_id for image in repo.list_product_images("p1")] == ["b", "a"]
+
+    cover = authenticated_client.post("/api/admin/products/p1/images/b/cover")
+    assert cover.status_code == 200
+    images = repo.list_product_images("p1")
+    assert [image.is_cover for image in images] == [True, False]
+
+    delete = authenticated_client.delete("/api/admin/products/p1/images/a")
+    assert delete.status_code == 200
+    assert [image.image_id for image in repo.list_product_images("p1")] == ["b"]

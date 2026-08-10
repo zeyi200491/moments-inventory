@@ -302,6 +302,73 @@ class SQLiteShowcaseRepository:
             for row in rows
         ]
 
+    def reorder_product_images(self, product_id: str, image_ids: list[str]) -> None:
+        self.initialize()
+        with self._lock:
+            with self._get_connection() as conn:
+                for sort_order, image_id in enumerate(image_ids):
+                    conn.execute(
+                        """
+                        update showcase_product_images
+                        set sort_order = ?
+                        where product_id = ? and image_id = ?
+                        """,
+                        (sort_order, product_id, image_id),
+                    )
+
+    def set_product_cover_image(self, product_id: str, image_id: str) -> bool:
+        self.initialize()
+        with self._lock:
+            with self._get_connection() as conn:
+                row = conn.execute(
+                    """
+                    select image_path
+                    from showcase_product_images
+                    where product_id = ? and image_id = ?
+                    """,
+                    (product_id, image_id),
+                ).fetchone()
+                if row is None:
+                    return False
+                conn.execute(
+                    """
+                    update showcase_product_images
+                    set is_cover = 0
+                    where product_id = ?
+                    """,
+                    (product_id,),
+                )
+                conn.execute(
+                    """
+                    update showcase_product_images
+                    set is_cover = 1
+                    where product_id = ? and image_id = ?
+                    """,
+                    (product_id, image_id),
+                )
+                conn.execute(
+                    """
+                    update showcase_products
+                    set cover_image_path = ?
+                    where product_id = ?
+                    """,
+                    (str(row[0]), product_id),
+                )
+                return True
+
+    def delete_product_image(self, product_id: str, image_id: str) -> bool:
+        self.initialize()
+        with self._lock:
+            with self._get_connection() as conn:
+                cursor = conn.execute(
+                    """
+                    delete from showcase_product_images
+                    where product_id = ? and image_id = ?
+                    """,
+                    (product_id, image_id),
+                )
+                return cursor.rowcount > 0
+
     def save_import_log(
         self,
         *,

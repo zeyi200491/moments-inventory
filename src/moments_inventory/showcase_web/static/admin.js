@@ -35,6 +35,12 @@ function renderAdminProducts(products) {
       <button class="admin-save-price" type="button">改价</button>
       <button class="admin-toggle-visible" type="button">${product.visible ? "隐藏" : "显示"}</button>
       <button class="admin-delete-product" type="button">删除</button>
+      <div class="admin-image-tools">
+        <input class="admin-image-file" type="file" accept="image/jpeg,image/png,image/webp">
+        <button class="admin-upload-image" type="button">上传图片</button>
+        <button class="admin-load-images" type="button">查看图片</button>
+        <div class="admin-image-list"></div>
+      </div>
     </article>
   `).join("");
 }
@@ -42,6 +48,46 @@ function renderAdminProducts(products) {
 async function loadProducts() {
   const data = await requestJson("/api/admin/products");
   renderAdminProducts(Array.isArray(data.products) ? data.products : []);
+}
+
+async function uploadImage(productId, file) {
+  const form = new FormData();
+  form.append("imageType", "detail");
+  form.append("file", file);
+  const response = await fetch(`/api/admin/products/${encodeURIComponent(productId)}/images`, {
+    method: "POST",
+    body: form,
+  });
+  if (!response.ok) throw new Error(await response.text());
+  return response.json();
+}
+
+async function loadImages(row) {
+  const productId = row.dataset.productId;
+  const data = await requestJson(`/api/admin/products/${encodeURIComponent(productId)}/images`);
+  const images = Array.isArray(data.images) ? data.images : [];
+  row.querySelector(".admin-image-list").innerHTML = images.map((image, index) => `
+    <div class="admin-image-row" data-image-id="${escapeHtml(image.imageId)}">
+      <span>${index + 1}. ${image.isCover ? "封面" : "详情图"}</span>
+      <button class="admin-image-up" type="button">上移</button>
+      <button class="admin-image-down" type="button">下移</button>
+      <button class="admin-set-cover" type="button">设封面</button>
+      <button class="admin-delete-image" type="button">删图</button>
+    </div>
+  `).join("");
+}
+
+async function reorderImages(row, imageId, direction) {
+  const ids = [...row.querySelectorAll(".admin-image-row")].map((node) => node.dataset.imageId);
+  const index = ids.indexOf(imageId);
+  const targetIndex = index + direction;
+  if (index < 0 || targetIndex < 0 || targetIndex >= ids.length) return;
+  [ids[index], ids[targetIndex]] = [ids[targetIndex], ids[index]];
+  await requestJson(`/api/admin/products/${encodeURIComponent(row.dataset.productId)}/images/reorder`, {
+    method: "POST",
+    body: JSON.stringify({ imageIds: ids }),
+  });
+  await loadImages(row);
 }
 
 loginForm.addEventListener("submit", async (event) => {
@@ -111,5 +157,31 @@ adminProductList.addEventListener("click", async (event) => {
   if (event.target.classList.contains("admin-delete-product")) {
     await requestJson(`/api/admin/products/${encodeURIComponent(productId)}`, { method: "DELETE" });
     await loadProducts();
+  }
+  if (event.target.classList.contains("admin-upload-image")) {
+    const file = row.querySelector(".admin-image-file").files[0];
+    if (!file) return;
+    await uploadImage(productId, file);
+    await loadImages(row);
+  }
+  if (event.target.classList.contains("admin-load-images")) {
+    await loadImages(row);
+  }
+  const imageRow = event.target.closest(".admin-image-row");
+  if (!imageRow) return;
+  const imageId = imageRow.dataset.imageId;
+  if (event.target.classList.contains("admin-image-up")) {
+    await reorderImages(row, imageId, -1);
+  }
+  if (event.target.classList.contains("admin-image-down")) {
+    await reorderImages(row, imageId, 1);
+  }
+  if (event.target.classList.contains("admin-set-cover")) {
+    await requestJson(`/api/admin/products/${encodeURIComponent(productId)}/images/${encodeURIComponent(imageId)}/cover`, { method: "POST" });
+    await loadImages(row);
+  }
+  if (event.target.classList.contains("admin-delete-image")) {
+    await requestJson(`/api/admin/products/${encodeURIComponent(productId)}/images/${encodeURIComponent(imageId)}`, { method: "DELETE" });
+    await loadImages(row);
   }
 });
