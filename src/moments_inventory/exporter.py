@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from dataclasses import dataclass
 from pathlib import Path
 import re
 from urllib.parse import parse_qsl, quote, urlencode, urlparse, urlunparse
@@ -28,6 +29,7 @@ HEADERS = [
 
 CURRENT_STATUSES = {DEFAULT_ACTIVE_STATUS, "未售卖"}
 DEFAULT_WORKBOOK_FILENAME = "current.xlsx"
+REVIEW_WORKBOOK_FILENAME = "review_needed.xlsx"
 IMAGE_FAILURE_TEXT = "鍥剧墖鏈垚鍔熶笅杞?"
 VIDEO_FAILURE_TEXT = "瑙嗛鏈垚鍔熶笅杞?"
 _XML_CONTROL_CHARACTER_PATTERN = re.compile(r"[\x00-\x08\x0b\x0c\x0e-\x1f]")
@@ -47,9 +49,53 @@ HEADERS = [
     "备注",
     "是否需要人工复核",
 ]
+REVIEW_HEADERS = [
+    *HEADERS,
+    "product_key",
+    "lifecycle_status",
+    "risk_flags",
+    "price_history",
+]
 CURRENT_STATUSES = {DEFAULT_ACTIVE_STATUS, "未售卖"}
 IMAGE_FAILURE_TEXT = "图片下载失败"
 VIDEO_FAILURE_TEXT = "视频下载失败"
+BLOCKING_RISK_FLAGS = {
+    "sold_keyword",
+    "deleted_missing",
+    "unmatched_model",
+    "low_model_confidence",
+    "model_conflict",
+    "price_conflict",
+}
+REVIEW_LIFECYCLE_STATUSES = {"review", "sold", "delisted"}
+SOLD_OR_DELISTED_LIFECYCLE_STATUSES = {"sold", "delisted"}
+SOLD_OR_DELISTED_RISK_FLAGS = {"sold_keyword", "deleted_missing"}
+MODEL_QUALITY_RISK_FLAGS = {
+    "unmatched_model",
+    "low_model_confidence",
+    "reference_model",
+    "model_conflict",
+}
+NO_MONEY_SYMBOL_ALLOWED_REMARK_NAMES = {"童百万库存湖北武汉圆通货源"}
+NO_MONEY_SYMBOL_ALLOWED_WXIDS = {"wxid_d500glk2ukjn12"}
+PRICE_TEXT_PATTERNS = (
+    re.compile(r"(?:价格[:：]?\s*)?\d{1,6}\s*(?:💰|￥|¥|元|块|包邮|rmb)", re.IGNORECASE),
+    re.compile(r"(?:价格[:：]?\s*)?(?:💰|￥|¥|rmb)\s*\d{1,6}\s*(?:元|块|包邮)?", re.IGNORECASE),
+    re.compile(r"价格[:：]?\s*\d{1,6}\s*(?:元|块|包邮)?", re.IGNORECASE),
+)
+
+
+@dataclass(frozen=True, slots=True)
+class ExportRecordSummary:
+    candidate_count: int
+    current_count: int
+    review_count: int
+    price_drop_repost_count: int
+    sold_or_delisted_count: int
+    unmatched_model_count: int = 0
+    low_confidence_model_count: int = 0
+    reference_model_count: int = 0
+    model_conflict_count: int = 0
 
 
 def _column_name(index: int) -> str:
@@ -311,32 +357,122 @@ def _to_rows(
 ) -> list[list[str | int | None]]:
     rows: list[list[str | int | None]] = [HEADERS]
     for record in records:
-        image_paths, video_paths = media_paths.get(record.record_key, ([], []))
+        rows.append(_to_base_row(record, media_paths))
+    return rows
+
+
+def _to_base_row(
+    record: InventoryRecord,
+    media_paths: dict[str, tuple[list[str], list[str]]],
+) -> list[str | int | None]:
+    image_paths, video_paths = media_paths.get(record.record_key, ([], []))
+    return [
+        record.model,
+        record.price,
+        record.status,
+        record.remark_name,
+        record.wxid,
+        record.published_at.isoformat(),
+        record.serial_no,
+        _build_media_text(image_paths),
+        _build_media_text(video_paths),
+        redact_price_text(record.content_text),
+        record.note,
+        "是" if record.needs_manual else "否",
+    ]
+
+
+def _join_review_values(values: list[str]) -> str:
+    return "\n".join(values)
+
+
+def _to_review_rows(
+    records: list[InventoryRecord],
+    media_paths: dict[str, tuple[list[str], list[str]]],
+) -> list[list[str | int | None]]:
+    rows: list[list[str | int | None]] = [REVIEW_HEADERS]
+    for record in records:
         rows.append(
             [
-                record.model,
-                record.price,
-                record.status,
-                record.remark_name,
-                record.wxid,
-                record.published_at.isoformat(),
-                record.serial_no,
-                _build_media_text(image_paths),
-                _build_media_text(video_paths),
-                record.content_text,
-                record.note,
-                "是" if record.needs_manual else "否",
+                *_to_base_row(record, media_paths),
+                record.product_key,
+                record.lifecycle_status,
+                _join_review_values(record.risk_flags),
+                _join_review_values(record.price_history),
             ]
         )
     return rows
 
 
-def _is_formal_price_record(record: InventoryRecord) -> bool:
+def is_current_export_record(record: InventoryRecord) -> bool:
+    if record.lifecycle_status != "current":
+        return False
     if record.status not in CURRENT_STATUSES:
         return False
-    if record.price is None or record.price < 99:
+    if not record.model:
         return False
-    return "💰" in (record.content_text or "")
+    if record.price is None:
+        return False
+    if "💰" not in (record.content_text or "") and not _allows_missing_money_symbol(record):
+        return False
+    return not any(flag in BLOCKING_RISK_FLAGS for flag in record.risk_flags)
+
+
+def is_review_export_record(record: InventoryRecord) -> bool:
+    return record.lifecycle_status in REVIEW_LIFECYCLE_STATUSES or bool(record.risk_flags)
+
+
+def _risk_flags(record: InventoryRecord) -> set[str]:
+    return set(record.risk_flags or [])
+
+
+def _allows_missing_money_symbol(record: InventoryRecord) -> bool:
+    return (
+        (record.remark_name or "") in NO_MONEY_SYMBOL_ALLOWED_REMARK_NAMES
+        or (record.wxid or "") in NO_MONEY_SYMBOL_ALLOWED_WXIDS
+    )
+
+
+def redact_price_text(text: str) -> str:
+    cleaned = text or ""
+    for pattern in PRICE_TEXT_PATTERNS:
+        cleaned = pattern.sub(" ", cleaned)
+    cleaned = re.sub(r"[ \t]+", " ", cleaned)
+    cleaned = re.sub(r" *\n *", "\n", cleaned)
+    return cleaned.strip()
+
+
+def summarize_export_records(records: list[InventoryRecord]) -> ExportRecordSummary:
+    return ExportRecordSummary(
+        candidate_count=len(records),
+        current_count=sum(1 for record in records if is_current_export_record(record)),
+        review_count=sum(1 for record in records if is_review_export_record(record)),
+        price_drop_repost_count=sum(
+            1 for record in records if "price_drop_repost" in _risk_flags(record)
+        ),
+        sold_or_delisted_count=sum(
+            1
+            for record in records
+            if record.lifecycle_status in SOLD_OR_DELISTED_LIFECYCLE_STATUSES
+            or bool(_risk_flags(record) & SOLD_OR_DELISTED_RISK_FLAGS)
+        ),
+        unmatched_model_count=sum(
+            1 for record in records if not record.model or "unmatched_model" in _risk_flags(record)
+        ),
+        low_confidence_model_count=sum(
+            1 for record in records if "low_model_confidence" in _risk_flags(record)
+        ),
+        reference_model_count=sum(
+            1 for record in records if "reference_model" in _risk_flags(record)
+        ),
+        model_conflict_count=sum(
+            1 for record in records if "model_conflict" in _risk_flags(record)
+        ),
+    )
+
+
+def _deduplicate_records(records: list[InventoryRecord]) -> list[InventoryRecord]:
+    return list({record.record_key: record for record in records}.values())
 
 
 def export_records(
@@ -354,11 +490,17 @@ def export_records(
     media_root.mkdir(parents=True, exist_ok=True)
     current_path = target_dir / (filename or DEFAULT_WORKBOOK_FILENAME)
 
+    current_records = [record for record in records if is_current_export_record(record)]
+    review_records = [record for record in records if is_review_export_record(record)]
+    workbook_records = _deduplicate_records([*current_records, *review_records])
+
     if download_media:
-        media_paths = _export_media_files(records, media_root, base_url, access_token)
+        media_paths = _export_media_files(workbook_records, media_root, base_url, access_token)
     else:
-        media_paths = _empty_media_paths(records)
-    current_records = [record for record in records if _is_formal_price_record(record)]
+        media_paths = _empty_media_paths(workbook_records)
     current_rows = _to_rows(current_records, media_paths)
     _write_workbook(current_path, current_rows)
+
+    review_rows = _to_review_rows(review_records, media_paths)
+    _write_workbook(target_dir / REVIEW_WORKBOOK_FILENAME, review_rows)
     return current_path

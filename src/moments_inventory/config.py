@@ -22,7 +22,7 @@ class WeFlowSettings:
 
 @dataclass(slots=True)
 class TaskSettings:
-    days: int = 30
+    days: int = 90
     merge_window_minutes: int = 10
     output_dir: str = "./output"
     download_media: bool = True
@@ -39,6 +39,7 @@ class RuleSettings:
 class PathSettings:
     sqlite_db: str
     model_dict: str
+    model_catalog_index: str = "data/model_catalog_index.json"
 
 
 @dataclass(slots=True)
@@ -59,6 +60,9 @@ class WarmupSettings:
     verify_state_after_each_contact: bool = True
     force_recovery_on_reset_failure: bool = True
     log_step_details: bool = True
+    skip_timeline_scroll: bool = False
+    timeline_open_observe_ms: int = 1500
+    timeline_open_capture_dir: str | None = None
 
 
 @dataclass(slots=True)
@@ -102,6 +106,7 @@ _WARMUP_BOOL_FIELDS = {
     "verify_state_after_each_contact",
     "force_recovery_on_reset_failure",
     "log_step_details",
+    "skip_timeline_scroll",
 }
 _WARMUP_INT_FIELDS = {
     "search_delay_ms",
@@ -114,8 +119,12 @@ _WARMUP_INT_FIELDS = {
     "max_consecutive_failures",
     "min_success_count",
     "segment_size",
+    "timeline_open_observe_ms",
 }
-_WARMUP_ALLOWED_KEYS = _WARMUP_BOOL_FIELDS | _WARMUP_INT_FIELDS | {"start_page"}
+_WARMUP_STRING_FIELDS = {"timeline_open_capture_dir"}
+_WARMUP_ALLOWED_KEYS = (
+    _WARMUP_BOOL_FIELDS | _WARMUP_INT_FIELDS | _WARMUP_STRING_FIELDS | {"start_page"}
+)
 _WARMUP_ALLOWED_START_PAGES = {"contacts", "chat_list"}
 
 _BATCH_RUN_BOOL_FIELDS = {
@@ -270,6 +279,14 @@ def _parse_warmup_settings(raw_warmup: object | None) -> WarmupSettings:
             f"warmup.{field_name}",
         )
 
+    for field_name in sorted(_WARMUP_STRING_FIELDS):
+        raw_value = warmup_raw.get(field_name, getattr(defaults, field_name))
+        parsed_values[field_name] = (
+            None
+            if raw_value in {None, ""}
+            else _expect_non_empty_string(raw_value, f"warmup.{field_name}")
+        )
+
     return WarmupSettings(**parsed_values)
 
 
@@ -359,7 +376,7 @@ def load_settings(path: str | Path) -> Settings:
     _validate_keys("rules", rules_raw, {"required_fields"})
 
     paths_raw = _expect_mapping(raw["paths"], "paths")
-    _validate_keys("paths", paths_raw, {"sqlite_db", "model_dict"})
+    _validate_keys("paths", paths_raw, {"sqlite_db", "model_dict"}, {"model_catalog_index"})
 
     model_path = Path(
         _resolve_path(
@@ -370,6 +387,13 @@ def load_settings(path: str | Path) -> Settings:
     sqlite_db = _resolve_path(
         base_dir,
         _expect_non_empty_string(paths_raw["sqlite_db"], "paths.sqlite_db"),
+    )
+    model_catalog_index = _resolve_path(
+        base_dir,
+        _expect_non_empty_string(
+            paths_raw.get("model_catalog_index", "../data/model_catalog_index.json"),
+            "paths.model_catalog_index",
+        ),
     )
     output_dir = _resolve_path(
         base_dir,
@@ -404,7 +428,11 @@ def load_settings(path: str | Path) -> Settings:
                 "rules.required_fields",
             )
         ),
-        paths=PathSettings(sqlite_db=sqlite_db, model_dict=str(model_path)),
+        paths=PathSettings(
+            sqlite_db=sqlite_db,
+            model_dict=str(model_path),
+            model_catalog_index=model_catalog_index,
+        ),
         warmup=_parse_warmup_settings(raw.get("warmup")),
         batch_run=_parse_batch_run_settings(raw.get("batch_run")),
         orchestrator=_parse_orchestrator_settings(raw.get("orchestrator")),

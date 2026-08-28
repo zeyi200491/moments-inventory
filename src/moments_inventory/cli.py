@@ -15,8 +15,10 @@ from moments_inventory.ai_kefu.settings import load_ai_kefu_settings
 from moments_inventory.ai_kefu.storage import SQLiteKefuRepository
 from moments_inventory.batch_run import BatchRunService
 from moments_inventory.config import Settings, load_settings
-from moments_inventory.exporter import export_records
+from moments_inventory.exporter import export_records, summarize_export_records
 from moments_inventory.logging_utils import configure_logging
+from moments_inventory.model_catalog import build_model_catalog_index, save_model_catalog_index
+from moments_inventory.models import InventoryRecord
 from moments_inventory.orchestrator import OrchestratedRunService
 from moments_inventory.service import SyncService
 from moments_inventory.wechat_ui_adapter import (
@@ -33,6 +35,17 @@ def build_parser() -> argparse.ArgumentParser:
 
     sync_parser = subparsers.add_parser("sync", help="sync moments into sqlite")
     sync_parser.add_argument("--export", action="store_true", help="export after sync")
+
+    model_index_parser = subparsers.add_parser(
+        "build-model-index",
+        help="build camera model catalog index from Excel",
+    )
+    model_index_parser.add_argument("--excel", required=True, help="model catalog Excel path")
+    model_index_parser.add_argument(
+        "--output",
+        default="data/model_catalog_index.json",
+        help="output JSON index path",
+    )
 
     subparsers.add_parser("export", help="export current records to Excel")
 
@@ -119,6 +132,27 @@ def _run_export(service: SyncService, settings: Settings) -> None:
     _export_loaded_records(service.load_records(), settings)
 
 
+def _format_lifecycle_export_stats(records: list[InventoryRecord]) -> str:
+    summary = summarize_export_records(records)
+    return "\n".join(
+        [
+            f"候选记录: {summary.candidate_count}",
+            f"展示记录: {summary.current_count}",
+            f"复核记录: {summary.review_count}",
+            f"疑似降价重发: {summary.price_drop_repost_count}",
+            f"疑似已售/下架: {summary.sold_or_delisted_count}",
+            f"未匹配型号: {summary.unmatched_model_count}",
+            f"低置信型号: {summary.low_confidence_model_count}",
+            f"平替/对比文案: {summary.reference_model_count}",
+            f"型号冲突: {summary.model_conflict_count}",
+        ]
+    )
+
+
+def _print_lifecycle_export_stats(records: list[InventoryRecord]) -> None:
+    print(_format_lifecycle_export_stats(records))
+
+
 def _build_batch_warmup_runner(settings: Settings):
     if not settings.warmup.enabled:
         return None
@@ -136,7 +170,11 @@ def _build_batch_warmup_runner(settings: Settings):
         result = runner.run()
         if result.aborted:
             raise RuntimeError("batch warmup aborted")
-        if settings.batch_run.stop_on_batch_failure and result.failure_count > 0:
+        if (
+            settings.batch_run.stop_on_batch_failure
+            and result.failure_count > 0
+            and not result.should_export
+        ):
             raise RuntimeError("batch warmup reported failures")
 
     return warmup_batch
@@ -184,6 +222,11 @@ def main(argv: list[str] | None = None) -> int:
     configure_logging()
     parser = build_parser()
     args = parser.parse_args(argv)
+
+    if args.command == "build-model-index":
+        index = build_model_catalog_index(args.excel)
+        save_model_catalog_index(index, args.output)
+        return 0
 
     if args.command == "kefu-dev":
         if args.reload:
@@ -265,6 +308,7 @@ def main(argv: list[str] | None = None) -> int:
         records = service.run()
         if args.export:
             _export_loaded_records(records, settings)
+            _print_lifecycle_export_stats(records)
         return 0
 
     if args.command == "orchestrated-run":

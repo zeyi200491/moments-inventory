@@ -1,4 +1,79 @@
+import subprocess
+import sys
+
+from moments_inventory.model_catalog import ModelCatalogAlias, ModelCatalogIndex
+from moments_inventory.model_matcher import ModelMatcher
 from moments_inventory.parser import parse_content
+
+
+def _catalog_matcher() -> ModelMatcher:
+    return ModelMatcher(
+        ModelCatalogIndex(
+            version=1,
+            models=[],
+            aliases_by_key={
+                "佳能ixus100": [
+                    ModelCatalogAlias(
+                        alias="佳能IXUS100",
+                        normalized_key="佳能ixus100",
+                        brand="佳能",
+                        brand_en="Canon",
+                        canonical_model="IXUS 100 IS",
+                        safe=True,
+                        ambiguous=False,
+                        source_row=2,
+                    )
+                ],
+                "佳能ixus130": [
+                    ModelCatalogAlias(
+                        alias="佳能IXUS130",
+                        normalized_key="佳能ixus130",
+                        brand="佳能",
+                        brand_en="Canon",
+                        canonical_model="IXUS 130",
+                        safe=True,
+                        ambiguous=False,
+                        source_row=3,
+                    )
+                ],
+                "索尼wx300": [
+                    ModelCatalogAlias(
+                        alias="索尼WX300",
+                        normalized_key="索尼wx300",
+                        brand="索尼",
+                        brand_en="Sony",
+                        canonical_model="DSC-WX300",
+                        safe=True,
+                        ambiguous=False,
+                        source_row=4,
+                    )
+                ],
+            },
+        )
+    )
+
+
+def _reference_only_catalog_matcher() -> ModelMatcher:
+    return ModelMatcher(
+        ModelCatalogIndex(
+            version=1,
+            models=[],
+            aliases_by_key={
+                "佳能ixus130": [
+                    ModelCatalogAlias(
+                        alias="佳能IXUS130",
+                        normalized_key="佳能ixus130",
+                        brand="佳能",
+                        brand_en="Canon",
+                        canonical_model="IXUS 130",
+                        safe=True,
+                        ambiguous=False,
+                        source_row=3,
+                    )
+                ],
+            },
+        )
+    )
 
 
 def test_parse_content_extracts_model_price_and_serial():
@@ -104,3 +179,87 @@ def test_parse_content_does_not_fallback_to_unrelated_numbers_when_money_symbol_
     assert parsed.model == "宾得s55"
     assert parsed.price is None
     assert parsed.serial_no == "H1"
+
+
+def test_parse_content_uses_catalog_matcher_and_ignores_pingti_reference_model():
+    parsed = parse_content(
+        "980💰佳能ixus100 香槟色\n成色不错。平替佳能ixus130 拍人像也是绝绝子！",
+        model_keywords=[],
+        model_matcher=_catalog_matcher(),
+    )
+
+    assert parsed.model == "IXUS 100 IS"
+    assert parsed.price == 980
+    assert parsed.model_confidence == "high"
+    assert parsed.matched_alias == "佳能IXUS100"
+    assert parsed.ignored_reference_models == ["IXUS 130"]
+
+
+def test_parse_content_uses_catalog_matcher_for_models_missing_from_legacy_dict():
+    parsed = parse_content(
+        "索尼wx300 858💰 编号H12",
+        model_keywords=[],
+        model_matcher=_catalog_matcher(),
+    )
+
+    assert parsed.model == "DSC-WX300"
+    assert parsed.price == 858
+    assert parsed.serial_no == "H12"
+    assert parsed.needs_manual is False
+
+
+def test_parse_content_does_not_fallback_to_reference_catalog_match():
+    parsed = parse_content(
+        "平替佳能ixus130 980💰 编号H12",
+        model_keywords=[],
+        model_matcher=_catalog_matcher(),
+    )
+
+    assert parsed.model is None
+    assert parsed.price == 980
+    assert parsed.serial_no == "H12"
+    assert parsed.needs_manual is True
+    assert parsed.model_confidence == "ambiguous"
+    assert parsed.ignored_reference_models == ["IXUS 130"]
+
+
+def test_parse_content_falls_back_after_masking_reference_catalog_match():
+    parsed = parse_content(
+        "980💰佳能ixus100 香槟色\n成色不错。平替佳能ixus130 拍人像也是绝绝子！",
+        model_keywords=[],
+        model_matcher=_reference_only_catalog_matcher(),
+    )
+
+    assert parsed.model == "佳能ixus100"
+    assert parsed.price == 980
+    assert parsed.ignored_reference_models == ["IXUS 130"]
+
+
+def test_parse_content_does_not_treat_spaced_catalog_model_number_as_price():
+    parsed = parse_content(
+        "佳能 ixus 100 编号A12",
+        model_keywords=[],
+        model_matcher=_catalog_matcher(),
+    )
+
+    assert parsed.model == "IXUS 100 IS"
+    assert parsed.price is None
+    assert parsed.serial_no == "A12"
+    assert parsed.needs_manual is True
+
+
+def test_parse_content_without_catalog_matcher_does_not_import_openpyxl():
+    script = (
+        "import sys;"
+        "import moments_inventory.parser;"
+        "print('openpyxl' in sys.modules)"
+    )
+
+    result = subprocess.run(
+        [sys.executable, "-c", script],
+        check=True,
+        capture_output=True,
+        text=True,
+    )
+
+    assert result.stdout.strip() == "False"

@@ -176,7 +176,7 @@ def test_parse_timeline_response_skips_deleted_items_with_boolean_flags():
 def test_parse_timeline_response_skips_deleted_items_with_status_fields():
     payload = {
         "success": True,
-        "count": 5,
+        "count": 16,
         "timeline": [
             {
                 "id": "deleted-status",
@@ -192,28 +192,63 @@ def test_parse_timeline_response_skips_deleted_items_with_status_fields():
                 "username": "wxid_demo",
                 "nickname": "demo",
                 "createTime": 1777293412,
-                "contentDesc": "should be kept when removed",
+                "contentDesc": "removed by snsStatus",
                 "media": [],
                 "snsStatus": "removed",
             },
             {
-                "id": "hidden-status",
+                "id": "numeric-deleted-sns-status",
                 "username": "wxid_demo",
                 "nickname": "demo",
                 "createTime": 1777293413,
-                "contentDesc": "should be kept when only invisible",
+                "contentDesc": "deleted by numeric snsStatus",
                 "media": [],
-                "visible": 0,
+                "snsStatus": 1,
             },
             {
-                "id": "active-status",
+                "id": "string-numeric-deleted-sns-status",
+                "username": "wxid_demo",
+                "nickname": "demo",
+                "createTime": 1777293421,
+                "contentDesc": "deleted by string numeric snsStatus",
+                "media": [],
+                "snsStatus": "1",
+            },
+            {
+                "id": "delete-sns-status",
+                "username": "wxid_demo",
+                "nickname": "demo",
+                "createTime": 1777293422,
+                "contentDesc": "deleted by delete snsStatus",
+                "media": [],
+                "snsStatus": "delete",
+            },
+            {
+                "id": "invisible-sns-status",
+                "username": "wxid_demo",
+                "nickname": "demo",
+                "createTime": 1777293423,
+                "contentDesc": "deleted by invisible snsStatus",
+                "media": [],
+                "snsStatus": "invisible",
+            },
+            {
+                "id": "hidden-sns-status",
+                "username": "wxid_demo",
+                "nickname": "demo",
+                "createTime": 1777293424,
+                "contentDesc": "deleted by hidden snsStatus",
+                "media": [],
+                "snsStatus": "hidden",
+            },
+            {
+                "id": "invisible-status",
                 "username": "wxid_demo",
                 "nickname": "demo",
                 "createTime": 1777293414,
-                "contentDesc": "active",
+                "contentDesc": "invisible by visible false",
                 "media": [],
-                "status": "published",
-                "visible": 1,
+                "visible": False,
             },
             {
                 "id": "deleted-sns-status",
@@ -224,14 +259,86 @@ def test_parse_timeline_response_skips_deleted_items_with_status_fields():
                 "media": [],
                 "snsStatus": "deleted",
             },
+            {
+                "id": "hidden-status",
+                "username": "wxid_demo",
+                "nickname": "demo",
+                "createTime": 1777293416,
+                "contentDesc": "hidden by status",
+                "media": [],
+                "status": "hidden",
+            },
+            {
+                "id": "delete-status",
+                "username": "wxid_demo",
+                "nickname": "demo",
+                "createTime": 1777293425,
+                "contentDesc": "delete by status",
+                "media": [],
+                "status": "delete",
+            },
+            {
+                "id": "removed-status-field",
+                "username": "wxid_demo",
+                "nickname": "demo",
+                "createTime": 1777293426,
+                "contentDesc": "removed by status",
+                "media": [],
+                "status": "removed",
+            },
+            {
+                "id": "invisible-status-field",
+                "username": "wxid_demo",
+                "nickname": "demo",
+                "createTime": 1777293427,
+                "contentDesc": "invisible by status",
+                "media": [],
+                "status": "invisible",
+            },
+            {
+                "id": "active-missing-visible",
+                "username": "wxid_demo",
+                "nickname": "demo",
+                "createTime": 1777293417,
+                "contentDesc": "active with missing visible",
+                "media": [],
+            },
+            {
+                "id": "active-visible",
+                "username": "wxid_demo",
+                "nickname": "demo",
+                "createTime": 1777293418,
+                "contentDesc": "active with visible true",
+                "media": [],
+                "visible": True,
+            },
+            {
+                "id": "active-sns-status",
+                "username": "wxid_demo",
+                "nickname": "demo",
+                "createTime": 1777293419,
+                "contentDesc": "active with snsStatus zero",
+                "media": [],
+                "snsStatus": 0,
+            },
+            {
+                "id": "active-status",
+                "username": "wxid_demo",
+                "nickname": "demo",
+                "createTime": 1777293420,
+                "contentDesc": "active",
+                "media": [],
+                "status": "normal",
+            },
         ],
     }
 
     moments = parse_timeline_response(payload)
 
     assert [moment.moment_id for moment in moments] == [
-        "removed-status",
-        "hidden-status",
+        "active-missing-visible",
+        "active-visible",
+        "active-sns-status",
         "active-status",
     ]
 
@@ -339,6 +446,229 @@ paths:
 
         assert records == []
         assert service.load_records() == []
+    finally:
+        shutil.rmtree(temp_root, ignore_errors=True)
+
+
+def test_sync_service_keeps_price_only_unmatched_posts_for_review():
+    temp_root = _make_temp_root("pytest-service-unmatched-review-temp-")
+
+    try:
+        model_file = temp_root / "models.txt"
+        model_file.write_text("ixus 95\n", encoding="utf-8")
+        config_file = temp_root / "config.yaml"
+        config_file.write_text(
+            f"""
+weflow:
+  base_url: "http://127.0.0.1:5030"
+  timeout_seconds: 20
+task:
+  days: 30
+  merge_window_minutes: 10
+  output_dir: "{(temp_root / 'output').as_posix()}"
+targets:
+  - remark_name: "user-a"
+    wxid: "wxid_123"
+rules:
+  required_fields:
+    - model
+    - price
+    - serial_no
+paths:
+  sqlite_db: "{(temp_root / 'inventory.db').as_posix()}"
+  model_dict: "{model_file.as_posix()}"
+""",
+            encoding="utf-8",
+        )
+        settings = load_settings(config_file)
+
+        class UnmatchedSaleClient:
+            def resolve_usernames(self, targets):
+                return ["wxid_123"]
+
+            def fetch_timeline(self, usernames, start, end):
+                return [
+                    RawMoment(
+                        "m1",
+                        "user-a",
+                        "wxid_123",
+                        datetime.fromisoformat("2026-04-27T12:00:00+08:00"),
+                        "未知ccd 880💰 成色不错",
+                        [],
+                        [],
+                    )
+                ]
+
+        service = SyncService(settings=settings, client=UnmatchedSaleClient())
+
+        records = service.sync(now=datetime.fromisoformat("2026-04-27T12:30:00+08:00"))
+        stored_records = service.load_records()
+
+        assert len(records) == 1
+        assert len(stored_records) == 1
+        assert stored_records[0].model is None
+        assert stored_records[0].price == 880
+        assert "unmatched_model" in stored_records[0].risk_flags
+    finally:
+        shutil.rmtree(temp_root, ignore_errors=True)
+
+
+def test_sync_service_merges_same_product_repost_and_keeps_latest_price():
+    temp_root = _make_temp_root("pytest-service-lifecycle-drop-temp-")
+
+    try:
+        model_file = temp_root / "models.txt"
+        model_file.write_text("ixus 95\n", encoding="utf-8")
+        config_file = temp_root / "config.yaml"
+        config_file.write_text(
+            f"""
+weflow:
+  base_url: "http://127.0.0.1:5030"
+  timeout_seconds: 20
+task:
+  days: 30
+  merge_window_minutes: 10
+  output_dir: "{(temp_root / 'output').as_posix()}"
+targets:
+  - remark_name: "seller-a"
+    wxid: "wxid_123"
+rules:
+  required_fields:
+    - model
+    - price
+    - serial_no
+paths:
+  sqlite_db: "{(temp_root / 'inventory.db').as_posix()}"
+  model_dict: "{model_file.as_posix()}"
+""",
+            encoding="utf-8",
+        )
+        settings = load_settings(config_file)
+
+        class PriceDropRepostClient:
+            def resolve_usernames(self, targets):
+                return ["wxid_123"]
+
+            def fetch_timeline(self, usernames, start, end):
+                return [
+                    RawMoment(
+                        "m-old",
+                        "seller-a",
+                        "wxid_123",
+                        datetime.fromisoformat("2026-04-10T12:00:00+08:00"),
+                        "ixus 95 980 A1",
+                        ["same-image.jpg"],
+                        [],
+                    ),
+                    RawMoment(
+                        "m-new",
+                        "seller-a",
+                        "wxid_123",
+                        datetime.fromisoformat("2026-04-24T12:00:00+08:00"),
+                        "ixus 95 880 A1",
+                        ["same-image.jpg"],
+                        [],
+                    ),
+                ]
+
+        service = SyncService(settings=settings, client=PriceDropRepostClient())
+
+        records = service.sync(now=datetime.fromisoformat("2026-04-27T12:30:00+08:00"))
+        stored_records = service.load_records()
+
+        assert len(records) == 1
+        assert len(stored_records) == 1
+        current = stored_records[0]
+        assert current.lifecycle_status == "current"
+        assert current.price == 880
+        assert current.source_moment_ids == ["m-old", "m-new"]
+        assert "price_drop_repost" in current.risk_flags
+        assert current.price_history == [
+            "2026-04-10T12:00:00+08:00|980",
+            "2026-04-24T12:00:00+08:00|880",
+        ]
+    finally:
+        shutil.rmtree(temp_root, ignore_errors=True)
+
+
+def test_sync_service_routes_later_sold_repost_to_review_without_current():
+    temp_root = _make_temp_root("pytest-service-lifecycle-sold-temp-")
+
+    try:
+        model_file = temp_root / "models.txt"
+        model_file.write_text("ixus 95\n", encoding="utf-8")
+        config_file = temp_root / "config.yaml"
+        config_file.write_text(
+            f"""
+weflow:
+  base_url: "http://127.0.0.1:5030"
+  timeout_seconds: 20
+task:
+  days: 30
+  merge_window_minutes: 10
+  output_dir: "{(temp_root / 'output').as_posix()}"
+targets:
+  - remark_name: "seller-a"
+    wxid: "wxid_123"
+rules:
+  required_fields:
+    - model
+    - price
+    - serial_no
+paths:
+  sqlite_db: "{(temp_root / 'inventory.db').as_posix()}"
+  model_dict: "{model_file.as_posix()}"
+""",
+            encoding="utf-8",
+        )
+        settings = load_settings(config_file)
+
+        class SoldRepostClient:
+            def resolve_usernames(self, targets):
+                return ["wxid_123"]
+
+            def fetch_timeline(self, usernames, start, end):
+                return [
+                    RawMoment(
+                        "m-current",
+                        "seller-a",
+                        "wxid_123",
+                        datetime.fromisoformat("2026-04-10T12:00:00+08:00"),
+                        "ixus 95 980 A1",
+                        ["same-image.jpg"],
+                        [],
+                    ),
+                    RawMoment(
+                        "m-sold",
+                        "seller-a",
+                        "wxid_123",
+                        datetime.fromisoformat("2026-04-24T12:00:00+08:00"),
+                        "ixus 95 已出 没了 A1",
+                        ["same-image.jpg"],
+                        [],
+                    ),
+                ]
+
+        service = SyncService(settings=settings, client=SoldRepostClient())
+
+        service.sync(now=datetime.fromisoformat("2026-04-27T12:30:00+08:00"))
+        stored_records = service.load_records()
+        current_records = [
+            record
+            for record in stored_records
+            if record.wxid == "wxid_123" and record.lifecycle_status == "current"
+        ]
+        review_records = [
+            record
+            for record in stored_records
+            if record.wxid == "wxid_123" and record.lifecycle_status == "sold"
+        ]
+
+        assert current_records == []
+        assert len(review_records) == 1
+        assert review_records[0].status == "已售"
+        assert "sold_keyword" in review_records[0].risk_flags
+        assert review_records[0].source_moment_ids == ["m-current", "m-sold"]
     finally:
         shutil.rmtree(temp_root, ignore_errors=True)
 

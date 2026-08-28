@@ -18,6 +18,10 @@ class ParsedFields:
     serial_no: str | None = None
     note: str = ""
     needs_manual: bool = False
+    model_confidence: str = "low"
+    matched_alias: str | None = None
+    model_candidates: list[str] = field(default_factory=list)
+    ignored_reference_models: list[str] = field(default_factory=list)
 
 
 @dataclass(slots=True)
@@ -47,3 +51,9 @@ class InventoryRecord:
     note: str = ""
     needs_manual: bool = False
     source_moment_ids: list[str] = field(default_factory=list)
+    product_key: str | None = None
+    fingerprint_reason: str = ""
+    lifecycle_status: str = "current"
+    risk_flags: list[str] = field(default_factory=list)
+    price_history: list[str] = field(default_factory=list)
+    last_seen_at: str | None = None

@@ -127,6 +127,7 @@ orchestrator:
         assert settings.orchestrator.enabled is True
         assert settings.orchestrator.mode == "full"
         assert settings.model_keywords == ["ixus 95", "sony t2"]
+        assert settings.paths.model_catalog_index.endswith("model_catalog_index.json")
     finally:
         shutil.rmtree(temp_root, ignore_errors=True)
 

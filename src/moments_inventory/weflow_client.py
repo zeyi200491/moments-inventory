@@ -19,6 +19,7 @@ RETRY_DELAY_SECONDS = 0.1
 RETRYABLE_STATUS_CODES = {408, 429, 500, 502, 503, 504}
 TIMELINE_PAGE_SIZE = 200
 MAX_TIMELINE_PAGE_COUNT = 50
+DELETED_TIMELINE_STATUS_VALUES = {"1", "deleted", "delete", "removed", "invisible", "hidden"}
 
 
 class WeFlowRequestError(RuntimeError):
@@ -75,11 +76,14 @@ def _is_deleted_timeline_item(item: dict) -> bool:
         return True
 
     status = str(item.get("status") or "").strip().lower()
-    if status == "deleted":
+    if status in DELETED_TIMELINE_STATUS_VALUES:
         return True
 
     sns_status = str(item.get("snsStatus") or "").strip().lower()
-    if sns_status == "deleted":
+    if sns_status in DELETED_TIMELINE_STATUS_VALUES:
+        return True
+
+    if item.get("visible") is False:
         return True
 
     return False

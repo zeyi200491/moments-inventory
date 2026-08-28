@@ -6,8 +6,10 @@ from typing import Callable
 import uuid
 
 from moments_inventory.config import Settings
+from moments_inventory.lifecycle import merge_product_lifecycle
 from moments_inventory.logging_utils import get_logger
 from moments_inventory.matcher import deduplicate_and_merge
+from moments_inventory.model_matcher import build_matcher_from_index_path
 from moments_inventory.models import InventoryRecord, RawMoment, TargetContact
 from moments_inventory.storage import InventoryStore
 from moments_inventory.weflow_client import WeFlowClient
@@ -36,10 +38,17 @@ class BatchRunService:
         self._store = store or InventoryStore(settings.paths.sqlite_db)
         self._client = client or WeFlowClient(settings)
         self._warmup_runner = warmup_runner
+        self._model_matcher = build_matcher_from_index_path(
+            settings.paths.model_catalog_index
+        )
 
     @staticmethod
     def _is_relevant_record(record: InventoryRecord) -> bool:
-        return bool(record.model)
+        if record.model:
+            return True
+        if not record.risk_flags:
+            return False
+        return record.price is not None or "💰" in (record.content_text or "")
 
     @staticmethod
     def deduplicate_targets(targets: list[TargetContact]) -> list[TargetContact]:
@@ -116,11 +125,16 @@ class BatchRunService:
         processed_usernames = processed_usernames or set()
         start_time = current_time - timedelta(days=self._settings.task.days)
         target_remark_names_by_wxid = self._target_remark_names_by_wxid(batch_targets)
-        usernames = self._deduplicate_usernames(
+
+        # 先解析本批次在 WeFlow 中可抓取的用户名，再决定是否需要执行 warmup。
+        resolved_usernames = self._deduplicate_usernames(
             self._client.resolve_usernames(batch_targets)
         )
+        if batch_targets and not resolved_usernames:
+            raise RuntimeError("no usernames resolved for batch targets")
+
         usernames = [
-            username for username in usernames
+            username for username in resolved_usernames
             if username not in processed_usernames
         ]
         if not usernames:
@@ -131,6 +145,7 @@ class BatchRunService:
                 records=[],
             )
 
+        # warmup 仍然发生在真正抓取 timeline 之前，避免空批次或重复批次白跑一遍微信界面。
         if self._warmup_runner is not None:
             self._warmup_runner(batch_targets)
 
@@ -151,6 +166,7 @@ class BatchRunService:
             moments,
             model_keywords=self._settings.model_keywords,
             merge_minutes=self._settings.task.merge_window_minutes,
+            model_matcher=self._model_matcher,
         )
         records = [record for record in records if self._is_relevant_record(record)]
         self._store.stage_records(run_id, batch_index, records)
@@ -167,6 +183,14 @@ class BatchRunService:
         run_id: str,
         current_time: datetime,
     ) -> list[InventoryRecord]:
+        staged_records = self._store.list_staged_records(run_id)
+        merged = merge_product_lifecycle(
+            staged_records,
+            observed_at=current_time.isoformat(),
+        )
+        final_records = merged.current_records + merged.review_records
+        self._store.clear_staged_records(run_id)
+        self._store.stage_records(run_id, 0, final_records)
         self._store.replace_current_records_from_stage(
             run_id,
             committed_at=current_time.isoformat(),

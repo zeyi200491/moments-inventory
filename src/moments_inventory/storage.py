@@ -17,6 +17,50 @@ _DETAIL_TABLE_COLUMNS: dict[str, frozenset[str]] = {
     "record_videos": frozenset({"url"}),
     "record_source_moments": frozenset({"moment_id"}),
 }
+_LIFECYCLE_COLUMN_DEFINITIONS: tuple[tuple[str, str], ...] = (
+    ("product_key", "text"),
+    ("fingerprint_reason", "text not null default ''"),
+    ("lifecycle_status", "text not null default 'current'"),
+    ("risk_flags", "text not null default '[]'"),
+    ("price_history", "text not null default '[]'"),
+    ("last_seen_at", "text"),
+)
+_INVENTORY_RECORDS_SCHEMA = """
+create table if not exists inventory_records (
+  record_key text primary key,
+  remark_name text,
+  wxid text,
+  published_at text not null,
+  model text,
+  price integer,
+  serial_no text,
+  status text not null,
+  image_urls text not null,
+  video_urls text not null,
+  content_text text not null,
+  note text not null,
+  needs_manual integer not null,
+  source_moment_ids text not null,
+  product_key text,
+  fingerprint_reason text not null default '',
+  lifecycle_status text not null default 'current',
+  risk_flags text not null default '[]',
+  price_history text not null default '[]',
+  first_seen_at text not null,
+  last_seen_at text
+)
+"""
+
+
+def _load_json_list(value: object) -> list[str]:
+    if not value:
+        return []
+    try:
+        loaded = json.loads(str(value))
+    except (json.JSONDecodeError, TypeError):
+        LOGGER.warning("invalid json list in storage row", extra={"value": value})
+        return []
+    return loaded if isinstance(loaded, list) else []
 
 
 class InventoryStore:
@@ -31,28 +75,8 @@ class InventoryStore:
     def initialize(self) -> None:
         self._db_path.parent.mkdir(parents=True, exist_ok=True)
         with self._connect() as conn:
-            conn.execute(
-                """
-                create table if not exists inventory_records (
-                  record_key text primary key,
-                  remark_name text,
-                  wxid text,
-                  published_at text not null,
-                  model text,
-                  price integer,
-                  serial_no text,
-                  status text not null,
-                  image_urls text not null,
-                  video_urls text not null,
-                  content_text text not null,
-                  note text not null,
-                  needs_manual integer not null,
-                  source_moment_ids text not null,
-                  first_seen_at text not null,
-                  last_seen_at text not null
-                )
-                """
-            )
+            conn.execute(_INVENTORY_RECORDS_SCHEMA)
+            self._ensure_inventory_records_last_seen_nullable(conn)
             conn.execute(
                 """
                 create table if not exists record_images (
@@ -113,14 +137,57 @@ class InventoryStore:
                   note text not null,
                   needs_manual integer not null,
                   source_moment_ids text not null,
+                  product_key text,
+                  fingerprint_reason text not null default '',
+                  lifecycle_status text not null default 'current',
+                  risk_flags text not null default '[]',
+                  price_history text not null default '[]',
+                  last_seen_at text,
                   primary key (run_id, record_key)
                 )
                 """
             )
+            self._ensure_lifecycle_columns(conn, "inventory_records")
+            self._ensure_lifecycle_columns(conn, "inventory_staging_records")
             conn.execute(
                 "create index if not exists idx_inventory_staging_records_run_id_batch_index "
                 "on inventory_staging_records(run_id, batch_index)"
             )
+
+    def _ensure_lifecycle_columns(self, conn: sqlite3.Connection, table_name: str) -> None:
+        existing_columns = {
+            row[1] for row in conn.execute(f"pragma table_info({table_name})").fetchall()
+        }
+        for column_name, definition in _LIFECYCLE_COLUMN_DEFINITIONS:
+            if column_name not in existing_columns:
+                conn.execute(f"alter table {table_name} add column {column_name} {definition}")
+
+    def _ensure_inventory_records_last_seen_nullable(self, conn: sqlite3.Connection) -> None:
+        table_info = conn.execute("pragma table_info(inventory_records)").fetchall()
+        last_seen_column = next((row for row in table_info if row[1] == "last_seen_at"), None)
+        if last_seen_column is None or not last_seen_column[3]:
+            return
+
+        existing_columns = [row[1] for row in table_info]
+        conn.commit()
+        conn.execute("pragma foreign_keys = off")
+        conn.execute("pragma legacy_alter_table = on")
+        try:
+            conn.execute("alter table inventory_records rename to inventory_records_legacy")
+            conn.execute(_INVENTORY_RECORDS_SCHEMA)
+            copied_columns = ", ".join(existing_columns)
+            conn.execute(
+                f"""
+                insert into inventory_records ({copied_columns})
+                select {copied_columns}
+                from inventory_records_legacy
+                """
+            )
+            conn.execute("drop table inventory_records_legacy")
+            conn.commit()
+        finally:
+            conn.execute("pragma legacy_alter_table = off")
+            conn.execute("pragma foreign_keys = on")
 
     def _record_to_row(self, record: InventoryRecord) -> tuple[object, ...]:
         return (
@@ -138,6 +205,12 @@ class InventoryStore:
             record.note,
             int(record.needs_manual),
             json.dumps(record.source_moment_ids, ensure_ascii=False),
+            record.product_key,
+            record.fingerprint_reason,
+            record.lifecycle_status or "current",
+            json.dumps(record.risk_flags, ensure_ascii=False),
+            json.dumps(record.price_history, ensure_ascii=False),
+            record.last_seen_at,
         )
 
     def _row_to_record(self, row: tuple[object, ...]) -> InventoryRecord:
@@ -155,7 +228,13 @@ class InventoryStore:
             content_text=row[10],
             note=row[11],
             needs_manual=bool(row[12]),
-            source_moment_ids=json.loads(row[13]),
+            source_moment_ids=_load_json_list(row[13]),
+            product_key=row[14] if len(row) > 14 else None,
+            fingerprint_reason=(row[15] if len(row) > 15 and row[15] is not None else ""),
+            lifecycle_status=(row[16] if len(row) > 16 and row[16] else "current"),
+            risk_flags=_load_json_list(row[17]) if len(row) > 17 else [],
+            price_history=_load_json_list(row[18]) if len(row) > 18 else [],
+            last_seen_at=row[19] if len(row) > 19 else None,
         )
 
     def _replace_detail_rows(
@@ -198,6 +277,7 @@ class InventoryStore:
         deleted_missing = 0
         with self._connect() as conn:
             for record in records:
+                record_row = self._record_to_row(record)
                 first_seen = conn.execute(
                     "select first_seen_at from inventory_records where record_key = ?",
                     (record.record_key,),
@@ -207,8 +287,9 @@ class InventoryStore:
                     insert into inventory_records (
                       record_key, remark_name, wxid, published_at, model, price, serial_no, status,
                       image_urls, video_urls, content_text, note, needs_manual, source_moment_ids,
-                      first_seen_at, last_seen_at
-                    ) values (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                      product_key, fingerprint_reason, lifecycle_status, risk_flags, price_history,
+                      last_seen_at, first_seen_at
+                    ) values (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                     on conflict(record_key) do update set
                       remark_name = excluded.remark_name,
                       wxid = excluded.wxid,
@@ -223,12 +304,16 @@ class InventoryStore:
                       note = excluded.note,
                       needs_manual = excluded.needs_manual,
                       source_moment_ids = excluded.source_moment_ids,
+                      product_key = excluded.product_key,
+                      fingerprint_reason = excluded.fingerprint_reason,
+                      lifecycle_status = excluded.lifecycle_status,
+                      risk_flags = excluded.risk_flags,
+                      price_history = excluded.price_history,
                       last_seen_at = excluded.last_seen_at
                     """,
                     (
-                        *self._record_to_row(record),
+                        *record_row,
                         first_seen[0] if first_seen else sync_started_at,
-                        sync_started_at,
                     ),
                 )
                 self._replace_detail_rows(conn, record)
@@ -264,12 +349,16 @@ class InventoryStore:
                         )
                         deleted_missing += 1
 
-            orphan_keys = [
-                row[0]
-                for row in conn.execute(
-                    "select record_key from inventory_records where model is null or trim(model) = ''"
-                ).fetchall()
-            ]
+            orphan_keys = []
+            for record_key, risk_flags_json in conn.execute(
+                """
+                select record_key, risk_flags
+                from inventory_records
+                where model is null or trim(model) = ''
+                """
+            ).fetchall():
+                if not _load_json_list(risk_flags_json):
+                    orphan_keys.append(record_key)
             for record_key in orphan_keys:
                 conn.execute("delete from inventory_records where record_key = ?", (record_key,))
 
@@ -289,7 +378,9 @@ class InventoryStore:
             rows = conn.execute(
                 """
                 select record_key, remark_name, wxid, published_at, model, price, serial_no, status,
-                       image_urls, video_urls, content_text, note, needs_manual, source_moment_ids
+                       image_urls, video_urls, content_text, note, needs_manual, source_moment_ids,
+                       product_key, fingerprint_reason, lifecycle_status, risk_flags, price_history,
+                       last_seen_at
                 from inventory_records
                 order by published_at asc
                 """
@@ -310,8 +401,9 @@ class InventoryStore:
                 insert into inventory_staging_records (
                   run_id, batch_index, record_key, remark_name, wxid, published_at, model,
                   price, serial_no, status, image_urls, video_urls, content_text, note,
-                  needs_manual, source_moment_ids
-                ) values (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                  needs_manual, source_moment_ids, product_key, fingerprint_reason,
+                  lifecycle_status, risk_flags, price_history, last_seen_at
+                ) values (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 on conflict(run_id, record_key) do update set
                   batch_index = excluded.batch_index,
                   remark_name = excluded.remark_name,
@@ -326,7 +418,13 @@ class InventoryStore:
                   content_text = excluded.content_text,
                   note = excluded.note,
                   needs_manual = excluded.needs_manual,
-                  source_moment_ids = excluded.source_moment_ids
+                  source_moment_ids = excluded.source_moment_ids,
+                  product_key = excluded.product_key,
+                  fingerprint_reason = excluded.fingerprint_reason,
+                  lifecycle_status = excluded.lifecycle_status,
+                  risk_flags = excluded.risk_flags,
+                  price_history = excluded.price_history,
+                  last_seen_at = excluded.last_seen_at
                 """,
                 [(run_id, batch_index, *self._record_to_row(record)) for record in records],
             )
@@ -338,7 +436,8 @@ class InventoryStore:
                 """
                 select record_key, remark_name, wxid, published_at, model, price, serial_no,
                        status, image_urls, video_urls, content_text, note, needs_manual,
-                       source_moment_ids
+                       source_moment_ids, product_key, fingerprint_reason, lifecycle_status,
+                       risk_flags, price_history, last_seen_at
                 from inventory_staging_records
                 where run_id = ?
                 order by batch_index asc, published_at asc, record_key asc
@@ -367,7 +466,8 @@ class InventoryStore:
                 """
                 select record_key, remark_name, wxid, published_at, model, price, serial_no,
                        status, image_urls, video_urls, content_text, note, needs_manual,
-                       source_moment_ids
+                       source_moment_ids, product_key, fingerprint_reason, lifecycle_status,
+                       risk_flags, price_history, last_seen_at
                 from inventory_staging_records
                 where run_id = ?
                 order by batch_index asc, published_at asc, record_key asc
@@ -378,17 +478,18 @@ class InventoryStore:
 
             conn.execute("delete from inventory_records")
             for record in records:
+                record_row = self._record_to_row(record)
                 conn.execute(
                     """
                     insert into inventory_records (
                       record_key, remark_name, wxid, published_at, model, price, serial_no, status,
                       image_urls, video_urls, content_text, note, needs_manual, source_moment_ids,
-                      first_seen_at, last_seen_at
-                    ) values (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                      product_key, fingerprint_reason, lifecycle_status, risk_flags, price_history,
+                      last_seen_at, first_seen_at
+                    ) values (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                     """,
                     (
-                        *self._record_to_row(record),
-                        committed_timestamp,
+                        *record_row,
                         committed_timestamp,
                     ),
                 )

@@ -296,6 +296,31 @@ def test_batch_run_service_uses_configured_target_remark_names() -> None:
         shutil.rmtree(temp_root, ignore_errors=True)
 
 
+def test_batch_run_service_raises_when_no_usernames_resolve_for_batch() -> None:
+    temp_root = _make_temp_root(f"pytest-batch-run-no-usernames-{uuid.uuid4().hex}-")
+
+    try:
+        targets = [
+            TargetContact(remark_name="User A", wxid=None),
+        ]
+        settings = _build_settings(temp_root, targets, batch_size=1)
+        store = InventoryStore(settings.paths.sqlite_db)
+        store.initialize()
+        client = FakeClient({}, resolved_usernames_by_batch={(None,): []})
+
+        service = BatchRunService(
+            settings=settings,
+            store=store,
+            client=client,
+            warmup_runner=lambda batch_targets: None,
+        )
+
+        with pytest.raises(RuntimeError, match="no usernames resolved for batch targets"):
+            service.run(now=datetime.fromisoformat("2026-04-21T12:00:00+08:00"))
+    finally:
+        shutil.rmtree(temp_root, ignore_errors=True)
+
+
 def test_batch_run_service_skips_later_batch_when_resolved_username_was_already_processed() -> None:
     temp_root = _make_temp_root(f"pytest-batch-run-cross-batch-{uuid.uuid4().hex}-")
 

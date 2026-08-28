@@ -3,9 +3,11 @@ from __future__ import annotations
 from datetime import datetime, timedelta
 
 from moments_inventory.config import Settings
+from moments_inventory.lifecycle import merge_product_lifecycle
 from moments_inventory.logging_utils import get_logger
 from moments_inventory.models import RawMoment
 from moments_inventory.matcher import deduplicate_and_merge
+from moments_inventory.model_matcher import build_matcher_from_index_path
 from moments_inventory.storage import InventoryStore
 from moments_inventory.weflow_client import WeFlowClient
 
@@ -18,10 +20,17 @@ class SyncService:
         self._settings = settings
         self._client = client or WeFlowClient(settings)
         self._store = InventoryStore(settings.paths.sqlite_db)
+        self._model_matcher = build_matcher_from_index_path(
+            settings.paths.model_catalog_index
+        )
 
     @staticmethod
     def _is_relevant_record(record) -> bool:
-        return bool(record.model)
+        if record.model:
+            return True
+        if not record.risk_flags:
+            return False
+        return record.price is not None or "💰" in (record.content_text or "")
 
     def _target_remark_names_by_wxid(self) -> dict[str, str]:
         return {
@@ -77,8 +86,11 @@ class SyncService:
             moments,
             model_keywords=self._settings.model_keywords,
             merge_minutes=self._settings.task.merge_window_minutes,
+            model_matcher=self._model_matcher,
         )
         records = [record for record in records if self._is_relevant_record(record)]
+        merged = merge_product_lifecycle(records, observed_at=current_time.isoformat())
+        records = merged.current_records + merged.review_records
         fetched_moment_ids = {moment.moment_id for moment in moments}
         self._store.upsert_records(
             records=records,
