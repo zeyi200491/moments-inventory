@@ -10,29 +10,16 @@ from pathlib import Path
 import re
 import shutil
 
-from moments_inventory.ai_kefu.products import read_xlsx_rows_from_bytes
+from moments_inventory.xlsx_reader import read_xlsx_rows_from_bytes
 from moments_inventory.exporter import _write_workbook
+from moments_inventory.showcase_brands import (
+    BRAND_MODEL_ALIASES as _BRAND_ALIASES,
+    derive_showcase_brand,
+    normalize_showcase_brand,
+    normalize_showcase_model_key,
+)
 from cryptography.hazmat.primitives.ciphers.aead import AESGCM
 
-
-_BRAND_ALIASES: tuple[tuple[str, tuple[str, ...]], ...] = (
-    ("佳能", ("佳能", "canon")),
-    ("索尼", ("索尼", "sony")),
-    ("富士", ("富士", "fujifilm", "fuji")),
-    ("奥林巴斯", ("奥林巴斯", "olympus")),
-    ("柯达", ("柯达", "kodak")),
-    ("尼康", ("尼康", "nikon")),
-    ("卡西欧", ("卡西欧", "casio")),
-    ("三星", ("三星", "samsung")),
-    ("松下", ("松下", "panasonic")),
-    ("宾得", ("宾得", "pentax")),
-    ("理光", ("理光", "ricoh")),
-    ("拍得丽", ("拍得丽", "premier")),
-    ("惠普", ("惠普", "hp", "hewlettpackard")),
-    ("美能达", ("美能达", "minolta", "konica minolta", "konicaminolta")),
-    ("明基", ("明基", "benq")),
-    ("徕卡", ("徕卡", "leica")),
-)
 
 SHOWCASE_HEADERS = [
     "商品ID",
@@ -77,19 +64,6 @@ class ShowcaseBuildResult:
     missing_assets_path: Path
 
 
-def normalize_showcase_model_key(value: str) -> str:
-    compact = re.sub(r"[\s\-_]+", "", value.strip()).lower()
-    for brand, aliases in _BRAND_ALIASES:
-        for alias in aliases:
-            alias_key = re.sub(r"[\s\-_]+", "", alias).lower()
-            if compact.startswith(alias_key):
-                remainder = compact[len(alias_key):]
-                if remainder.startswith(brand):
-                    remainder = remainder[len(brand):]
-                return f"{brand}{remainder}"
-    return compact
-
-
 def merge_showcase_workbook(source_xlsx: str | Path, manual_xlsx: str | Path) -> Path:
     source_path = Path(source_xlsx)
     manual_path = Path(manual_xlsx)
@@ -110,7 +84,11 @@ def merge_showcase_workbook(source_xlsx: str | Path, manual_xlsx: str | Path) ->
             [
                 product_id,
                 source_row["型号"],
-                old.get("品牌") or _derive_brand(source_row["型号"]),
+                normalize_showcase_brand(
+                    old.get("品牌") or "",
+                    source_row["型号"],
+                    source_row["原文文案"],
+                ),
                 cost_price,
                 _parse_int(old.get("展示价")) or cost_price,
                 old.get("是否展示") or "是",
@@ -298,11 +276,7 @@ def _build_product_id(source_row: dict[str, str]) -> str:
 
 
 def _derive_brand(model: str) -> str:
-    key = normalize_showcase_model_key(model)
-    for brand, _ in _BRAND_ALIASES:
-        if key.startswith(brand):
-            return brand
-    return ""
+    return derive_showcase_brand(model)
 
 
 def _parse_int(value: object) -> int | None:

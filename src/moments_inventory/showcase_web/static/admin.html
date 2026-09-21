@@ -5,7 +5,7 @@
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <title>星星CCD 管理后台</title>
   <link rel="icon" href="data:,">
-  <link rel="stylesheet" href="/static/showcase.css">
+  <link rel="stylesheet" href="/static/showcase.css?v=20260921-optimization2">
 </head>
 <body>
   <main class="page-shell admin-shell">
@@ -32,18 +32,211 @@
 
     <section id="adminApp" hidden>
       <section class="admin-panel">
-        <h2>批量加价</h2>
+        <h2>访问与声明</h2>
+        <form id="settingsForm" class="admin-form admin-grid">
+          <label class="field field-wide">
+            <span>网页声明</span>
+            <textarea id="statementInput" placeholder="写给客户看的归属和防盗用说明"></textarea>
+          </label>
+          <label class="field field-wide">
+            <span>店铺简介</span>
+            <textarea id="shopIntroInput" placeholder="写给客户看的店铺介绍，会显示在客户页声明下面"></textarea>
+          </label>
+          <label class="field">
+            <span>水印文字</span>
+            <input id="watermarkInput" placeholder="星星CCD">
+          </label>
+          <label class="field">
+            <span>库存更新时间</span>
+            <input id="inventoryUpdatedInput" placeholder="例如：2026-08-10 18:00">
+          </label>
+          <label class="field">
+            <span>客户访问口令</span>
+            <input id="customerPasswordAdminInput" type="password" placeholder="留空则不修改">
+          </label>
+          <button class="access-button" type="submit">保存设置</button>
+          <p id="settingsStatus" class="status-text"></p>
+        </form>
+      </section>
+
+      <section class="admin-panel">
+        <h2>买前流程管理</h2>
+        <form id="purchaseStepForm" class="admin-form admin-grid">
+          <label class="field">
+            <span>步骤标题</span>
+            <input id="purchaseStepTitleInput" required placeholder="例如：微信咨询客服">
+          </label>
+          <label class="field">
+            <span>步骤说明</span>
+            <input id="purchaseStepDescriptionInput" placeholder="写给客户看的简短说明">
+          </label>
+          <label class="field">
+            <span>排序</span>
+            <input id="purchaseStepSortInput" type="number" min="0" value="0">
+          </label>
+          <label class="check-field">
+            <input id="purchaseStepVisibleInput" type="checkbox" checked>
+            <span>客户页展示</span>
+          </label>
+          <button class="access-button" type="submit">新增步骤</button>
+        </form>
+        <p class="status-text">这个模块显示在声明/店铺简介下面、店铺图片橱窗上面，用来告诉客户下一步怎么咨询和下单。</p>
+        <div id="purchaseStepList" class="purchase-step-admin-list"></div>
+      </section>
+
+      <section class="admin-panel">
+        <h2>店铺图片橱窗</h2>
+        <form id="galleryForm" class="admin-form admin-grid">
+          <label class="field">
+            <span>相册名称</span>
+            <input id="galleryTitleInput" required placeholder="例如：相机实拍">
+          </label>
+          <label class="field">
+            <span>相册说明</span>
+            <input id="galleryDescriptionInput" placeholder="写一句给客户看的说明">
+          </label>
+          <label class="field">
+            <span>排序</span>
+            <input id="gallerySortInput" type="number" min="0" value="0">
+          </label>
+          <label class="check-field">
+            <input id="galleryVisibleInput" type="checkbox" checked>
+            <span>客户页展示</span>
+          </label>
+          <button class="access-button" type="submit">新增相册</button>
+        </form>
+        <p class="status-text">建议固定维护：相机实拍、礼盒装展示、工作室日常、买家反馈。买家反馈上传前请先打码头像、昵称、地址、电话和订单号。</p>
+        <div id="galleryAlbumList" class="gallery-admin-list"></div>
+      </section>
+
+      <section class="admin-panel">
+        <h2>授权合作方</h2>
+        <form id="partnerForm" class="admin-form admin-grid">
+          <label class="field">
+            <span>名称</span>
+            <input id="partnerNameInput" required>
+          </label>
+          <label class="field">
+            <span>备注</span>
+            <input id="partnerNoteInput" placeholder="例如：主账号、授权代理">
+          </label>
+          <label class="field">
+            <span>排序</span>
+            <input id="partnerSortInput" type="number" min="0" value="0">
+          </label>
+          <label class="check-field">
+            <input id="partnerActiveInput" type="checkbox" checked>
+            <span>启用展示</span>
+          </label>
+          <button class="access-button" type="submit">新增合作方</button>
+        </form>
+        <div id="partnerList" class="partner-admin-list"></div>
+      </section>
+
+      <section class="admin-panel">
+        <h2>首页专栏管理</h2>
+        <form id="sectionForm" class="admin-form admin-grid">
+          <label class="field">
+            <span>专栏名称</span>
+            <input id="sectionTitleInput" required placeholder="例如：个人推荐专区">
+          </label>
+          <label class="field">
+            <span>专栏说明</span>
+            <input id="sectionSubtitleInput" placeholder="写一句给客户看的说明">
+          </label>
+          <label class="field">
+            <span>排序</span>
+            <input id="sectionSortInput" type="number" min="0" value="0">
+          </label>
+          <label class="check-field">
+            <input id="sectionActiveInput" type="checkbox" checked>
+            <span>首页展示</span>
+          </label>
+          <button class="access-button" type="submit">新增专栏</button>
+        </form>
+        <div id="sectionList" class="section-admin-list"></div>
+      </section>
+
+      <section class="admin-panel">
+        <h2>后台工具</h2>
+        <div class="admin-actions-row">
+          <button id="backupDatabaseButton" class="access-button" type="button">查看完整备份方法</button>
+          <button id="refreshDiagnosticsButton" class="secondary-button" type="button">刷新异常列表</button>
+          <p id="backupStatus" class="status-text"></p>
+        </div>
+        <div id="diagnosticsPanel" class="admin-mini-grid"></div>
+        <div>
+          <h3>最近导入报告</h3>
+          <div id="importReportList" class="admin-compact-list"></div>
+        </div>
+        <div>
+          <h3>操作记录</h3>
+          <div id="operationList" class="admin-compact-list"></div>
+        </div>
+      </section>
+
+      <section class="admin-panel">
+        <h2>出片图匹配中心</h2>
+        <div class="admin-actions-row">
+          <button id="rebuildSampleMatchingButton" class="access-button" type="button">重建出片图匹配</button>
+          <button id="refreshSampleMatchingButton" class="secondary-button" type="button">刷新匹配状态</button>
+          <p id="sampleMatchingStatus" class="status-text"></p>
+        </div>
+        <div id="sampleMatchingSummary" class="admin-mini-grid"></div>
+        <div class="sample-matching-toolbar">
+          <label class="field">
+            <span>库存状态</span>
+            <select id="sampleMatchStatusFilter">
+              <option value="needs_attention">待处理</option>
+              <option value="missing">无候选</option>
+              <option value="low_confidence">待确认</option>
+              <option value="auto_matched">可自动匹配</option>
+              <option value="matched">已匹配</option>
+              <option value="all">全部</option>
+            </select>
+          </label>
+          <label class="field">
+            <span>搜索图库</span>
+            <input id="sampleAssetSearchInput" type="search" placeholder="品牌、型号、文件夹">
+          </label>
+          <button id="sampleAssetSearchButton" class="secondary-button" type="button">搜索图库</button>
+        </div>
+        <div id="sampleAssetSearchResults" class="admin-compact-list"></div>
+        <div>
+          <h3>批量候选确认</h3>
+          <div id="sampleMatchGroupList" class="admin-compact-list"></div>
+        </div>
+        <div id="sampleMatchProductList" class="admin-compact-list"></div>
+      </section>
+
+      <section class="admin-panel">
+        <h2>批量操作中心</h2>
         <form id="batchPriceForm" class="admin-form admin-grid">
           <label class="field">
-            <span>品牌</span>
-            <input id="batchBrandInput" placeholder="留空代表全部">
+            <span>操作</span>
+            <select id="bulkOperationInput">
+              <option value="price">批量改价</option>
+              <option value="hide">批量隐藏</option>
+              <option value="show">批量显示</option>
+            </select>
           </label>
           <label class="field">
-            <span>加价金额</span>
+            <span>改价方式</span>
+            <select id="bulkPriceModeInput">
+              <option value="increment">统一加价</option>
+              <option value="fixed_final">固定最终价</option>
+              <option value="tiered_increment">按原价阶梯加价</option>
+            </select>
+          </label>
+          <label class="field">
+            <span>金额</span>
             <input id="batchAmountInput" type="number" min="0" value="30">
           </label>
-          <button class="access-button" type="submit">执行加价</button>
+          <button class="secondary-button" type="submit">生成预览</button>
+          <button id="applyBulkButton" class="access-button" type="button" disabled>确认执行预览结果</button>
         </form>
+        <p class="status-text">未勾选商品时，会按下面“商品管理”的筛选条件批量处理；已勾选商品时，只处理勾选商品。</p>
+        <div id="bulkPreviewPanel" class="admin-compact-list"></div>
       </section>
 
       <section class="admin-panel">
@@ -66,8 +259,28 @@
             <input id="createPriceInput" type="number" min="0" required>
           </label>
           <label class="field field-wide">
+            <span>一句短卖点</span>
+            <input id="createSellingPointInput" placeholder="例如：新手好上手，颜色清透">
+          </label>
+          <label class="field field-wide">
+            <span>推荐标签</span>
+            <input id="createTagsInput" placeholder="例如：新手推荐,氛围感,高性价比">
+          </label>
+          <label class="field field-wide">
             <span>展示文案</span>
             <textarea id="createCopyInput"></textarea>
+          </label>
+          <label class="field field-wide">
+            <span>加入专栏</span>
+            <div id="createSectionPicker" class="create-section-picker"></div>
+          </label>
+          <label class="field field-wide">
+            <span>专栏内推荐语</span>
+            <input id="createSectionNoteInput" placeholder="例如：适合新手，出片稳定">
+          </label>
+          <label class="field">
+            <span>专栏内排序</span>
+            <input id="createSectionSortInput" type="number" min="0" value="0">
           </label>
           <button class="access-button" type="submit">新增</button>
         </form>
@@ -75,10 +288,83 @@
 
       <section class="admin-panel">
         <h2>商品管理</h2>
+        <div class="admin-list-toolbar admin-filter-grid">
+          <label class="field">
+            <span>关键词</span>
+            <input id="adminProductSearchInput" type="search" placeholder="型号、品牌、文案关键词">
+          </label>
+          <label class="field">
+            <span>品牌多选</span>
+            <input id="adminBrandFilterInput" placeholder="佳能,索尼,富士">
+          </label>
+          <label class="field">
+            <span>价格最低</span>
+            <input id="adminMinPriceInput" type="number" min="0">
+          </label>
+          <label class="field">
+            <span>价格最高</span>
+            <input id="adminMaxPriceInput" type="number" min="0">
+          </label>
+          <label class="field">
+            <span>显示状态</span>
+            <select id="adminVisibleFilterInput">
+              <option value="">全部</option>
+              <option value="true">展示中</option>
+              <option value="false">已隐藏</option>
+            </select>
+          </label>
+          <label class="field">
+            <span>已售状态</span>
+            <select id="adminSoldFilterInput">
+              <option value="">全部</option>
+              <option value="false">未售</option>
+              <option value="true">已售</option>
+            </select>
+          </label>
+          <label class="field">
+            <span>机身图</span>
+            <select id="adminBodyImageFilterInput">
+              <option value="">全部</option>
+              <option value="true">有机身图</option>
+              <option value="false">无机身图</option>
+            </select>
+          </label>
+          <label class="field">
+            <span>出片图</span>
+            <select id="adminSampleImageFilterInput">
+              <option value="">全部</option>
+              <option value="true">有出片图</option>
+              <option value="false">无出片图</option>
+            </select>
+          </label>
+          <label class="field">
+            <span>价格是否更改</span>
+            <select id="adminManualPriceFilterInput">
+              <option value="">全部</option>
+              <option value="true">已手动改价</option>
+              <option value="false">未手动改价</option>
+            </select>
+          </label>
+          <label class="field">
+            <span>推荐标签</span>
+            <input id="adminTagFilterInput" placeholder="新手推荐,礼盒装">
+          </label>
+          <label class="field">
+            <span>来源复核</span>
+            <select id="adminReviewStateFilterInput">
+              <option value="">全部</option>
+              <option value="missing">来源中缺失，待复核</option>
+            </select>
+          </label>
+          <button id="clearAdminFiltersButton" class="secondary-button" type="button">清空筛选</button>
+          <p id="adminProductCount" class="status-text"></p>
+        </div>
         <div id="adminProductList" class="admin-product-list"></div>
+        <button id="adminLoadMoreButton" class="load-more-button" type="button" hidden>显示更多商品</button>
       </section>
     </section>
   </main>
-  <script src="/static/admin.js"></script>
+  <script src="/static/shared/product-utils.js?v=20260921"></script>
+  <script src="/static/admin.js?v=20260921-optimization2"></script>
 </body>
 </html>

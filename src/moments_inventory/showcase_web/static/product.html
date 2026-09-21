@@ -5,14 +5,32 @@
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <title>星星CCD 商品详情</title>
   <link rel="icon" href="data:,">
-  <link rel="stylesheet" href="/static/showcase.css">
+  <link rel="stylesheet" href="/static/showcase.css?v=20260921-optimization2">
 </head>
 <body>
-  <div class="site-watermark" aria-hidden="true"></div>
+  <div id="siteWatermark" class="site-watermark" aria-hidden="true"></div>
   <main class="page-shell">
-    <a class="back-link" href="/">返回库存</a>
-    <section id="productDetail" class="product-detail"></section>
+    <section id="accessPanel" class="access-panel" hidden>
+      <p class="eyebrow">Private Stock</p>
+      <h1>星星CCD 商品详情</h1>
+      <p id="accessStatement" class="statement-text"></p>
+      <form id="customerAccessForm" class="access-form">
+        <input type="hidden" name="username" autocomplete="username" value="xingxing-customer">
+        <label class="field">
+          <span>访问口令</span>
+          <input id="customerPasswordInput" type="password" autocomplete="current-password" placeholder="输入本周口令">
+        </label>
+        <button class="access-button" type="submit">查看详情</button>
+        <p id="customerAccessError" class="access-error" hidden></p>
+      </form>
+    </section>
+
+    <section id="detailApp" hidden>
+      <a class="back-link" href="/" data-back-to-list>返回库存</a>
+      <section id="productDetail" class="product-detail"></section>
+    </section>
   </main>
-  <script src="/static/showcase.js"></script>
+  <script src="/static/shared/product-utils.js?v=20260921"></script>
+  <script src="/static/showcase.js?v=20260921-optimization2"></script>
 </body>
 </html>

@@ -1,0 +1,12 @@
+sample_images_dir: E:/Ai jjfajgsw/AIkefu/output/ccdcpt
+database: ../data/showcase.db
+storage_dir: ../storage/showcase_images
+manual_xlsx: ../manual/客户展示库存.xlsx
+backup_dir: ../backup/showcase
+server:
+  host: 127.0.0.1
+  port: 8899
+admin:
+  login_path: /admin-xingxing
+customer:
+  access_cookie_days: 7
