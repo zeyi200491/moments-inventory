@@ -65,6 +65,37 @@ def test_build_parser_supports_orchestrated_run_flags() -> None:
     assert args.resume is True
 
 
+def test_cli_accepts_showcase_commands() -> None:
+    parser = build_parser()
+
+    merge_args = parser.parse_args(
+        [
+            "showcase-merge",
+            "--source-xlsx",
+            "output/全量当前库.xlsx",
+            "--manual-xlsx",
+            "manual/客户展示库存.xlsx",
+        ]
+    )
+    build_args = parser.parse_args(
+        [
+            "showcase-build",
+            "--manual-xlsx",
+            "manual/客户展示库存.xlsx",
+            "--sample-assets-dir",
+            "showcase_assets",
+            "--output-dir",
+            "site_dist",
+            "--access-password",
+            "week-pass",
+        ]
+    )
+
+    assert merge_args.command == "showcase-merge"
+    assert build_args.command == "showcase-build"
+    assert build_args.access_password == "week-pass"
+
+
 def test_cli_batch_run_export_runs_service_and_exports_records(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:

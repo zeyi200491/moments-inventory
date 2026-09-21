@@ -1,0 +1,812 @@
+from __future__ import annotations
+
+from dataclasses import replace
+from pathlib import Path
+from io import BytesIO
+
+import pytest
+from fastapi.testclient import TestClient
+
+from moments_inventory.showcase_web.app import create_showcase_app
+from moments_inventory.showcase_web.auth import hash_password
+from moments_inventory.showcase_web.models import ShowcaseProduct, ShowcaseSection
+from moments_inventory.showcase_web.repository import SQLiteShowcaseRepository
+from PIL import Image
+
+
+def _valid_png_bytes() -> bytes:
+    target = BytesIO()
+    Image.new("RGB", (2, 2), "white").save(target, format="PNG")
+    return target.getvalue()
+
+
+def _product(
+    product_id: str,
+    *,
+    visible: bool,
+    display_price: int,
+    brand: str = "佳能",
+) -> ShowcaseProduct:
+    return ShowcaseProduct(
+        product_id=product_id,
+        model=f"{brand}测试型号",
+        brand=brand,
+        cost_price=300,
+        display_price=display_price,
+        visible=visible,
+        sold=False,
+        published_at="2026-08-10T10:00:00+08:00",
+        raw_copy="原文",
+        display_copy="展示文案",
+        cover_image_path="",
+        created_at="2026-08-10T10:01:00+08:00",
+        updated_at="2026-08-10T10:01:00+08:00",
+        last_seen_import_id="import-1",
+    )
+
+
+def _product_with(
+    product_id: str,
+    *,
+    model: str,
+    brand: str,
+    price: int,
+    visible: bool = True,
+    sold: bool = False,
+    copy: str = "展示文案",
+    tags: str = "",
+    import_id: str = "import-1",
+) -> ShowcaseProduct:
+    product = _product(product_id, visible=visible, display_price=price, brand=brand)
+    product.model = model
+    product.sold = sold
+    product.display_copy = copy
+    product.raw_copy = copy
+    product.recommend_tags = tags
+    product.last_seen_import_id = import_id
+    return product
+
+
+@pytest.fixture
+def repo(tmp_path: Path) -> SQLiteShowcaseRepository:
+    repository = SQLiteShowcaseRepository(tmp_path / "showcase.db")
+    repository.initialize()
+    repository.set_setting("admin_password_hash", hash_password("admin-pass"))
+    return repository
+
+
+@pytest.fixture
+def authenticated_client(repo: SQLiteShowcaseRepository) -> TestClient:
+    client = TestClient(create_showcase_app(repository=repo))
+    response = client.post("/api/admin/login", json={"password": "admin-pass"})
+    assert response.status_code == 200
+    return client
+
+
+def test_admin_login_sets_session_cookie(tmp_path: Path) -> None:
+    repo = SQLiteShowcaseRepository(tmp_path / "showcase.db")
+    repo.initialize()
+    repo.set_setting("admin_password_hash", hash_password("admin-pass"))
+    client = TestClient(create_showcase_app(repository=repo))
+
+    response = client.post("/api/admin/login", json={"password": "admin-pass"})
+
+    assert response.status_code == 200
+    assert "showcase_admin_session" in response.cookies
+
+
+def test_admin_can_update_single_product_price(
+    authenticated_client: TestClient,
+    repo: SQLiteShowcaseRepository,
+) -> None:
+    repo.upsert_product(_product("p1", visible=True, display_price=558))
+
+    response = authenticated_client.patch("/api/admin/products/p1", json={"displayPrice": 688, "expectedVersion": repo.get_product("p1").row_version})
+
+    assert response.status_code == 200
+    product = repo.get_product("p1")
+    assert product is not None
+    assert product.display_price == 688
+
+
+def test_admin_can_update_product_marketing_fields(
+    authenticated_client: TestClient,
+    repo: SQLiteShowcaseRepository,
+) -> None:
+    repo.upsert_product(_product("p1", visible=True, display_price=558))
+
+    response = authenticated_client.patch(
+        "/api/admin/products/p1",
+        json={
+            "expectedVersion": repo.get_product("p1").row_version,
+            "shortSellingPoint": "小巧复古，适合新手",
+            "recommendTags": ["新手推荐", "氛围感"],
+        },
+    )
+
+    assert response.status_code == 200
+    product = repo.get_product("p1")
+    assert product is not None
+    assert product.short_selling_point == "小巧复古，适合新手"
+    assert product.recommend_tags == "新手推荐,氛围感"
+
+
+def test_admin_can_manage_gallery_albums(authenticated_client: TestClient) -> None:
+    list_response = authenticated_client.get("/api/admin/gallery/albums")
+    assert list_response.status_code == 200
+    assert [album["title"] for album in list_response.json()["albums"]] == [
+        "相机实拍",
+        "礼盒装展示",
+        "工作室日常",
+        "买家反馈",
+    ]
+
+    create_response = authenticated_client.post(
+        "/api/admin/gallery/albums",
+        json={
+            "title": "发货前检查",
+            "description": "每台相机发货前检测记录",
+            "sortOrder": 9,
+            "isVisible": True,
+        },
+    )
+
+    assert create_response.status_code == 201
+    album_id = create_response.json()["albumId"]
+    update_response = authenticated_client.patch(
+        f"/api/admin/gallery/albums/{album_id}",
+        json={"title": "发货前检测", "isVisible": False},
+    )
+    assert update_response.status_code == 200
+    assert update_response.json()["title"] == "发货前检测"
+    assert update_response.json()["isVisible"] is False
+
+
+def test_admin_can_manage_purchase_steps(authenticated_client: TestClient) -> None:
+    list_response = authenticated_client.get("/api/admin/purchase-steps")
+    assert list_response.status_code == 200
+    assert [step["title"] for step in list_response.json()["steps"]][:3] == [
+        "挑选型号",
+        "复制咨询文案",
+        "微信咨询客服",
+    ]
+
+    create_response = authenticated_client.post(
+        "/api/admin/purchase-steps",
+        json={
+            "title": "补充需求",
+            "description": "有特殊预算或颜色要求可以直接说明。",
+            "sortOrder": 99,
+            "isVisible": True,
+        },
+    )
+
+    assert create_response.status_code == 201
+    step_id = create_response.json()["stepId"]
+    update_response = authenticated_client.patch(
+        f"/api/admin/purchase-steps/{step_id}",
+        json={"title": "补充偏好", "isVisible": False},
+    )
+    assert update_response.status_code == 200
+    assert update_response.json()["title"] == "补充偏好"
+    assert update_response.json()["isVisible"] is False
+
+    delete_response = authenticated_client.delete(f"/api/admin/purchase-steps/{step_id}")
+    assert delete_response.status_code == 200
+    assert step_id not in [
+        item["stepId"]
+        for item in authenticated_client.get("/api/admin/purchase-steps").json()["steps"]
+    ]
+
+
+def test_admin_can_upload_gallery_image(
+    authenticated_client: TestClient,
+    tmp_path: Path,
+) -> None:
+    album_id = "camera-real"
+    response = authenticated_client.post(
+        f"/api/admin/gallery/albums/{album_id}/images",
+        data={"caption": "真实库存实拍", "isVisible": "true"},
+        files={"file": ("camera.jpg", _valid_png_bytes(), "image/jpeg")},
+    )
+
+    assert response.status_code == 201
+    data = response.json()
+    assert data["caption"] == "真实库存实拍"
+    assert data["imagePath"].startswith("storage/showcase_images/gallery/camera-real/")
+    assert Path(tmp_path).exists()
+
+    list_response = authenticated_client.get("/api/admin/gallery/albums")
+    album = next(item for item in list_response.json()["albums"] if item["albumId"] == album_id)
+    assert album["images"][0]["imageId"] == data["imageId"]
+
+
+def test_admin_old_batch_endpoint_cannot_bypass_confirmation(authenticated_client, repo):
+    repo.upsert_product(_product("canon", visible=True, display_price=500))
+    response = authenticated_client.post("/api/admin/products/batch-price",
+        json={"mode": "increment", "amount": 30, "brand": "佳能"})
+    assert response.status_code == 410
+    assert repo.get_product("canon").display_price == 500
+
+
+def test_admin_can_create_and_delete_product(
+    authenticated_client: TestClient,
+    repo: SQLiteShowcaseRepository,
+) -> None:
+    create_response = authenticated_client.post(
+        "/api/admin/products",
+        json={
+            "productId": "manual-1",
+            "model": "理光rr30",
+            "brand": "理光",
+            "displayPrice": 399,
+            "displayCopy": "手动新增",
+        },
+    )
+    assert create_response.status_code == 201
+    assert repo.get_product("manual-1") is not None
+
+    delete_response = authenticated_client.delete("/api/admin/products/manual-1")
+    assert delete_response.status_code == 200
+    assert repo.get_product("manual-1") is None
+
+
+def test_admin_can_create_product_and_add_it_to_sections(
+    authenticated_client: TestClient,
+    repo: SQLiteShowcaseRepository,
+) -> None:
+    repo.upsert_section(
+        ShowcaseSection(
+            section_id="new-arrivals",
+            title="最近上新",
+            subtitle="近期新增",
+            active=True,
+            sort_order=1,
+            created_at="2026-08-10T10:01:00+08:00",
+            updated_at="2026-08-10T10:01:00+08:00",
+        )
+    )
+    repo.upsert_section(
+        ShowcaseSection(
+            section_id="recommend",
+            title="个人推荐专区",
+            subtitle="重点推荐",
+            active=True,
+            sort_order=2,
+            created_at="2026-08-10T10:01:00+08:00",
+            updated_at="2026-08-10T10:01:00+08:00",
+        )
+    )
+
+    response = authenticated_client.post(
+        "/api/admin/products",
+        json={
+            "productId": "manual-section-1",
+            "model": "佳能ixus860",
+            "brand": "佳能",
+            "displayPrice": 1088,
+            "displayCopy": "手动新增并加入专栏",
+            "sectionIds": ["new-arrivals", "recommend"],
+            "sectionRecommendNote": "适合重点推",
+            "sectionSortOrder": 6,
+        },
+    )
+
+    assert response.status_code == 201
+    assert repo.get_product("manual-section-1") is not None
+    new_items = repo.list_section_items("new-arrivals")
+    recommend_items = repo.list_section_items("recommend")
+    assert [item.product_id for item in new_items] == ["manual-section-1"]
+    assert [item.product_id for item in recommend_items] == ["manual-section-1"]
+    assert new_items[0].recommend_note == "适合重点推"
+    assert recommend_items[0].sort_order == 6
+
+
+def test_admin_can_upload_product_image(
+    tmp_path: Path,
+    repo: SQLiteShowcaseRepository,
+) -> None:
+    repo.upsert_product(_product("p1", visible=True, display_price=558))
+    client = TestClient(
+        create_showcase_app(
+            repository=repo,
+            storage_dir=tmp_path / "storage" / "showcase_images",
+        )
+    )
+    login = client.post("/api/admin/login", json={"password": "admin-pass"})
+    assert login.status_code == 200
+
+    response = client.post(
+        "/api/admin/products/p1/images",
+        files={"file": ("body.jpg", _valid_png_bytes(), "image/jpeg")},
+        data={"imageType": "detail"},
+    )
+
+    assert response.status_code == 201
+    image = repo.list_product_images("p1")[0]
+    assert image.image_type == "detail"
+    assert (tmp_path / image.image_path).read_bytes() == _valid_png_bytes()
+
+
+def test_admin_rejects_fake_image_without_leaving_file(
+    authenticated_client: TestClient,
+    repo: SQLiteShowcaseRepository,
+    tmp_path: Path,
+) -> None:
+    repo.upsert_product(_product("fake", visible=True, display_price=558))
+    response = authenticated_client.post(
+        "/api/admin/products/fake/images",
+        files={"file": ("fake.jpg", b"not-an-image", "image/jpeg")},
+        data={"imageType": "detail"},
+    )
+
+    assert response.status_code == 400
+    assert repo.list_product_images("fake") == []
+    assert not list(tmp_path.rglob("*.upload"))
+
+
+def test_admin_can_reorder_set_cover_and_delete_images(
+    authenticated_client: TestClient,
+    repo: SQLiteShowcaseRepository,
+) -> None:
+    repo.upsert_product(_product("p1", visible=True, display_price=558))
+    repo.add_product_image("a", "p1", "storage/showcase_images/p1/a.jpg", "detail", 0, True)
+    repo.add_product_image("b", "p1", "storage/showcase_images/p1/b.jpg", "detail", 1, False)
+
+    reorder = authenticated_client.post(
+        "/api/admin/products/p1/images/reorder",
+        json={"imageIds": ["b", "a"]},
+    )
+    assert reorder.status_code == 200
+    assert [image.image_id for image in repo.list_product_images("p1")] == ["b", "a"]
+
+    cover = authenticated_client.post("/api/admin/products/p1/images/b/cover")
+    assert cover.status_code == 200
+    images = repo.list_product_images("p1")
+    assert [image.is_cover for image in images] == [True, False]
+
+    delete = authenticated_client.delete("/api/admin/products/p1/images/a")
+    assert delete.status_code == 200
+    assert [image.image_id for image in repo.list_product_images("p1")] == ["b"]
+
+
+def test_admin_can_update_statement_and_customer_password(
+    authenticated_client: TestClient,
+    repo: SQLiteShowcaseRepository,
+) -> None:
+    response = authenticated_client.patch(
+        "/api/admin/settings",
+        json={
+            "statementText": "新声明",
+            "shopIntroText": "这里是星星CCD相机小铺简介",
+            "customerPassword": "week-pass",
+        },
+    )
+
+    assert response.status_code == 200
+    assert repo.get_setting("statement_text") == "新声明"
+    assert repo.get_setting("shop_intro_text") == "这里是星星CCD相机小铺简介"
+    assert repo.get_setting("customer_password_hash") != "week-pass"
+
+
+def test_admin_can_read_settings(authenticated_client: TestClient, repo: SQLiteShowcaseRepository) -> None:
+    repo.set_setting("statement_text", "当前声明")
+    repo.set_setting("shop_intro_text", "当前店铺简介")
+    repo.set_setting("watermark_text", "星星CCD")
+    repo.set_setting("inventory_updated_at", "2026-08-10")
+
+    response = authenticated_client.get("/api/admin/settings")
+
+    assert response.status_code == 200
+    assert response.json()["statementText"] == "当前声明"
+    assert response.json()["shopIntroText"] == "当前店铺简介"
+    assert response.json()["watermarkText"] == "星星CCD"
+    assert response.json()["inventoryUpdatedAt"] == "2026-08-10"
+
+
+def test_admin_can_add_update_and_delete_authorized_partner(
+    authenticated_client: TestClient,
+    repo: SQLiteShowcaseRepository,
+) -> None:
+    create = authenticated_client.post(
+        "/api/admin/partners",
+        json={"name": "A代理", "note": "允许转发"},
+    )
+    assert create.status_code == 201
+    partner_id = create.json()["partnerId"]
+
+    update = authenticated_client.patch(
+        f"/api/admin/partners/{partner_id}",
+        json={"name": "A代理更新", "active": False},
+    )
+    delete = authenticated_client.delete(f"/api/admin/partners/{partner_id}")
+
+    assert update.status_code == 200
+    assert delete.status_code == 200
+    assert repo.list_authorized_partners(active_only=False) == []
+
+
+def test_admin_partners_include_active_and_sort_order(
+    authenticated_client: TestClient,
+    repo: SQLiteShowcaseRepository,
+) -> None:
+    repo.add_authorized_partner("p1", "A代理", "允许", 7, False)
+
+    response = authenticated_client.get("/api/admin/partners")
+
+    assert response.status_code == 200
+    assert response.json()[0]["active"] is False
+    assert response.json()[0]["sortOrder"] == 7
+
+
+def test_admin_can_create_update_and_delete_section(
+    authenticated_client: TestClient,
+    repo: SQLiteShowcaseRepository,
+) -> None:
+    create = authenticated_client.post(
+        "/api/admin/sections",
+        json={
+            "title": "礼盒装专区",
+            "subtitle": "适合送礼",
+            "active": True,
+            "sortOrder": 1,
+        },
+    )
+    assert create.status_code == 201
+    section_id = create.json()["sectionId"]
+
+    update = authenticated_client.patch(
+        f"/api/admin/sections/{section_id}",
+        json={"title": "礼盒装专区更新", "active": False, "sortOrder": 3},
+    )
+    list_response = authenticated_client.get("/api/admin/sections")
+    delete = authenticated_client.delete(f"/api/admin/sections/{section_id}")
+
+    assert update.status_code == 200
+    assert update.json()["title"] == "礼盒装专区更新"
+    assert update.json()["active"] is False
+    assert list_response.status_code == 200
+    assert list_response.json()["sections"][0]["sortOrder"] == 3
+    assert delete.status_code == 200
+    assert repo.list_sections(include_hidden=True) == []
+
+
+def test_admin_can_manage_section_items(
+    authenticated_client: TestClient,
+    repo: SQLiteShowcaseRepository,
+) -> None:
+    repo.upsert_product(_product("p1", visible=True, display_price=558))
+    repo.upsert_product(_product("p2", visible=True, display_price=588))
+    create_section = authenticated_client.post(
+        "/api/admin/sections",
+        json={
+            "title": "个人推荐专区",
+            "subtitle": "我自己挑的",
+            "active": True,
+            "sortOrder": 1,
+        },
+    )
+    section_id = create_section.json()["sectionId"]
+
+    add_p2 = authenticated_client.post(
+        f"/api/admin/sections/{section_id}/items",
+        json={"productId": "p2", "sortOrder": 2, "recommendNote": "预算友好"},
+    )
+    add_p1 = authenticated_client.post(
+        f"/api/admin/sections/{section_id}/items",
+        json={"productId": "p1", "sortOrder": 1, "recommendNote": "新手首选"},
+    )
+    item_id = add_p1.json()["itemId"]
+    update = authenticated_client.patch(
+        f"/api/admin/sections/{section_id}/items/{item_id}",
+        json={"sortOrder": 3, "recommendNote": "更新理由"},
+    )
+    section = authenticated_client.get("/api/admin/sections")
+    delete = authenticated_client.delete(f"/api/admin/sections/{section_id}/items/{item_id}")
+
+    assert add_p2.status_code == 201
+    assert add_p1.status_code == 201
+    assert update.status_code == 200
+    assert update.json()["recommendNote"] == "更新理由"
+    assert [item["productId"] for item in section.json()["sections"][0]["items"]] == ["p2", "p1"]
+    assert delete.status_code == 200
+    assert [item.product_id for item in repo.list_section_items(section_id)] == ["p2"]
+
+
+def test_admin_products_support_server_side_filters(
+    authenticated_client: TestClient,
+    repo: SQLiteShowcaseRepository,
+) -> None:
+    repo.upsert_product(
+        replace(_product_with(
+            "canon",
+            model="佳能ixus80",
+            brand="佳能",
+            price=488,
+            copy="冷白皮 新手推荐",
+            tags="新手推荐",
+        ), price_override=488, source_display_price=450)
+    )
+    hidden = _product_with("hidden", model="索尼t77", brand="索尼", price=688, visible=False)
+    sold = _product_with("sold", model="富士f50", brand="富士", price=788, sold=True)
+    no_copy = _product_with("empty-copy", model="尼康s01", brand="尼康", price=0, copy="")
+    repo.upsert_product(hidden)
+    repo.upsert_product(sold)
+    repo.upsert_product(no_copy)
+    repo.add_product_image("canon-body", "canon", "storage/showcase_images/canon/body.jpg", "body", 0, True)
+    repo.add_product_image("canon-sample", "canon", "sample-images/佳能/ixus80/01.jpg", "sample", 10, False)
+
+    response = authenticated_client.get(
+        "/api/admin/products",
+        params={
+            "query": "冷白皮",
+            "brands": "佳能,索尼",
+            "priceMin": 300,
+            "priceMax": 500,
+            "visible": "true",
+            "sold": "false",
+            "hasBodyImage": "true",
+            "hasSampleImage": "true",
+            "manualPrice": "true",
+            "tags": "新手推荐",
+        },
+    )
+
+    assert response.status_code == 200
+    body = response.json()
+    assert body["total"] == 1
+    assert [product["productId"] for product in body["products"]] == ["canon"]
+    assert body["products"][0]["hasBodyImage"] is True
+    assert body["products"][0]["hasSampleImage"] is True
+    assert body["products"][0]["manualPrice"] is True
+
+
+def test_admin_bulk_price_preview_apply_and_undo(
+    authenticated_client: TestClient,
+    repo: SQLiteShowcaseRepository,
+) -> None:
+    repo.upsert_product(_product_with("low", model="佳能a", brand="佳能", price=280))
+    repo.upsert_product(_product_with("mid", model="佳能ixus", brand="佳能", price=450))
+    repo.upsert_product(_product_with("high", model="索尼t", brand="索尼", price=900))
+
+    preview = authenticated_client.post(
+        "/api/admin/products/bulk-preview",
+        json={
+            "operation": "price",
+            "priceMode": "tiered_increment",
+            "filters": {"brands": ["佳能", "索尼"], "visible": True},
+        },
+    )
+
+    assert preview.status_code == 200
+    preview_body = preview.json()
+    assert preview_body["total"] == 3
+    assert [
+        (item["productId"], item["oldPrice"], item["newPrice"], item["delta"])
+        for item in preview_body["items"]
+    ] == [
+        ("high", 900, 1200, 300),
+        ("mid", 450, 620, 170),
+        ("low", 280, 380, 100),
+    ]
+
+    apply = authenticated_client.post(
+        "/api/admin/products/bulk-apply",
+        json={"previewId": preview_body["previewId"], "idempotencyKey": "price-once"},
+    )
+
+    assert apply.status_code == 200
+    operation_id = apply.json()["operationId"]
+    assert apply.json()["updatedCount"] == 3
+    assert repo.get_product("low").display_price == 380  # type: ignore[union-attr]
+    assert repo.get_product("mid").display_price == 620  # type: ignore[union-attr]
+    assert repo.get_product("high").display_price == 1200  # type: ignore[union-attr]
+
+    operations = authenticated_client.get("/api/admin/operations")
+    assert operations.status_code == 200
+    assert operations.json()["operations"][0]["operationId"] == operation_id
+    assert operations.json()["operations"][0]["updatedCount"] == 3
+
+    undo = authenticated_client.post(f"/api/admin/operations/{operation_id}/undo", json={"idempotencyKey": "undo-once"})
+
+    assert undo.status_code == 200
+    assert repo.get_product("low").display_price == 280  # type: ignore[union-attr]
+    assert repo.get_product("mid").display_price == 450  # type: ignore[union-attr]
+    assert repo.get_product("high").display_price == 900  # type: ignore[union-attr]
+
+
+def test_admin_bulk_hide_preview_and_apply_selected_products(
+    authenticated_client: TestClient,
+    repo: SQLiteShowcaseRepository,
+) -> None:
+    repo.upsert_product(_product_with("p1", model="佳能a", brand="佳能", price=300))
+    repo.upsert_product(_product_with("p2", model="索尼t", brand="索尼", price=500))
+
+    preview = authenticated_client.post(
+        "/api/admin/products/bulk-preview",
+        json={"operation": "hide", "productIds": ["p1"]},
+    )
+    apply = authenticated_client.post(
+        "/api/admin/products/bulk-apply",
+        json={"previewId": preview.json()["previewId"], "idempotencyKey": "hide-once"},
+    )
+
+    assert preview.status_code == 200
+    assert preview.json()["items"][0]["oldVisible"] is True
+    assert preview.json()["items"][0]["newVisible"] is False
+    assert apply.status_code == 200
+    assert repo.get_product("p1").visible is False  # type: ignore[union-attr]
+    assert repo.get_product("p2").visible is True  # type: ignore[union-attr]
+
+
+def test_admin_diagnostics_reports_abnormal_products(
+    authenticated_client: TestClient,
+    repo: SQLiteShowcaseRepository,
+) -> None:
+    repo.upsert_product(_product_with("zero", model="通用x1", brand="通用", price=0, copy=""))
+    repo.upsert_product(_product_with("dup-a", model="佳能ixus80", brand="佳能", price=500))
+    repo.upsert_product(_product_with("dup-b", model="佳能ixus80", brand="佳能", price=520))
+    repo.add_product_image("dup-body", "dup-a", "storage/showcase_images/dup-a/body.jpg", "body", 0, True)
+
+    response = authenticated_client.get("/api/admin/diagnostics")
+
+    assert response.status_code == 200
+    body = response.json()
+    assert body["counts"]["priceZero"] == 1
+    assert body["counts"]["genericBrand"] == 1
+    assert body["counts"]["missingCopy"] == 1
+    assert body["counts"]["duplicateModel"] == 2
+    assert "zero" in [item["productId"] for item in body["abnormalProducts"]]
+
+
+def test_admin_rejects_incomplete_database_only_backup(
+    authenticated_client: TestClient,
+    repo: SQLiteShowcaseRepository,
+) -> None:
+    repo.upsert_product(_product_with("p1", model="佳能a", brand="佳能", price=300))
+
+    response = authenticated_client.post("/api/admin/backups")
+
+    assert response.status_code == 410
+    assert "backup_showcase_db.bat" in response.json()["detail"]
+
+
+def test_admin_can_create_sample_folder_binding(
+    tmp_path: Path,
+    repo: SQLiteShowcaseRepository,
+) -> None:
+    repo.upsert_product(_product("p1", visible=True, display_price=500))
+    sample_root = tmp_path / "samples"
+    folder = sample_root / "佳能" / "ixus 80"
+    folder.mkdir(parents=True)
+    (folder / "01.jpg").write_bytes(b"sample")
+    authenticated_client = TestClient(create_showcase_app(repository=repo, sample_images_dir=sample_root))
+    authenticated_client.post("/api/admin/login", json={"password": "admin-pass"})
+    response = authenticated_client.post(
+        "/api/admin/sample-bindings",
+        json={
+            "productId": "p1",
+            "brand": "佳能",
+            "modelKey": "ixus80",
+            "folderPath": "佳能/ixus 80",
+        },
+    )
+
+    assert response.status_code == 200
+    assert repo.list_sample_folder_bindings()["product:p1"] == "佳能/ixus 80"
+
+
+def test_admin_sample_matching_center_reports_summary_and_searches_assets(
+    tmp_path: Path,
+    repo: SQLiteShowcaseRepository,
+) -> None:
+    sample_root = tmp_path / "ccdcpt"
+    model_dir = sample_root / "佳能" / "Canon 佳能DIGITAL IXUS 860 IS"
+    model_dir.mkdir(parents=True)
+    (model_dir / "01.jpg").write_bytes(b"sample-1")
+    repo.upsert_product(_product_with("canon", model="佳能 IXY 910 IS", brand="佳能", price=688))
+    repo.upsert_product(_product_with("nikon", model="尼康 s01", brand="尼康", price=588))
+    client = TestClient(create_showcase_app(repository=repo, sample_images_dir=sample_root))
+    assert client.post("/api/admin/login", json={"password": "admin-pass"}).status_code == 200
+
+    rebuild = client.post("/api/admin/sample-matching/rebuild")
+    summary = client.get("/api/admin/sample-matching/summary")
+    missing = client.get("/api/admin/sample-matching/products", params={"status": "missing"})
+    assets = client.get("/api/admin/sample-matching/assets", params={"query": "ixus"})
+
+    assert rebuild.status_code == 200
+    assert rebuild.json()["importResult"]["matchedProductCount"] == 1
+    assert summary.status_code == 200
+    assert summary.json()["totalProducts"] == 2
+    assert summary.json()["assetModelCount"] == 1
+    assert summary.json()["matchedProductCount"] == 1
+    assert summary.json()["missingProductCount"] == 1
+    assert summary.json()["coverageRate"] == 50.0
+    assert missing.status_code == 200
+    assert [item["productId"] for item in missing.json()["products"]] == ["nikon"]
+    assert assets.status_code == 200
+    assert assets.json()["assets"][0]["folderPath"] == "佳能/Canon 佳能DIGITAL IXUS 860 IS"
+
+
+def test_admin_sample_matching_bind_refreshes_product_sample_images(
+    tmp_path: Path,
+    repo: SQLiteShowcaseRepository,
+) -> None:
+    sample_root = tmp_path / "ccdcpt"
+    model_dir = sample_root / "索尼" / "索尼DSC-W530"
+    model_dir.mkdir(parents=True)
+    (model_dir / "01.jpg").write_bytes(b"sony-sample")
+    repo.upsert_product(_product_with("p1", model="索尼 w550", brand="索尼", price=488))
+    client = TestClient(create_showcase_app(repository=repo, sample_images_dir=sample_root))
+    assert client.post("/api/admin/login", json={"password": "admin-pass"}).status_code == 200
+
+    response = client.post(
+        "/api/admin/sample-matching/bind",
+        json={"productId": "p1", "folderPath": "索尼/索尼DSC-W530"},
+    )
+
+    assert response.status_code == 200
+    assert response.json()["bindingKey"] == "product:p1"
+    assert response.json()["importResult"]["matchedProductCount"] == 1
+    assert repo.list_product_images("p1")[0].image_path == "sample-images/索尼/索尼DSC-W530/01.jpg"
+
+
+def test_admin_sample_matching_groups_can_bulk_bind_candidate_products(
+    tmp_path: Path,
+    repo: SQLiteShowcaseRepository,
+) -> None:
+    sample_root = tmp_path / "ccdcpt"
+    model_dir = sample_root / "卡西欧" / "卡西欧EX-Z500"
+    model_dir.mkdir(parents=True)
+    (model_dir / "01.jpg").write_bytes(b"casio-sample")
+    repo.upsert_product(_product_with("p1", model="卡西欧z500", brand="卡西欧", price=488))
+    repo.upsert_product(_product_with("p2", model="卡西欧z500", brand="卡西欧", price=498))
+    client = TestClient(create_showcase_app(repository=repo, sample_images_dir=sample_root))
+    assert client.post("/api/admin/login", json={"password": "admin-pass"}).status_code == 200
+
+    groups = client.get("/api/admin/sample-matching/groups")
+
+    assert groups.status_code == 200
+    group = groups.json()["groups"][0]
+    assert group["model"] == "卡西欧z500"
+    assert group["folderPath"] == "卡西欧/卡西欧EX-Z500"
+    assert group["productCount"] == 2
+    assert set(group["productIds"]) == {"p1", "p2"}
+
+    bind = client.post(
+        "/api/admin/sample-matching/groups/bind",
+        json={"productIds": group["productIds"], "folderPath": group["folderPath"]},
+    )
+
+    assert bind.status_code == 200
+    assert bind.json()["boundProductCount"] == 2
+    assert repo.list_product_images("p1")[0].image_path == "sample-images/卡西欧/卡西欧EX-Z500/01.jpg"
+    assert repo.list_product_images("p2")[0].image_path == "sample-images/卡西欧/卡西欧EX-Z500/01.jpg"
+
+
+def test_admin_can_read_import_reports(
+    authenticated_client: TestClient,
+    repo: SQLiteShowcaseRepository,
+) -> None:
+    repo.save_import_log(
+        import_id="import-1",
+        source_path="manual/客户展示库存.xlsx",
+        imported_at="2026-08-15T10:00:00+08:00",
+        inserted_count=3,
+        updated_count=5,
+        missing_count=2,
+    )
+
+    response = authenticated_client.get("/api/admin/import-reports")
+
+    assert response.status_code == 200
+    assert response.json()["reports"][0] == {
+        "importId": "import-1",
+        "sourcePath": "manual/客户展示库存.xlsx",
+        "importedAt": "2026-08-15T10:00:00+08:00",
+        "insertedCount": 3,
+        "updatedCount": 5,
+        "missingCount": 2,
+        "unmatchedCount": 0,
+        "missingImageCount": 0,
+    }

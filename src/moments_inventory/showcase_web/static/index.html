@@ -1,0 +1,108 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>星星CCD相机小铺商品展示</title>
+  <link rel="icon" href="data:,">
+  <link rel="stylesheet" href="/static/showcase.css?v=20260921-optimization2">
+</head>
+<body>
+  <div id="siteWatermark" class="site-watermark" aria-hidden="true"></div>
+  <main class="page-shell">
+    <section id="accessPanel" class="access-panel" hidden>
+      <p class="eyebrow">Private Stock</p>
+      <h1>星星CCD相机小铺商品展示</h1>
+      <p id="accessStatement" class="statement-text"></p>
+      <form id="customerAccessForm" class="access-form">
+        <input type="hidden" name="username" autocomplete="username" value="xingxing-customer">
+        <label class="field">
+          <span>访问口令</span>
+          <input id="customerPasswordInput" type="password" autocomplete="current-password" placeholder="输入本周口令">
+        </label>
+        <button class="access-button" type="submit">进入库存</button>
+        <p id="customerAccessError" class="access-error" hidden></p>
+      </form>
+      <section class="partner-panel">
+        <h2>当前授权合作方</h2>
+        <div id="authorizedPartners" class="partner-list"></div>
+      </section>
+    </section>
+
+    <section id="inventoryApp" hidden>
+      <header class="inventory-header">
+        <div>
+          <p class="eyebrow">Xingxing CCD Stock</p>
+          <h1>星星✨|CCD📷库存查看</h1>
+          <p id="inventoryUpdatedAt" class="statement-text"></p>
+        </div>
+        <p id="resultCount" class="result-count">0 台</p>
+      </header>
+
+      <section class="toolbar" aria-label="库存筛选">
+        <label class="field field-search">
+          <span>搜索</span>
+          <input id="searchInput" type="search" placeholder="型号、品牌、文案关键词">
+        </label>
+        <label class="field">
+          <span>价格区间</span>
+          <select id="priceFilter">
+            <option value="">全部价格</option>
+            <option value="0-99">100 以下</option>
+            <option value="100-199">100-199</option>
+            <option value="200-299">200-299</option>
+            <option value="300-499">300-499</option>
+            <option value="500-799">500-799</option>
+            <option value="800-999999">800 以上</option>
+          </select>
+        </label>
+        <label class="field">
+          <span>排序</span>
+          <select id="sortFilter">
+            <option value="latest">最新</option>
+            <option value="price_asc">价格低到高</option>
+            <option value="price_desc">价格高到低</option>
+          </select>
+        </label>
+        <button id="clearFiltersButton" class="clear-filters-button" type="button">清空筛选</button>
+      </section>
+
+      <details class="quick-filter-panel" aria-label="快速筛选">
+        <summary>品牌、特点与价位</summary>
+        <div class="quick-filter-groups">
+          <section class="quick-filter-group" aria-label="品牌筛选">
+            <h3 class="quick-filter-group-title">品牌</h3>
+            <div id="brandFilterButtons" class="quick-filter-row brand-filter-row"></div>
+          </section>
+          <section class="quick-filter-group" aria-label="特点筛选">
+            <h3 class="quick-filter-group-title">特点</h3>
+            <div id="tagFilterButtons" class="quick-filter-row"></div>
+          </section>
+          <section class="quick-filter-group" aria-label="价位筛选">
+            <h3 class="quick-filter-group-title">价位</h3>
+            <div id="pricePresetButtons" class="quick-filter-row"></div>
+          </section>
+        </div>
+      </details>
+      <div id="activeFilterSummary" class="active-filter-summary" hidden></div>
+
+      <details class="shop-information"><summary>了解店铺 · 买前流程 · 实景相册</summary>
+      <section id="statementPanel" class="statement-panel"></section>
+
+      <section id="purchaseSteps" class="purchase-steps-panel" aria-label="买前流程"></section>
+
+      <section id="storeGallery" class="store-gallery" aria-label="店铺图片橱窗"></section>
+
+      <section id="featuredSections" class="featured-sections" aria-label="主推专区"></section>
+
+      </details>
+      <section id="listError" class="empty-state" role="alert" hidden>库存加载失败，请检查网络 <button id="retryProductsButton" type="button">重试</button></section>
+      <section id="productGrid" class="product-grid" aria-live="polite"></section>
+      <button id="loadMoreButton" class="load-more-button" type="button" hidden>显示更多</button>
+      <section id="emptyState" class="empty-state" hidden>没有匹配的库存</section>
+    </section>
+  </main>
+  <script src="/static/shared/product-utils.js?v=20260921"></script>
+  <script src="/static/showcase.js?v=20260921-optimization2"></script>
+</body>
+</html>

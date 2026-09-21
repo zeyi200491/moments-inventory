@@ -18,6 +18,7 @@ frontend/workbench/node_modules/
 .claude/
 .codex/
 .playwright-mcp/
+.playwright-cli/
 .test-tmp/
 .probe-temp-hidden/
 probe_temp_visible/
@@ -34,6 +35,10 @@ config/data/
 config/output*/
 data/
 media/
+manual/
+site_dist/
+showcase_assets/*
+!showcase_assets/.gitkeep
 docs/superpowers/
 
 # Test / probe temp dirs
