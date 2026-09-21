@@ -1,7 +1,7 @@
 import json
 from pathlib import Path
 
-from moments_inventory.ai_kefu.products import read_xlsx_rows_from_bytes
+from moments_inventory.xlsx_reader import read_xlsx_rows_from_bytes
 from moments_inventory.exporter import _write_workbook
 from moments_inventory.showcase import build_showcase_site, decrypt_showcase_payload
 from moments_inventory.showcase import SHOWCASE_HEADERS, merge_showcase_workbook
