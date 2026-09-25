@@ -5,10 +5,12 @@ from pathlib import Path
 from io import BytesIO
 
 import pytest
+from fastapi import HTTPException
 from fastapi.testclient import TestClient
 
 from moments_inventory.showcase_web.app import create_showcase_app
 from moments_inventory.showcase_web.auth import hash_password
+from moments_inventory.showcase_web import bulk_service
 from moments_inventory.showcase_web.models import ShowcaseProduct, ShowcaseSection
 from moments_inventory.showcase_web.repository import SQLiteShowcaseRepository
 from PIL import Image
@@ -1006,6 +1008,80 @@ def test_admin_bulk_hide_preview_and_apply_selected_products(
     assert apply.status_code == 200
     assert repo.get_product("p1").visible is False  # type: ignore[union-attr]
     assert repo.get_product("p2").visible is True  # type: ignore[union-attr]
+
+
+def test_admin_can_export_complete_bulk_preview_csv(
+    authenticated_client: TestClient,
+    repo: SQLiteShowcaseRepository,
+) -> None:
+    for index in range(205):
+        repo.upsert_product(_product_with(
+            f"p-{index}",
+            model=f"导出商品{index}",
+            brand="佳能",
+            price=200 + index,
+        ))
+
+    preview_response = authenticated_client.post(
+        "/api/admin/products/bulk-preview",
+        json={
+            "scope": "all",
+            "operation": "price",
+            "priceMode": "increment",
+            "amount": 30,
+            "filters": {"visible": True, "sold": False},
+        },
+    )
+
+    assert preview_response.status_code == 200
+    preview = preview_response.json()
+    assert preview["matchedCount"] == 205
+    assert preview["displayedCount"] == 200
+    assert preview["truncated"] is True
+    assert len(preview["items"]) == 200
+
+    response = authenticated_client.get(
+        f"/api/admin/products/bulk-preview/{preview['previewId']}/export"
+    )
+
+    assert response.status_code == 200
+    assert response.headers["content-type"].startswith("text/csv")
+    assert "attachment" in response.headers["content-disposition"]
+    assert response.content.startswith(b"\xef\xbb\xbf")
+    assert response.text.count("\n") == 206
+    assert "p-204" in response.text
+    assert (
+        "商品ID,型号,品牌,导入原价,当前展示价,新展示价,变化金额,是否修改,"
+        "跳过原因,展示状态,已售状态"
+    ) in response.text
+
+
+def test_bulk_preview_snapshot_is_private_to_its_owner(
+    repo: SQLiteShowcaseRepository,
+) -> None:
+    preview_id, _ = bulk_service.save_preview(repo, "owner-a", {}, [{"productId": "p1"}])
+
+    with pytest.raises(HTTPException) as error:
+        bulk_service.load_preview_items(repo, "owner-b", preview_id)
+
+    assert getattr(error.value, "status_code", None) == 404
+
+
+def test_bulk_preview_snapshot_rejects_expired_preview(
+    repo: SQLiteShowcaseRepository,
+) -> None:
+    preview_id, _ = bulk_service.save_preview(repo, "owner-a", {}, [{"productId": "p1"}])
+    with repo._lock, repo._get_connection() as connection:
+        connection.execute(
+            "UPDATE showcase_bulk_previews SET expires_at=? WHERE preview_id=?",
+            ("2000-01-01T00:00:00+00:00", preview_id),
+        )
+
+    with pytest.raises(HTTPException) as error:
+        bulk_service.load_preview_items(repo, "owner-a", preview_id)
+
+    assert getattr(error.value, "status_code", None) == 409
+    assert "过期" in str(getattr(error.value, "detail", ""))
 
 
 def test_admin_diagnostics_reports_abnormal_products(

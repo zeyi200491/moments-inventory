@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import csv
+import io
 from dataclasses import replace
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
@@ -1356,6 +1358,49 @@ def create_admin_router(
             "truncated": len(displayed_items) < preview.total,
             "items": displayed_items,
         })
+
+    @router.get(
+        "/products/bulk-preview/{preview_id}/export",
+        dependencies=[Depends(require_admin)],
+    )
+    def export_admin_bulk_preview(
+        preview_id: str,
+        showcase_admin_session: str = Cookie(default=""),
+        repo: SQLiteShowcaseRepository = Depends(get_repository),
+    ) -> Response:
+        items = bulk_service.load_preview_items(
+            repo, showcase_admin_session, preview_id,
+        )
+        output = io.StringIO()
+        writer = csv.writer(output, lineterminator="\n")
+        writer.writerow([
+            "商品ID", "型号", "品牌", "导入原价", "当前展示价", "新展示价",
+            "变化金额", "是否修改", "跳过原因", "展示状态", "已售状态",
+        ])
+        for item in items:
+            writer.writerow([
+                item["productId"],
+                item["model"],
+                item["brand"],
+                item["sourcePrice"],
+                item["oldPrice"],
+                item["newPrice"],
+                item["delta"],
+                "是" if item["changed"] else "否",
+                item["skippedReason"],
+                "展示" if item["oldVisible"] else "隐藏",
+                "已售" if item["sold"] else "未售",
+            ])
+        content = "\ufeff" + output.getvalue()
+        return Response(
+            content=content.encode("utf-8"),
+            media_type="text/csv; charset=utf-8",
+            headers={
+                "Content-Disposition": (
+                    f'attachment; filename="ccd-bulk-preview-{preview_id}.csv"'
+                ),
+            },
+        )
 
     @router.post(
         "/products/bulk-apply",

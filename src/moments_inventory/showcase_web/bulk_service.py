@@ -20,6 +20,22 @@ def save_preview(repo, owner, request, items):
     return preview_id, expires
 
 
+def load_preview_items(repo, owner, preview_id):
+    """读取属于当前管理员会话、且仍在有效期内的完整预览快照。"""
+    now = datetime.now(timezone.utc).isoformat()
+    with repo._lock, repo._get_connection() as conn:
+        row = conn.execute(
+            '''SELECT owner, expires_at, items_json
+               FROM showcase_bulk_previews WHERE preview_id=?''',
+            (preview_id,),
+        ).fetchone()
+    if row is None or row[0] != owner:
+        raise HTTPException(404, '预览不存在')
+    if row[1] < now:
+        raise HTTPException(409, '预览已过期，请重新预览')
+    return json.loads(row[2])
+
+
 def _cached(conn, owner, key, fingerprint):
     row = conn.execute('SELECT * FROM showcase_idempotency WHERE idempotency_key=?', (key,)).fetchone()
     if row is None:
