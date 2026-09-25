@@ -588,6 +588,34 @@ def test_admin_bulk_selected_scope_requires_product_reference(
     assert response.status_code == 422
 
 
+@pytest.mark.parametrize(
+    ("reference_field", "references"),
+    [
+        ("productIds", [""]),
+        ("publicIds", ["   "]),
+    ],
+)
+def test_admin_bulk_selected_scope_rejects_blank_product_references(
+    authenticated_client: TestClient,
+    repo: SQLiteShowcaseRepository,
+    reference_field: str,
+    references: list[str],
+) -> None:
+    repo.upsert_product(_product_with("existing", model="佳能a", brand="佳能", price=300))
+
+    response = authenticated_client.post(
+        "/api/admin/products/bulk-preview",
+        json={
+            "scope": "selected",
+            "operation": "hide",
+            reference_field: references,
+        },
+    )
+
+    assert response.status_code == 422
+    assert "items" not in response.json()
+
+
 def test_admin_bulk_all_scope_accepts_visibility_filters(
     authenticated_client: TestClient,
     repo: SQLiteShowcaseRepository,

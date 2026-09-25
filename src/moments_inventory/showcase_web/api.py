@@ -10,7 +10,7 @@ import uuid
 
 from fastapi import APIRouter, Cookie, Depends, File, Form, HTTPException, UploadFile
 from fastapi import Response
-from pydantic import BaseModel, Field, model_validator
+from pydantic import BaseModel, Field, field_validator, model_validator
 from PIL import Image, UnidentifiedImageError
 from moments_inventory.showcase_web import bulk_service
 
@@ -449,6 +449,14 @@ class AdminBulkOperationRequest(BaseModel):
     productIds: list[str] = Field(default_factory=list, max_length=5000)
     publicIds: list[str] = Field(default_factory=list, max_length=5000)
     filters: AdminBulkProductFilters = Field(default_factory=AdminBulkProductFilters)
+
+    @field_validator("productIds", "publicIds")
+    @classmethod
+    def normalize_product_references(cls, references: list[str]) -> list[str]:
+        normalized = [reference.strip() for reference in references]
+        if any(not reference for reference in normalized):
+            raise ValueError("商品引用不能为空")
+        return normalized
 
     @model_validator(mode="after")
     def validate_scope_and_price(self) -> Self:
