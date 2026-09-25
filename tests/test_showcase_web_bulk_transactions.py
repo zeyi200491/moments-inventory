@@ -8,7 +8,7 @@ def test_bulk_applies_entire_snapshot_and_retries_once(repo, authenticated_clien
     for index in range(201):
         repo.upsert_product(_product(str(index), visible=True, display_price=500))
     preview = authenticated_client.post('/api/admin/products/bulk-preview', json={
-        'operation': 'price', 'amount': 10,
+        'scope': 'all', 'operation': 'price', 'amount': 10,
     }).json()
     assert preview['total'] == 201
     assert len(preview['items']) == 200
@@ -26,7 +26,7 @@ def test_bulk_conflict_changes_nothing(repo, authenticated_client):
     for key in ('a', 'b'):
         repo.upsert_product(_product(key, visible=True, display_price=500))
     preview = authenticated_client.post('/api/admin/products/bulk-preview', json={
-        'operation': 'price', 'amount': 10,
+        'scope': 'all', 'operation': 'price', 'amount': 10,
     }).json()
     repo.upsert_product(replace(repo.get_product('b'), display_price=999))
     result = authenticated_client.post('/api/admin/products/bulk-apply', json={
@@ -40,7 +40,7 @@ def test_bulk_conflict_changes_nothing(repo, authenticated_client):
 def test_undo_refuses_overwriting_later_edit(repo, authenticated_client):
     repo.upsert_product(_product('a', visible=True, display_price=500))
     preview = authenticated_client.post('/api/admin/products/bulk-preview', json={
-        'operation': 'price', 'amount': 10,
+        'scope': 'all', 'operation': 'price', 'amount': 10,
     }).json()
     result = authenticated_client.post('/api/admin/products/bulk-apply', json={
         'previewId': preview['previewId'], 'idempotencyKey': 'apply',
@@ -71,7 +71,7 @@ def test_bulk_undo_restores_import_override_semantics(repo, authenticated_client
                        visibility_override=None, override_origin='')
     repo.upsert_product(original)
     preview = authenticated_client.post('/api/admin/products/bulk-preview', json={
-        'operation': 'price', 'amount': 10,
+        'scope': 'all', 'operation': 'price', 'amount': 10,
     }).json()
     applied = authenticated_client.post('/api/admin/products/bulk-apply', json={
         'previewId': preview['previewId'], 'idempotencyKey': 'apply-override',
@@ -92,7 +92,7 @@ def test_bulk_database_failure_rolls_back_products_and_log(repo, authenticated_c
     client = TestClient(authenticated_client.app, raise_server_exceptions=False)
     assert client.post('/api/admin/login', json={'password': 'admin-pass'}).status_code == 200
     preview = client.post('/api/admin/products/bulk-preview', json={
-        'operation': 'price', 'amount': 10,
+        'scope': 'all', 'operation': 'price', 'amount': 10,
     }).json()
     with repo._get_connection() as conn:
         conn.execute("""create trigger reject_second_product before update on showcase_products

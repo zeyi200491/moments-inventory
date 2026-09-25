@@ -3,13 +3,14 @@ from __future__ import annotations
 from dataclasses import replace
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
+from typing import Self
 import os
 import secrets
 import uuid
 
 from fastapi import APIRouter, Cookie, Depends, File, Form, HTTPException, UploadFile
 from fastapi import Response
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, model_validator
 from PIL import Image, UnidentifiedImageError
 from moments_inventory.showcase_web import bulk_service
 
@@ -415,14 +416,52 @@ class AdminBulkProductFilters(BaseModel):
     importId: str = Field(default="", max_length=200)
     reviewState: str = Field(default="", max_length=80)
 
+    def has_narrowing_constraint(self) -> bool:
+        return any((
+            self.query.strip(),
+            self.model.strip(),
+            self.brand.strip(),
+            any(brand.strip() for brand in self.brands),
+            self.priceMin is not None,
+            self.priceMax is not None,
+            self.hasBodyImage is not None,
+            self.hasSampleImage is not None,
+            self.manualPrice is not None,
+            any(tag.strip() for tag in self.tags),
+            self.sectionId.strip(),
+            self.updatedAfter.strip(),
+            self.importId.strip(),
+            self.reviewState.strip(),
+        ))
+
+    @model_validator(mode="after")
+    def validate_price_range(self) -> Self:
+        if self.priceMin is not None and self.priceMax is not None and self.priceMin > self.priceMax:
+            raise ValueError("最低价不能高于最高价")
+        return self
+
 
 class AdminBulkOperationRequest(BaseModel):
+    scope: str = Field(pattern="^(selected|filtered|all)$")
     operation: str = Field(pattern="^(price|hide|show)$")
-    priceMode: str = Field(default="increment", pattern="^(increment|set|fixed_final|tiered_increment)$")
+    priceMode: str = Field(default="increment", pattern="^(increment|decrement|fixed_final)$")
     amount: int = Field(default=0, ge=0)
     productIds: list[str] = Field(default_factory=list, max_length=5000)
     publicIds: list[str] = Field(default_factory=list, max_length=5000)
     filters: AdminBulkProductFilters = Field(default_factory=AdminBulkProductFilters)
+
+    @model_validator(mode="after")
+    def validate_scope_and_price(self) -> Self:
+        has_references = bool(self.productIds or self.publicIds)
+        if self.scope == "selected" and not has_references:
+            raise ValueError("选中商品范围必须至少提交一个商品引用")
+        if self.scope != "selected" and has_references:
+            raise ValueError("只有选中商品范围可以提交商品引用")
+        if self.scope == "filtered" and not self.filters.has_narrowing_constraint():
+            raise ValueError("筛选范围必须包含收窄条件；如需处理全部展示中未售商品，请选择全部库存")
+        if self.operation == "price" and self.priceMode in {"increment", "decrement"} and self.amount <= 0:
+            raise ValueError("加减价金额必须大于 0")
+        return self
 
 
 class AdminBulkPreviewItemResponse(BaseModel):
@@ -2563,16 +2602,10 @@ def _bulk_preview_response(
 
 
 def _bulk_new_price(old_price: int, request: AdminBulkOperationRequest) -> int:
-    if request.priceMode in {"set", "fixed_final"}:
+    if request.priceMode == "fixed_final":
         return request.amount
-    if request.priceMode == "tiered_increment":
-        if old_price < 300:
-            return old_price + 100
-        if old_price < 500:
-            return old_price + 170
-        if old_price < 800:
-            return old_price + 210
-        return old_price + 300
+    if request.priceMode == "decrement":
+        return max(0, old_price - request.amount)
     return old_price + request.amount
 
 
@@ -2581,10 +2614,10 @@ def _bulk_operation_summary(request: AdminBulkOperationRequest, updated_count: i
         return f"批量隐藏 {updated_count} 台商品"
     if request.operation == "show":
         return f"批量显示 {updated_count} 台商品"
-    if request.priceMode == "tiered_increment":
-        return f"按价格段批量加价 {updated_count} 台商品"
-    if request.priceMode in {"set", "fixed_final"}:
+    if request.priceMode == "fixed_final":
         return f"批量改为固定价 {request.amount} 元，影响 {updated_count} 台"
+    if request.priceMode == "decrement":
+        return f"批量减价 {request.amount} 元，影响 {updated_count} 台"
     return f"批量加价 {request.amount} 元，影响 {updated_count} 台"
 
 

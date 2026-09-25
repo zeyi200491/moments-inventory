@@ -561,6 +561,113 @@ def test_admin_products_support_server_side_filters(
     assert body["products"][0]["manualPrice"] is True
 
 
+def test_admin_bulk_price_preview_requires_explicit_scope(
+    authenticated_client: TestClient,
+) -> None:
+    response = authenticated_client.post(
+        "/api/admin/products/bulk-preview",
+        json={"operation": "price", "priceMode": "increment", "amount": 30},
+    )
+
+    assert response.status_code == 422
+
+
+def test_admin_bulk_selected_scope_requires_product_reference(
+    authenticated_client: TestClient,
+) -> None:
+    response = authenticated_client.post(
+        "/api/admin/products/bulk-preview",
+        json={
+            "scope": "selected",
+            "operation": "hide",
+            "productIds": [],
+            "publicIds": [],
+        },
+    )
+
+    assert response.status_code == 422
+
+
+def test_admin_bulk_all_scope_accepts_visibility_filters(
+    authenticated_client: TestClient,
+    repo: SQLiteShowcaseRepository,
+) -> None:
+    repo.upsert_product(_product_with("visible", model="佳能a", brand="佳能", price=300))
+    repo.upsert_product(_product_with("hidden", model="索尼t", brand="索尼", price=500, visible=False))
+    repo.upsert_product(_product_with("sold", model="富士f50", brand="富士", price=700, sold=True))
+
+    response = authenticated_client.post(
+        "/api/admin/products/bulk-preview",
+        json={
+            "scope": "all",
+            "operation": "price",
+            "priceMode": "increment",
+            "amount": 30,
+            "filters": {"visible": True, "sold": False},
+        },
+    )
+
+    assert response.status_code == 200
+    assert response.json()["total"] == 1
+    assert response.json()["items"][0]["newPrice"] == 330
+
+
+def test_admin_bulk_filtered_scope_rejects_inverted_price_range(
+    authenticated_client: TestClient,
+) -> None:
+    response = authenticated_client.post(
+        "/api/admin/products/bulk-preview",
+        json={
+            "scope": "filtered",
+            "operation": "price",
+            "priceMode": "increment",
+            "amount": 30,
+            "filters": {"priceMin": 301, "priceMax": 300},
+        },
+    )
+
+    assert response.status_code == 422
+
+
+def test_admin_bulk_filtered_price_increment_requires_positive_amount(
+    authenticated_client: TestClient,
+) -> None:
+    response = authenticated_client.post(
+        "/api/admin/products/bulk-preview",
+        json={
+            "scope": "filtered",
+            "operation": "price",
+            "priceMode": "increment",
+            "amount": 0,
+            "filters": {"priceMax": 200},
+        },
+    )
+
+    assert response.status_code == 422
+
+
+def test_admin_bulk_price_decrement_preview(
+    authenticated_client: TestClient,
+    repo: SQLiteShowcaseRepository,
+) -> None:
+    repo.upsert_product(_product_with("p1", model="佳能a", brand="佳能", price=300))
+
+    response = authenticated_client.post(
+        "/api/admin/products/bulk-preview",
+        json={
+            "scope": "selected",
+            "operation": "price",
+            "priceMode": "decrement",
+            "amount": 30,
+            "productIds": ["p1"],
+        },
+    )
+
+    assert response.status_code == 200
+    assert response.json()["items"][0]["newPrice"] == 270
+    assert response.json()["items"][0]["delta"] == -30
+
+
 def test_admin_bulk_price_preview_apply_and_undo(
     authenticated_client: TestClient,
     repo: SQLiteShowcaseRepository,
@@ -572,22 +679,22 @@ def test_admin_bulk_price_preview_apply_and_undo(
     preview = authenticated_client.post(
         "/api/admin/products/bulk-preview",
         json={
+            "scope": "filtered",
             "operation": "price",
-            "priceMode": "tiered_increment",
-            "filters": {"brands": ["佳能", "索尼"], "visible": True},
+            "priceMode": "increment",
+            "amount": 30,
+            "filters": {"priceMin": 300, "priceMax": 800, "visible": True},
         },
     )
 
     assert preview.status_code == 200
     preview_body = preview.json()
-    assert preview_body["total"] == 3
+    assert preview_body["total"] == 1
     assert [
         (item["productId"], item["oldPrice"], item["newPrice"], item["delta"])
         for item in preview_body["items"]
     ] == [
-        ("high", 900, 1200, 300),
-        ("mid", 450, 620, 170),
-        ("low", 280, 380, 100),
+        ("mid", 450, 480, 30),
     ]
 
     apply = authenticated_client.post(
@@ -597,15 +704,15 @@ def test_admin_bulk_price_preview_apply_and_undo(
 
     assert apply.status_code == 200
     operation_id = apply.json()["operationId"]
-    assert apply.json()["updatedCount"] == 3
-    assert repo.get_product("low").display_price == 380  # type: ignore[union-attr]
-    assert repo.get_product("mid").display_price == 620  # type: ignore[union-attr]
-    assert repo.get_product("high").display_price == 1200  # type: ignore[union-attr]
+    assert apply.json()["updatedCount"] == 1
+    assert repo.get_product("low").display_price == 280  # type: ignore[union-attr]
+    assert repo.get_product("mid").display_price == 480  # type: ignore[union-attr]
+    assert repo.get_product("high").display_price == 900  # type: ignore[union-attr]
 
     operations = authenticated_client.get("/api/admin/operations")
     assert operations.status_code == 200
     assert operations.json()["operations"][0]["operationId"] == operation_id
-    assert operations.json()["operations"][0]["updatedCount"] == 3
+    assert operations.json()["operations"][0]["updatedCount"] == 1
 
     undo = authenticated_client.post(f"/api/admin/operations/{operation_id}/undo", json={"idempotencyKey": "undo-once"})
 
@@ -624,7 +731,7 @@ def test_admin_bulk_hide_preview_and_apply_selected_products(
 
     preview = authenticated_client.post(
         "/api/admin/products/bulk-preview",
-        json={"operation": "hide", "productIds": ["p1"]},
+        json={"scope": "selected", "operation": "hide", "productIds": ["p1"]},
     )
     apply = authenticated_client.post(
         "/api/admin/products/bulk-apply",
