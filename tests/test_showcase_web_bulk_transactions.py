@@ -139,7 +139,7 @@ def test_bulk_executes_only_changed_items_and_records_human_readable_summary(
     assert applied.status_code == 200, applied.text
     assert applied.json()['updatedCount'] == 1
     operations = authenticated_client.get('/api/admin/operations').json()['operations']
-    assert operations[0]['summary'] == '全部库存 · 300 元以内 · 固定为 230 元 · 修改 1 台'
+    assert operations[0]['summary'] == '全部库存 · 300元以内 · 固定为230元 · 修改 1 台'
     assert 'scope=all' in operations[0]['filterText']
     assert 'priceMax=300' in operations[0]['filterText']
     assert 'visible=true' in operations[0]['filterText']
@@ -226,9 +226,9 @@ def test_operation_list_offers_undo_for_every_non_undo_operation():
 @pytest.mark.parametrize(
     ('price_min', 'price_max', 'expected'),
     [
-        (None, 200, '200 元以内'),
+        (None, 200, '200元以内'),
         (201, 300, '201～300 元'),
-        (801, None, '801 元以上'),
+        (801, None, '801元以上'),
         (None, None, '全部价格'),
     ],
 )
@@ -240,6 +240,27 @@ def test_bulk_price_range_text_is_human_readable(price_min, price_max, expected)
 
     assert hasattr(showcase_api, '_bulk_price_range_text')
     assert showcase_api._bulk_price_range_text(filters) == expected
+
+
+@pytest.mark.parametrize(
+    ('price_mode', 'amount', 'action_text'),
+    [
+        ('fixed_final', 230, '固定为230元'),
+        ('decrement', 10, '减价10元'),
+        ('increment', 10, '加价10元'),
+    ],
+)
+def test_bulk_price_action_text_has_no_extra_spaces(price_mode, amount, action_text):
+    request = showcase_api.AdminBulkOperationRequest(
+        scope='all',
+        operation='price',
+        priceMode=price_mode,
+        amount=amount,
+    )
+
+    assert showcase_api._bulk_operation_summary(request, 1) == (
+        f'全部库存 · 全部价格 · {action_text} · 修改 1 台'
+    )
 
 
 def test_manual_override_can_reset_to_source_and_missing_items_are_filterable(repo, authenticated_client):
