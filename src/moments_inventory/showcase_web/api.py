@@ -478,6 +478,11 @@ class AdminBulkOperationRequest(BaseModel):
 
     @model_validator(mode="after")
     def validate_scope_and_price(self) -> Self:
+        if self.operation == "price":
+            if "visible" not in self.filters.model_fields_set:
+                self.filters.visible = True
+            if "sold" not in self.filters.model_fields_set:
+                self.filters.sold = False
         has_references = bool(self.productIds or self.publicIds)
         if self.scope == "selected" and not has_references:
             raise ValueError("选中商品范围必须至少提交一个商品引用")

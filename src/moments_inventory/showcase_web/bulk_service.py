@@ -110,7 +110,7 @@ def execute(repo, owner, key, reference, *, undo=False):
         for start in range(0, len(product_ids), 500):
             chunk = product_ids[start : start + 500]
             placeholders = ','.join('?' for _ in chunk)
-            rows = conn.execute(f'''SELECT product_id,row_version,sold,visible,price_override,
+            rows = conn.execute(f'''SELECT product_id,row_version,sold,visible,display_price,price_override,
                 visibility_override,override_origin FROM showcase_products
                 WHERE product_id IN ({placeholders})''', chunk).fetchall()
             current_products.update({row['product_id']: row for row in rows})
@@ -118,7 +118,9 @@ def execute(repo, owner, key, reference, *, undo=False):
             product = current_products.get(item['productId'])
             if product is None or product['row_version'] != item['rowVersion']:
                 raise HTTPException(409, '商品已被修改，请重新预览')
-            if product['sold'] and not product['visible'] and item['newVisible']:
+            if undo and not _matches_undo_snapshot(product, item):
+                raise HTTPException(409, '商品已被修改，请重新预览')
+            if not undo and product['sold'] and not product['visible'] and item['newVisible']:
                 raise HTTPException(409, '已售商品不能直接重新展示')
             if not undo:
                 item['oldPriceOverride'] = product['price_override']
@@ -164,3 +166,14 @@ def execute(repo, owner, key, reference, *, undo=False):
         result = dict(ok=True, operationId=operation_id, updatedCount=len(changed))
         conn.execute('INSERT INTO showcase_idempotency VALUES (?,?,?,?)', (key, owner, fingerprint, json.dumps(result)))
         return result
+
+
+def _matches_undo_snapshot(product, item):
+    """撤销只能还原仍精确处于原操作结果状态的商品。"""
+    return (
+        product['display_price'] == item['oldPrice']
+        and bool(product['visible']) == bool(item['oldVisible'])
+        and product['price_override'] == item.get('oldPriceOverride')
+        and product['visibility_override'] == item.get('oldVisibilityOverride')
+        and (product['override_origin'] or '') == item.get('oldOverrideOrigin', '')
+    )

@@ -212,7 +212,7 @@ def test_bulk_hide_can_be_undone_and_restores_visibility(repo, authenticated_cli
     assert undo_log[2] == applied.json()['operationId']
 
 
-def test_bulk_undo_rejects_showing_sold_product_without_partial_updates(
+def test_bulk_undo_restores_originally_visible_sold_product(
     repo, authenticated_client,
 ):
     repo.upsert_product(_product('a-unsold', visible=True, display_price=200))
@@ -235,15 +235,85 @@ def test_bulk_undo_rejects_showing_sold_product_without_partial_updates(
 
     undone = authenticated_client.post(
         '/api/admin/operations/' + applied.json()['operationId'] + '/undo',
-        json={'idempotencyKey': 'reject-undo-show-sold'},
+        json={'idempotencyKey': 'restore-undo-show-sold'},
+    )
+
+    assert undone.status_code == 200, undone.text
+    assert undone.json()['updatedCount'] == 2
+    assert repo.get_product('a-unsold').visible is True
+    assert repo.get_product('z-sold').visible is True
+    operations = repo.list_admin_operations()
+    assert len(operations) == 2
+    assert operations[0].operation_type == 'undo'
+    assert operations[1].operation_id == applied.json()['operationId']
+    assert operations[1].undone_at
+
+
+def test_bulk_undo_hide_rejects_concurrent_change_without_partial_updates(
+    repo, authenticated_client,
+):
+    repo.upsert_product(_product('a-unchanged', visible=True, display_price=200))
+    repo.upsert_product(replace(
+        _product('z-concurrent-sold', visible=True, display_price=200), sold=True,
+    ))
+    preview = authenticated_client.post('/api/admin/products/bulk-preview', json={
+        'scope': 'selected',
+        'operation': 'hide',
+        'productIds': ['a-unchanged', 'z-concurrent-sold'],
+    }).json()
+    applied = authenticated_client.post('/api/admin/products/bulk-apply', json={
+        'previewId': preview['previewId'],
+        'idempotencyKey': 'hide-before-concurrent-change',
+    }).json()
+    repo.upsert_product(replace(
+        repo.get_product('z-concurrent-sold'), display_price=999,
+    ))
+
+    undone = authenticated_client.post(
+        '/api/admin/operations/' + applied['operationId'] + '/undo',
+        json={'idempotencyKey': 'reject-concurrent-undo'},
     )
 
     assert undone.status_code == 409
-    assert repo.get_product('a-unsold').visible is False
-    assert repo.get_product('z-sold').visible is False
+    assert repo.get_product('a-unchanged').visible is False
+    assert repo.get_product('z-concurrent-sold').visible is False
+    assert repo.get_product('z-concurrent-sold').display_price == 999
     operations = repo.list_admin_operations()
     assert len(operations) == 1
-    assert operations[0].operation_id == applied.json()['operationId']
+    assert operations[0].operation_id == applied['operationId']
+    assert operations[0].undone_at == ''
+
+
+def test_bulk_undo_hide_requires_exact_snapshot_without_partial_updates(
+    repo, authenticated_client,
+):
+    for product_id in ('a-exact', 'z-tampered'):
+        repo.upsert_product(_product(product_id, visible=True, display_price=200))
+    preview = authenticated_client.post('/api/admin/products/bulk-preview', json={
+        'scope': 'selected',
+        'operation': 'hide',
+        'productIds': ['a-exact', 'z-tampered'],
+    }).json()
+    applied = authenticated_client.post('/api/admin/products/bulk-apply', json={
+        'previewId': preview['previewId'],
+        'idempotencyKey': 'hide-before-snapshot-tamper',
+    }).json()
+    with repo._get_connection() as conn:
+        conn.execute(
+            "UPDATE showcase_products SET override_origin='external' WHERE product_id=?",
+            ('z-tampered',),
+        )
+
+    undone = authenticated_client.post(
+        '/api/admin/operations/' + applied['operationId'] + '/undo',
+        json={'idempotencyKey': 'reject-snapshot-tamper'},
+    )
+
+    assert undone.status_code == 409
+    assert repo.get_product('a-exact').visible is False
+    assert repo.get_product('z-tampered').visible is False
+    operations = repo.list_admin_operations()
+    assert len(operations) == 1
     assert operations[0].undone_at == ''
 
 

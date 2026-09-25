@@ -257,11 +257,11 @@ test('批量预览渲染统计、跳过原因和完整导出入口', async () =>
   c.fetch = async (url) => {
     assert.equal(url, '/api/admin/products/bulk-preview');
     return {ok:true,json:async () => ({
-      previewId:'preview-1', matchedCount:205, changedCount:202, unchangedCount:1,
+      previewId:'preview-1', expiresAt:'2026-09-25T08:30:00.000Z', operation:'price', matchedCount:205, changedCount:202, unchangedCount:1,
       skippedCount:2, skipReasons:{'已售':2},
       priceStats:{minimum:130,maximum:230,totalDelta:6060},
       displayedCount:200,truncated:true,
-      items:[{model:'A',brand:'佳能',sourcePrice:90,oldPrice:100,newPrice:130,delta:30,oldVisible:true,newVisible:true,skippedReason:''}],
+      items:[{model:'A',brand:'佳能',sourcePrice:90,oldPrice:100,newPrice:130,delta:30,oldVisible:true,newVisible:true,sold:false,skippedReason:''}],
     })};
   };
   await c.nodes.get('batchPriceForm').listeners.submit({preventDefault() {}});
@@ -270,14 +270,34 @@ test('批量预览渲染统计、跳过原因和完整导出入口', async () =>
   assert.match(summary, /202/);
   assert.match(summary, /6060/);
   assert.match(summary, /已售/);
+  assert.match(summary, /价格不变/);
   assert.match(c.nodes.get('bulkPreviewPanel').innerHTML, /导入价 90/);
+  assert.match(c.nodes.get('bulkPreviewPanel').innerHTML, /未售/);
   assert.match(c.nodes.get('bulkPreviewStatus').textContent, /前 200 台/);
+  assert.match(c.nodes.get('bulkPreviewStatus').textContent, /2026/);
   assert.equal(c.nodes.get('openBulkConfirmButton').disabled, false);
   assert.equal(c.nodes.get('exportBulkPreviewButton').disabled, false);
   assert.equal(c.nodes.get('applyBulkButton').disabled, false);
 
   c.nodes.get('exportBulkPreviewButton').listeners.click();
   assert.equal(c.window.location.href, '/api/admin/products/bulk-preview/preview-1/export');
+});
+
+test('隐藏预览把未变化统计显示为状态不变并标注已售状态', () => {
+  const c = pageContext('admin.js');
+  vm.runInContext(`renderBulkPreview({
+    operation:'hide', expiresAt:'2026-09-25T08:30:00.000Z', matchedCount:2,
+    changedCount:1, unchangedCount:1, skippedCount:0, skipReasons:{},
+    priceStats:{minimum:null,maximum:null,totalDelta:0}, displayedCount:2,
+    truncated:false, items:[
+      {model:'A',brand:'佳能',sourcePrice:100,oldPrice:100,newPrice:100,delta:0,oldVisible:true,newVisible:false,sold:true,skippedReason:''}
+    ]
+  })`, c);
+
+  assert.match(c.nodes.get('bulkPreviewSummary').innerHTML, /状态不变/);
+  assert.doesNotMatch(c.nodes.get('bulkPreviewSummary').innerHTML, /价格不变/);
+  assert.match(c.nodes.get('bulkPreviewPanel').innerHTML, /已售/);
+  assert.match(c.nodes.get('bulkPreviewStatus').textContent, /到期/);
 });
 
 test('批量确认提示高风险条件并在关闭后恢复焦点', () => {

@@ -1390,10 +1390,11 @@ function renderBulkPreview(preview) {
   const items = Array.isArray(preview.items) ? preview.items : [];
   const stats = preview.priceStats || {};
   const skipReasons = Object.entries(preview.skipReasons || {});
+  const unchangedLabel = preview.operation === "price" ? "价格不变" : "状态不变";
   const statCards = [
     ["匹配", preview.matchedCount ?? 0],
     ["实际修改", preview.changedCount ?? 0],
-    ["价格不变", preview.unchangedCount ?? 0],
+    [unchangedLabel, preview.unchangedCount ?? 0],
     ["跳过", preview.skippedCount ?? 0],
     ["最低新价格", stats.minimum ?? "—"],
     ["最高新价格", stats.maximum ?? "—"],
@@ -1410,16 +1411,24 @@ function renderBulkPreview(preview) {
       <strong>${escapeHtml(item.model)} · ${escapeHtml(item.brand)}</strong>
       <span>导入价 ${escapeHtml(item.sourcePrice)} · 当前价 ${escapeHtml(item.oldPrice)} → 新价格 ${escapeHtml(item.newPrice)}
         （${item.delta >= 0 ? "+" : ""}${escapeHtml(item.delta)}） ·
-        状态 ${item.oldVisible ? "展示" : "隐藏"} → ${item.newVisible ? "展示" : "隐藏"}
+        状态 ${item.oldVisible ? "展示" : "隐藏"} → ${item.newVisible ? "展示" : "隐藏"} ·
+        ${item.sold ? "已售" : "未售"}
         ${item.skippedReason ? ` · 跳过：${escapeHtml(item.skippedReason)}` : ""}</span>
     </div>
   `).join("") : `<p class="empty-admin-text">当前范围没有可预览的商品</p>`;
   if (bulkPreviewStatus) {
     const displayedCount = preview.displayedCount ?? items.length;
+    const expiryText = formatBulkExpiry(preview.expiresAt);
     bulkPreviewStatus.textContent = preview.truncated
-      ? `只展示前 ${displayedCount} 台，完整结果请导出 CSV。预览 15 分钟内有效。`
-      : `已生成 ${preview.matchedCount ?? 0} 台商品的完整预览，预览 15 分钟内有效。`;
+      ? `只展示前 ${displayedCount} 台，完整结果请导出 CSV。预览将在 ${expiryText} 到期（最长 15 分钟）。`
+      : `已生成 ${preview.matchedCount ?? 0} 台商品的完整预览，预览将在 ${expiryText} 到期（最长 15 分钟）。`;
   }
+}
+
+function formatBulkExpiry(expiresAt) {
+  const expiry = new Date(expiresAt || "");
+  if (Number.isNaN(expiry.getTime())) return "15 分钟内";
+  return expiry.toLocaleString("zh-CN", { hour12: false });
 }
 
 document.getElementById("batchPriceForm")?.addEventListener("submit", async (event) => {

@@ -844,6 +844,106 @@ def test_admin_bulk_preview_reports_changed_unchanged_and_skipped_statistics(
     assert items["sold"]["newPrice"] == 200
 
 
+def test_admin_bulk_price_omitted_status_filters_default_to_visible_unsold(
+    authenticated_client: TestClient,
+    repo: SQLiteShowcaseRepository,
+) -> None:
+    repo.upsert_product(_product_with(
+        "visible-unsold", model="正常商品", brand="佳能", price=200,
+    ))
+    repo.upsert_product(_product_with(
+        "hidden-unsold", model="隐藏商品", brand="佳能", price=200, visible=False,
+    ))
+    repo.upsert_product(_product_with(
+        "visible-sold", model="已售商品", brand="佳能", price=200, sold=True,
+    ))
+
+    response = authenticated_client.post(
+        "/api/admin/products/bulk-preview",
+        json={
+            "scope": "all",
+            "operation": "price",
+            "priceMode": "increment",
+            "amount": 30,
+        },
+    )
+
+    assert response.status_code == 200
+    body = response.json()
+    assert body["changedCount"] == 1
+    assert body["skippedCount"] == 2
+    items = {item["productId"]: item for item in body["items"]}
+    assert items["visible-unsold"]["newPrice"] == 230
+    assert items["hidden-unsold"]["skippedReason"] == "已隐藏"
+    assert items["visible-sold"]["skippedReason"] == "已售"
+
+    applied = authenticated_client.post(
+        "/api/admin/products/bulk-apply",
+        json={
+            "previewId": body["previewId"],
+            "idempotencyKey": "safe-default-statuses",
+        },
+    )
+    assert applied.status_code == 200
+    assert applied.json()["updatedCount"] == 1
+    assert repo.get_product("visible-unsold").display_price == 230
+    assert repo.get_product("hidden-unsold").display_price == 200
+    assert repo.get_product("visible-sold").display_price == 200
+
+
+def test_admin_bulk_price_explicit_null_status_filters_include_all_statuses(
+    authenticated_client: TestClient,
+    repo: SQLiteShowcaseRepository,
+) -> None:
+    repo.upsert_product(_product_with(
+        "visible-unsold", model="正常商品", brand="佳能", price=200,
+    ))
+    repo.upsert_product(_product_with(
+        "hidden-unsold", model="隐藏商品", brand="佳能", price=200, visible=False,
+    ))
+    repo.upsert_product(_product_with(
+        "visible-sold", model="已售商品", brand="佳能", price=200, sold=True,
+    ))
+
+    response = authenticated_client.post(
+        "/api/admin/products/bulk-preview",
+        json={
+            "scope": "all",
+            "operation": "price",
+            "priceMode": "increment",
+            "amount": 30,
+            "filters": {"visible": None, "sold": None},
+        },
+    )
+
+    assert response.status_code == 200
+    body = response.json()
+    assert body["changedCount"] == 3
+    assert body["skippedCount"] == 0
+
+
+def test_admin_bulk_hide_does_not_apply_price_status_defaults(
+    authenticated_client: TestClient,
+    repo: SQLiteShowcaseRepository,
+) -> None:
+    repo.upsert_product(_product_with(
+        "visible-unsold", model="正常商品", brand="佳能", price=200,
+    ))
+    repo.upsert_product(_product_with(
+        "visible-sold", model="已售商品", brand="佳能", price=200, sold=True,
+    ))
+
+    response = authenticated_client.post(
+        "/api/admin/products/bulk-preview",
+        json={"scope": "all", "operation": "hide"},
+    )
+
+    assert response.status_code == 200
+    body = response.json()
+    assert body["changedCount"] == 2
+    assert body["skippedCount"] == 0
+
+
 def test_admin_bulk_filtered_scope_rejects_inverted_price_range(
     authenticated_client: TestClient,
 ) -> None:
