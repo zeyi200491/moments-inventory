@@ -1,6 +1,10 @@
 from dataclasses import replace
+from pathlib import Path
+
+import pytest
 from fastapi.testclient import TestClient
 
+from moments_inventory.showcase_web import api as showcase_api
 from test_showcase_web_api_admin import repo, authenticated_client, _product
 
 
@@ -104,6 +108,138 @@ def test_bulk_database_failure_rolls_back_products_and_log(repo, authenticated_c
     assert repo.get_product('a').display_price == 500
     assert repo.get_product('b').display_price == 500
     assert repo.list_admin_operations() == []
+
+
+def test_bulk_executes_only_changed_items_and_records_human_readable_summary(
+    repo, authenticated_client,
+):
+    repo.upsert_product(_product('changed', visible=True, display_price=200))
+    repo.upsert_product(_product('same', visible=True, display_price=230))
+    repo.upsert_product(replace(
+        _product('sold', visible=True, display_price=200), sold=True,
+    ))
+
+    preview = authenticated_client.post('/api/admin/products/bulk-preview', json={
+        'scope': 'all',
+        'operation': 'price',
+        'priceMode': 'fixed_final',
+        'amount': 230,
+        'filters': {'priceMax': 300, 'visible': True, 'sold': False},
+    })
+
+    assert preview.status_code == 200
+    assert preview.json()['matchedCount'] == 3
+    assert preview.json()['changedCount'] == 1
+
+    applied = authenticated_client.post('/api/admin/products/bulk-apply', json={
+        'previewId': preview.json()['previewId'],
+        'idempotencyKey': 'changed-only',
+    })
+
+    assert applied.status_code == 200, applied.text
+    assert applied.json()['updatedCount'] == 1
+    operations = authenticated_client.get('/api/admin/operations').json()['operations']
+    assert operations[0]['summary'] == '全部库存 · 300 元以内 · 固定为 230 元 · 修改 1 台'
+    assert 'scope=all' in operations[0]['filterText']
+    assert 'priceMax=300' in operations[0]['filterText']
+    assert 'visible=true' in operations[0]['filterText']
+    assert 'sold=false' in operations[0]['filterText']
+
+
+def test_bulk_show_skips_sold_item_but_applies_unsold_item(repo, authenticated_client):
+    repo.upsert_product(_product('unsold', visible=False, display_price=200))
+    repo.upsert_product(replace(
+        _product('sold', visible=False, display_price=200), sold=True,
+    ))
+
+    preview = authenticated_client.post('/api/admin/products/bulk-preview', json={
+        'scope': 'all',
+        'operation': 'show',
+        'filters': {'visible': False},
+    })
+
+    assert preview.status_code == 200
+    assert preview.json()['changedCount'] == 1
+    assert preview.json()['skippedCount'] == 1
+    assert preview.json()['skipReasons'] == {'已售商品不能直接显示': 1}
+
+    applied = authenticated_client.post('/api/admin/products/bulk-apply', json={
+        'previewId': preview.json()['previewId'],
+        'idempotencyKey': 'show-unsold-only',
+    })
+
+    assert applied.status_code == 200, applied.text
+    assert applied.json()['updatedCount'] == 1
+    assert repo.get_product('unsold').visible is True
+    assert repo.get_product('sold').visible is False
+
+
+def test_bulk_hide_can_be_undone_and_restores_visibility(repo, authenticated_client):
+    repo.upsert_product(_product('visible', visible=True, display_price=200))
+    preview = authenticated_client.post('/api/admin/products/bulk-preview', json={
+        'scope': 'selected',
+        'operation': 'hide',
+        'productIds': ['visible'],
+    }).json()
+    applied = authenticated_client.post('/api/admin/products/bulk-apply', json={
+        'previewId': preview['previewId'],
+        'idempotencyKey': 'hide-visible',
+    })
+    assert applied.status_code == 200
+    assert repo.get_product('visible').visible is False
+
+    undone = authenticated_client.post(
+        '/api/admin/operations/' + applied.json()['operationId'] + '/undo',
+        json={'idempotencyKey': 'undo-hide-visible'},
+    )
+
+    assert undone.status_code == 200, undone.text
+    assert undone.json()['updatedCount'] == 1
+    assert repo.get_product('visible').visible is True
+    with repo._get_connection() as conn:
+        original_log = conn.execute(
+            '''SELECT summary, filter_text, undone_at
+               FROM showcase_admin_operation_logs WHERE operation_id=?''',
+            (applied.json()['operationId'],),
+        ).fetchone()
+        undo_log = conn.execute(
+            '''SELECT summary, filter_text, parent_operation_id
+               FROM showcase_admin_operation_logs WHERE operation_id=?''',
+            (undone.json()['operationId'],),
+        ).fetchone()
+    assert original_log[2]
+    assert undo_log[0] == f"撤销：{original_log[0]}"
+    assert undo_log[1] == original_log[1]
+    assert undo_log[2] == applied.json()['operationId']
+
+
+def test_operation_list_offers_undo_for_every_non_undo_operation():
+    admin_js = (
+        Path(__file__).parents[1]
+        / 'src/moments_inventory/showcase_web/static/admin.js'
+    ).read_text(encoding='utf-8')
+
+    assert 'operation.operationType !== "undo" && !operation.undoneAt' in admin_js
+    assert '撤销这次操作' in admin_js
+
+
+@pytest.mark.parametrize(
+    ('price_min', 'price_max', 'expected'),
+    [
+        (None, 200, '200 元以内'),
+        (201, 300, '201～300 元'),
+        (801, None, '801 元以上'),
+        (None, None, '全部价格'),
+    ],
+)
+def test_bulk_price_range_text_is_human_readable(price_min, price_max, expected):
+    filters = showcase_api.AdminBulkProductFilters(
+        priceMin=price_min,
+        priceMax=price_max,
+    )
+
+    assert hasattr(showcase_api, '_bulk_price_range_text')
+    assert showcase_api._bulk_price_range_text(filters) == expected
 
 
 def test_manual_override_can_reset_to_source_and_missing_items_are_filterable(repo, authenticated_client):

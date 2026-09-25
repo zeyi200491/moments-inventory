@@ -1339,8 +1339,13 @@ def create_admin_router(
         repo: SQLiteShowcaseRepository = Depends(get_repository),
     ) -> AdminBulkPreviewResponse:
         preview = _bulk_preview_response(repo, request)
+        request_snapshot = request.model_dump()
+        request_snapshot["operationSummary"] = _bulk_operation_summary(
+            request, preview.changedCount,
+        )
+        request_snapshot["filterText"] = _bulk_filter_text(request)
         preview_id, expires = bulk_service.save_preview(
-            repo, showcase_admin_session, request.model_dump(),
+            repo, showcase_admin_session, request_snapshot,
             [item.model_dump() for item in preview.items],
         )
         displayed_items = preview.items[:200]
@@ -2688,16 +2693,53 @@ def _bulk_new_price(old_price: int, request: AdminBulkOperationRequest) -> int:
     return old_price + request.amount
 
 
-def _bulk_operation_summary(request: AdminBulkOperationRequest, updated_count: int) -> str:
+def _bulk_price_range_text(filters: AdminBulkProductFilters) -> str:
+    if filters.priceMin is not None and filters.priceMax is not None:
+        return f"{filters.priceMin}～{filters.priceMax} 元"
+    if filters.priceMin is not None:
+        return f"{filters.priceMin} 元以上"
+    if filters.priceMax is not None:
+        return f"{filters.priceMax} 元以内"
+    return "全部价格"
+
+
+def _bulk_operation_summary(request: AdminBulkOperationRequest, changed_count: int) -> str:
+    scope_text = {
+        "selected": "已勾选商品",
+        "filtered": "当前筛选结果",
+        "all": "全部库存",
+    }[request.scope]
     if request.operation == "hide":
-        return f"批量隐藏 {updated_count} 台商品"
-    if request.operation == "show":
-        return f"批量显示 {updated_count} 台商品"
-    if request.priceMode == "fixed_final":
-        return f"批量改为固定价 {request.amount} 元，影响 {updated_count} 台"
-    if request.priceMode == "decrement":
-        return f"批量减价 {request.amount} 元，影响 {updated_count} 台"
-    return f"批量加价 {request.amount} 元，影响 {updated_count} 台"
+        action_text = "批量隐藏"
+    elif request.operation == "show":
+        action_text = "批量显示"
+    elif request.priceMode == "fixed_final":
+        action_text = f"固定为 {request.amount} 元"
+    elif request.priceMode == "decrement":
+        action_text = f"减价 {request.amount} 元"
+    else:
+        action_text = f"加价 {request.amount} 元"
+    return (
+        f"{scope_text} · {_bulk_price_range_text(request.filters)} · "
+        f"{action_text} · 修改 {changed_count} 台"
+    )
+
+
+def _bulk_filter_text(request: AdminBulkOperationRequest) -> str:
+    values: list[tuple[str, object]] = [("scope", request.scope)]
+    values.extend(request.filters.model_dump().items())
+    parts: list[str] = []
+    for key, value in values:
+        if value is None or value == "" or value == []:
+            continue
+        if isinstance(value, bool):
+            text = str(value).lower()
+        elif isinstance(value, list):
+            text = ",".join(str(item) for item in value)
+        else:
+            text = str(value)
+        parts.append(f"{key}={text}")
+    return "; ".join(parts)
 
 
 def _duplicate_model_counts(

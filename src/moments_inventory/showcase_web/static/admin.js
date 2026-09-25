@@ -572,7 +572,7 @@ async function loadOperations() {
     <div class="admin-compact-row" data-operation-id="${escapeHtml(operation.operationId)}" data-operation-type="${escapeHtml(operation.operationType)}" data-undone="${operation.undoneAt ? "true" : "false"}">
       <strong>${escapeHtml(operation.summary)}</strong>
       <span>${escapeHtml(operation.createdAt)}${operation.undoneAt ? " · 已撤销" : ""}</span>
-      ${operation.operationType === "price" && !operation.undoneAt ? `<button class="undo-operation" type="button">撤销这次改价</button>` : ""}
+      ${operation.operationType !== "undo" && !operation.undoneAt ? `<button class="undo-operation" type="button">撤销这次操作</button>` : ""}
     </div>
   `).join("") : `<p class="empty-admin-text">还没有操作记录</p>`;
 }

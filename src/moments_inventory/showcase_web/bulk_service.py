@@ -29,11 +29,13 @@ def _cached(conn, owner, key, fingerprint):
     return json.loads(row['response_json'])
 
 
-def _write_operation(conn, operation_id, operation_type, items, now, parent=''):
+def _write_operation(
+    conn, operation_id, operation_type, items, now, summary, filter_text, parent,
+):
     conn.execute('''INSERT INTO showcase_admin_operation_logs
         (operation_id,operation_type,summary,filter_text,updated_count,created_at,undone_at,parent_operation_id)
         VALUES (?,?,?,?,?,?,?,?)''',
-        (operation_id, operation_type, f'批量{operation_type}：{len(items)}台', '', len(items), now, '', parent))
+        (operation_id, operation_type, summary, filter_text, len(items), now, '', parent))
     conn.executemany('''INSERT INTO showcase_admin_operation_items
             (item_id,operation_id,product_id,old_price,new_price,old_visible,new_visible,old_version,new_version,
              old_price_override,new_price_override,old_visibility_override,new_visibility_override,
@@ -70,14 +72,22 @@ def execute(repo, owner, key, reference, *, undo=False):
                           oldOverrideOrigin=r['new_override_origin'] or '',
                           newOverrideOrigin=r['old_override_origin'] or '') for r in rows]
             operation_type = 'undo'
+            summary = f"撤销：{operation['summary']}"
+            filter_text = operation['filter_text']
         else:
             preview = conn.execute('SELECT * FROM showcase_bulk_previews WHERE preview_id=?', (reference,)).fetchone()
             if preview is None or preview['owner'] != owner:
                 raise HTTPException(404, '预览不存在')
             if preview['operation_id'] or preview['expires_at'] < now:
                 raise HTTPException(409, '预览已使用或过期，请重新预览')
-            items = json.loads(preview['items_json'])
-            operation_type = json.loads(preview['request_json'])['operation']
+            request_data = json.loads(preview['request_json'])
+            items = [
+                item for item in json.loads(preview['items_json'])
+                if item.get('changed') and not item.get('skippedReason')
+            ]
+            operation_type = request_data['operation']
+            summary = request_data.get('operationSummary', '')
+            filter_text = request_data.get('filterText', '')
         # 分块读取一次性完成全量校验；任何异常由连接上下文回滚所有商品与日志。
         product_ids = [item['productId'] for item in items]
         current_products = {}
@@ -121,7 +131,16 @@ def execute(repo, owner, key, reference, *, undo=False):
                 [(item['newPrice'], item['newVisible'], now, item['productId']) for item in changed],
             )
         operation_id = uuid.uuid4().hex
-        _write_operation(conn, operation_id, operation_type, changed, now, reference if undo else '')
+        _write_operation(
+            conn,
+            operation_id,
+            operation_type,
+            changed,
+            now,
+            summary,
+            filter_text,
+            reference if undo else '',
+        )
         if undo:
             conn.execute('UPDATE showcase_admin_operation_logs SET undone_at=? WHERE operation_id=?', (now, reference))
         else:
