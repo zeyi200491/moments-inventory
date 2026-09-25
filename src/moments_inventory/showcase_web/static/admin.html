@@ -5,7 +5,7 @@
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <title>星星CCD 管理后台</title>
   <link rel="icon" href="data:,">
-  <link rel="stylesheet" href="/static/showcase.css?v=20260921-optimization2">
+  <link rel="stylesheet" href="/static/showcase.css?v=20260925-bulk-price-workflow">
 </head>
 <body>
   <main class="page-shell admin-shell">
@@ -210,36 +210,6 @@
       </section>
 
       <section class="admin-panel">
-        <h2>批量操作中心</h2>
-        <form id="batchPriceForm" class="admin-form admin-grid">
-          <label class="field">
-            <span>操作</span>
-            <select id="bulkOperationInput">
-              <option value="price">批量改价</option>
-              <option value="hide">批量隐藏</option>
-              <option value="show">批量显示</option>
-            </select>
-          </label>
-          <label class="field">
-            <span>改价方式</span>
-            <select id="bulkPriceModeInput">
-              <option value="increment">统一加价</option>
-              <option value="fixed_final">固定最终价</option>
-              <option value="tiered_increment">按原价阶梯加价</option>
-            </select>
-          </label>
-          <label class="field">
-            <span>金额</span>
-            <input id="batchAmountInput" type="number" min="0" value="30">
-          </label>
-          <button class="secondary-button" type="submit">生成预览</button>
-          <button id="applyBulkButton" class="access-button" type="button" disabled>确认执行预览结果</button>
-        </form>
-        <p class="status-text">未勾选商品时，会按下面“商品管理”的筛选条件批量处理；已勾选商品时，只处理勾选商品。</p>
-        <div id="bulkPreviewPanel" class="admin-compact-list"></div>
-      </section>
-
-      <section class="admin-panel">
         <h2>新增商品</h2>
         <form id="createProductForm" class="admin-form admin-grid">
           <label class="field">
@@ -359,12 +329,108 @@
           <button id="clearAdminFiltersButton" class="secondary-button" type="button">清空筛选</button>
           <p id="adminProductCount" class="status-text"></p>
         </div>
+        <section id="bulkPricingPanel" class="bulk-workbench" aria-labelledby="bulkPricingHeading">
+          <div class="bulk-workbench-heading">
+            <div>
+              <h3 id="bulkPricingHeading">批量操作</h3>
+              <p id="bulkScopeSummary" class="status-text" aria-live="polite">当前没有选择商品</p>
+            </div>
+            <button id="clearBulkSelectionButton" class="secondary-button" type="button">清空选择</button>
+          </div>
+          <form id="batchPriceForm" class="bulk-workbench-grid">
+            <label class="field">
+              <span>作用范围</span>
+              <select id="bulkScopeInput">
+                <option value="selected">已勾选商品</option>
+                <option value="filtered" selected>当前筛选结果</option>
+                <option value="all">全部库存</option>
+              </select>
+            </label>
+            <label class="field">
+              <span>操作</span>
+              <select id="bulkOperationInput">
+                <option value="price">批量改价</option>
+                <option value="hide">批量隐藏</option>
+                <option value="show">批量显示</option>
+              </select>
+            </label>
+            <label id="bulkPriceRangeField" class="field">
+              <span>价格范围</span>
+              <select id="bulkPriceRangeInput">
+                <option value="all">全部价格</option>
+                <option value="up_to_200">200 元以内</option>
+                <option value="201_300">201～300 元</option>
+                <option value="301_600">301～600 元</option>
+                <option value="601_800">601～800 元</option>
+                <option value="801_plus">801 元以上</option>
+                <option value="custom">自定义价格区间</option>
+              </select>
+            </label>
+            <label id="bulkCustomMinField" class="field" hidden>
+              <span>最低价格</span>
+              <input id="bulkMinPriceInput" type="number" min="0" inputmode="numeric" autocomplete="off">
+            </label>
+            <label id="bulkCustomMaxField" class="field" hidden>
+              <span>最高价格</span>
+              <input id="bulkMaxPriceInput" type="number" min="0" inputmode="numeric" autocomplete="off">
+            </label>
+            <label class="field">
+              <span>展示状态</span>
+              <select id="bulkVisibleInput">
+                <option value="true" selected>只处理展示中</option>
+                <option value="false">只处理已隐藏</option>
+                <option value="">展示中和已隐藏</option>
+              </select>
+            </label>
+            <label class="field">
+              <span>已售状态</span>
+              <select id="bulkSoldInput">
+                <option value="false" selected>只处理未售</option>
+                <option value="true">只处理已售</option>
+                <option value="">未售和已售</option>
+              </select>
+            </label>
+            <label id="bulkPriceModeField" class="field bulk-price-action-field">
+              <span>改价方式</span>
+              <select id="bulkPriceModeInput">
+                <option value="increment">统一加价</option>
+                <option value="decrement">统一减价</option>
+                <option value="fixed_final">固定最终价</option>
+              </select>
+            </label>
+            <label id="bulkAmountField" class="field bulk-price-action-field">
+              <span id="bulkAmountLabel">每台增加金额</span>
+              <input id="batchAmountInput" type="number" min="0" inputmode="numeric" autocomplete="off" value="30">
+            </label>
+            <button id="generateBulkPreviewButton" class="secondary-button" type="submit">生成预览</button>
+          </form>
+          <p id="bulkPreviewStatus" class="status-text" aria-live="polite" tabindex="-1"></p>
+          <div id="bulkPreviewSummary" class="bulk-preview-stats"></div>
+          <div id="bulkPreviewPanel" class="admin-compact-list"></div>
+          <div class="bulk-preview-actions">
+            <button id="exportBulkPreviewButton" class="secondary-button" type="button" disabled>导出完整预览</button>
+            <button id="openBulkConfirmButton" class="access-button" type="button" disabled>检查并确认执行</button>
+          </div>
+        </section>
+
+        <dialog id="bulkConfirmDialog" class="bulk-confirm-dialog" aria-labelledby="bulkConfirmHeading">
+          <form method="dialog">
+            <h3 id="bulkConfirmHeading">确认批量操作</h3>
+            <p id="bulkConfirmSummary"></p>
+            <div id="bulkConfirmWarnings" class="bulk-warning-list"></div>
+            <p id="bulkConfirmStatus" class="access-error" role="alert" tabindex="-1" hidden></p>
+            <div class="bulk-confirm-actions">
+              <button class="secondary-button" type="submit" value="cancel">返回检查</button>
+              <button id="applyBulkButton" class="access-button" type="button">确认执行</button>
+            </div>
+          </form>
+        </dialog>
         <div id="adminProductList" class="admin-product-list"></div>
         <button id="adminLoadMoreButton" class="load-more-button" type="button" hidden>显示更多商品</button>
       </section>
     </section>
   </main>
   <script src="/static/shared/product-utils.js?v=20260921"></script>
-  <script src="/static/admin.js?v=20260921-optimization2"></script>
+  <script src="/static/admin.js?v=20260925-bulk-price-workflow"></script>
 </body>
 </html>

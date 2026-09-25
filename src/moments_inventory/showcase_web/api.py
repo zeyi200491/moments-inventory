@@ -1,15 +1,18 @@
 from __future__ import annotations
 
+import csv
 from dataclasses import replace
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
+from typing import Self
 import os
 import secrets
 import uuid
 
 from fastapi import APIRouter, Cookie, Depends, File, Form, HTTPException, UploadFile
 from fastapi import Response
-from pydantic import BaseModel, Field
+from fastapi.responses import StreamingResponse
+from pydantic import BaseModel, Field, field_validator, model_validator
 from PIL import Image, UnidentifiedImageError
 from moments_inventory.showcase_web import bulk_service
 
@@ -48,6 +51,22 @@ from moments_inventory.showcase_web.sample_images import (
 _MAX_UPLOAD_BYTES = 10 * 1024 * 1024
 _MAX_IMAGE_PIXELS = 40_000_000
 _IMAGE_SUFFIXES = {"JPEG": ".jpg", "PNG": ".png", "WEBP": ".webp"}
+_CSV_FORMULA_PREFIXES = ("=", "+", "-", "@", "\t", "\r", "\n")
+
+
+class _CsvLineSink:
+    """让 csv.writer 直接返回单行文本，避免累积完整 CSV。"""
+
+    @staticmethod
+    def write(value: str) -> str:
+        return value
+
+
+def _safe_csv_text(value: str) -> str:
+    """阻止电子表格把来自库存数据的文本识别为公式。"""
+    if value.startswith(_CSV_FORMULA_PREFIXES):
+        return f"'{value}"
+    return value
 
 
 async def _validated_image_upload(file: UploadFile, directory: Path) -> tuple[Path, str]:
@@ -415,14 +434,71 @@ class AdminBulkProductFilters(BaseModel):
     importId: str = Field(default="", max_length=200)
     reviewState: str = Field(default="", max_length=80)
 
+    def has_narrowing_constraint(self) -> bool:
+        return any((
+            self.query.strip(),
+            self.model.strip(),
+            self.brand.strip(),
+            any(brand.strip() for brand in self.brands),
+            self.priceMin is not None,
+            self.priceMax is not None,
+            self.hasBodyImage is not None,
+            self.hasSampleImage is not None,
+            self.manualPrice is not None,
+            any(tag.strip() for tag in self.tags),
+            self.sectionId.strip(),
+            self.updatedAfter.strip(),
+            self.importId.strip(),
+            self.reviewState.strip(),
+        ))
+
+    @model_validator(mode="after")
+    def validate_price_range(self) -> Self:
+        if self.priceMin is not None and self.priceMax is not None and self.priceMin > self.priceMax:
+            raise ValueError("最低价不能高于最高价")
+        return self
+
 
 class AdminBulkOperationRequest(BaseModel):
+    scope: str = Field(pattern="^(selected|filtered|all)$")
     operation: str = Field(pattern="^(price|hide|show)$")
-    priceMode: str = Field(default="increment", pattern="^(increment|set|fixed_final|tiered_increment)$")
+    priceMode: str = Field(default="increment", pattern="^(increment|decrement|fixed_final)$")
     amount: int = Field(default=0, ge=0)
     productIds: list[str] = Field(default_factory=list, max_length=5000)
     publicIds: list[str] = Field(default_factory=list, max_length=5000)
     filters: AdminBulkProductFilters = Field(default_factory=AdminBulkProductFilters)
+
+    @field_validator("productIds", "publicIds")
+    @classmethod
+    def normalize_product_references(cls, references: list[str]) -> list[str]:
+        normalized = [reference.strip() for reference in references]
+        if any(not reference for reference in normalized):
+            raise ValueError("商品引用不能为空")
+        return normalized
+
+    @model_validator(mode="after")
+    def validate_scope_and_price(self) -> Self:
+        if self.operation == "price":
+            if "visible" not in self.filters.model_fields_set:
+                self.filters.visible = True
+            if "sold" not in self.filters.model_fields_set:
+                self.filters.sold = False
+        has_references = bool(self.productIds or self.publicIds)
+        if self.scope == "selected" and not has_references:
+            raise ValueError("选中商品范围必须至少提交一个商品引用")
+        if self.scope != "selected" and has_references:
+            raise ValueError("只有选中商品范围可以提交商品引用")
+        if self.scope == "filtered" and not self.filters.has_narrowing_constraint():
+            raise ValueError("筛选范围必须包含收窄条件；如需处理全部展示中未售商品，请选择全部库存")
+        if self.operation == "price" and self.priceMode in {"increment", "decrement"} and self.amount <= 0:
+            raise ValueError("加减价金额必须大于 0")
+        return self
+
+
+class AdminBulkPriceStatsResponse(BaseModel):
+    minimum: int | None = None
+    maximum: int | None = None
+    totalDelta: int = 0
 
 
 class AdminBulkPreviewItemResponse(BaseModel):
@@ -431,12 +507,15 @@ class AdminBulkPreviewItemResponse(BaseModel):
     rowVersion: int = 0
     model: str
     brand: str
+    sourcePrice: int
     oldPrice: int
     newPrice: int
     delta: int
     oldVisible: bool
     newVisible: bool
     sold: bool
+    changed: bool = False
+    skippedReason: str = ""
 
 
 class AdminBulkPreviewResponse(BaseModel):
@@ -444,6 +523,12 @@ class AdminBulkPreviewResponse(BaseModel):
     expiresAt: str = ""
     operation: str
     total: int
+    matchedCount: int = 0
+    changedCount: int = 0
+    unchangedCount: int = 0
+    skippedCount: int = 0
+    skipReasons: dict[str, int] = Field(default_factory=dict)
+    priceStats: AdminBulkPriceStatsResponse = Field(default_factory=AdminBulkPriceStatsResponse)
     displayedCount: int = 0
     truncated: bool = False
     items: list[AdminBulkPreviewItemResponse] = Field(default_factory=list)
@@ -1277,8 +1362,13 @@ def create_admin_router(
         repo: SQLiteShowcaseRepository = Depends(get_repository),
     ) -> AdminBulkPreviewResponse:
         preview = _bulk_preview_response(repo, request)
+        request_snapshot = request.model_dump()
+        request_snapshot["operationSummary"] = _bulk_operation_summary(
+            request, preview.changedCount,
+        )
+        request_snapshot["filterText"] = _bulk_filter_text(request)
         preview_id, expires = bulk_service.save_preview(
-            repo, showcase_admin_session, request.model_dump(),
+            repo, showcase_admin_session, request_snapshot,
             [item.model_dump() for item in preview.items],
         )
         displayed_items = preview.items[:200]
@@ -1289,6 +1379,53 @@ def create_admin_router(
             "truncated": len(displayed_items) < preview.total,
             "items": displayed_items,
         })
+
+    @router.get(
+        "/products/bulk-preview/{preview_id}/export",
+        dependencies=[Depends(require_admin)],
+    )
+    def export_admin_bulk_preview(
+        preview_id: str,
+        showcase_admin_session: str = Cookie(default=""),
+        repo: SQLiteShowcaseRepository = Depends(get_repository),
+    ) -> StreamingResponse:
+        items = bulk_service.load_preview_items(
+            repo, showcase_admin_session, preview_id,
+        )
+
+        def iter_csv_rows():
+            writer = csv.writer(_CsvLineSink(), lineterminator="\n")
+            yield "\ufeff"
+            yield writer.writerow([
+                "商品ID", "型号", "品牌", "导入原价", "当前展示价", "新展示价",
+                "变化金额", "是否修改", "跳过原因", "展示状态", "已售状态",
+            ])
+            for item in items:
+                yield writer.writerow([
+                    _safe_csv_text(item["productId"]),
+                    _safe_csv_text(item["model"]),
+                    _safe_csv_text(item["brand"]),
+                    item["sourcePrice"],
+                    item["oldPrice"],
+                    item["newPrice"],
+                    item["delta"],
+                    "是" if item["changed"] else "否",
+                    _safe_csv_text(item["skippedReason"]),
+                    "展示" if item["oldVisible"] else "隐藏",
+                    "已售" if item["sold"] else "未售",
+                ])
+
+        return StreamingResponse(
+            iter_csv_rows(),
+            media_type="text/csv; charset=utf-8",
+            headers={
+                "Content-Disposition": (
+                    f'attachment; filename="ccd-bulk-preview-{preview_id}.csv"'
+                ),
+                "Cache-Control": "no-store",
+                "X-Content-Type-Options": "nosniff",
+            },
+        )
 
     @router.post(
         "/products/bulk-apply",
@@ -2526,11 +2663,21 @@ def _bulk_preview_response(
     repo: SQLiteShowcaseRepository,
     request: AdminBulkOperationRequest,
 ) -> AdminBulkPreviewResponse:
+    search = _admin_search_from_bulk_filters(request.filters)
+    product_ids = None
+    if request.scope == "selected":
+        product_references = [*request.productIds, *request.publicIds]
+        product_ids = repo.resolve_product_references(product_references)
     summaries = repo.list_admin_products_for_bulk(
-        _admin_search_from_bulk_filters(request.filters),
-        product_ids=repo.resolve_product_references(request.publicIds or request.productIds),
+        replace(search, visible=None, sold=None),
+        product_ids=product_ids,
     )
     items: list[AdminBulkPreviewItemResponse] = []
+    changed_count = 0
+    unchanged_count = 0
+    skip_reasons: dict[str, int] = {}
+    changed_prices: list[int] = []
+    total_delta = 0
     for summary in sorted(
         summaries,
         key=lambda item: (-item.product.display_price, item.product.product_id),
@@ -2538,12 +2685,30 @@ def _bulk_preview_response(
         product = summary.product
         new_price = product.display_price
         new_visible = product.visible
-        if request.operation == "price":
-            new_price = _bulk_new_price(product.display_price, request)
-        elif request.operation == "hide":
-            new_visible = False
-        elif request.operation == "show":
-            new_visible = True
+        skipped_reason = _bulk_skip_reason(product, request)
+        if not skipped_reason:
+            if request.operation == "price":
+                candidate_price = _bulk_new_price(product.display_price, request)
+                if candidate_price < 0:
+                    skipped_reason = "减价后低于 0 元"
+                else:
+                    new_price = candidate_price
+            elif request.operation == "hide":
+                new_visible = False
+            elif request.operation == "show":
+                new_visible = True
+        changed = not skipped_reason and (
+            new_price != product.display_price or new_visible != product.visible
+        )
+        if skipped_reason:
+            skip_reasons[skipped_reason] = skip_reasons.get(skipped_reason, 0) + 1
+        elif changed:
+            changed_count += 1
+            if new_price != product.display_price:
+                changed_prices.append(new_price)
+                total_delta += new_price - product.display_price
+        else:
+            unchanged_count += 1
         items.append(
             AdminBulkPreviewItemResponse(
                 productId=product.product_id,
@@ -2551,41 +2716,100 @@ def _bulk_preview_response(
                 rowVersion=product.row_version,
                 model=product.model,
                 brand=product.brand,
+                sourcePrice=product.source_display_price,
                 oldPrice=product.display_price,
                 newPrice=new_price,
                 delta=new_price - product.display_price,
                 oldVisible=product.visible,
                 newVisible=new_visible,
                 sold=product.sold,
+                changed=changed,
+                skippedReason=skipped_reason,
             )
         )
-    return AdminBulkPreviewResponse(operation=request.operation, total=len(items), items=items)
+    matched_count = len(items)
+    return AdminBulkPreviewResponse(
+        operation=request.operation,
+        total=matched_count,
+        matchedCount=matched_count,
+        changedCount=changed_count,
+        unchangedCount=unchanged_count,
+        skippedCount=sum(skip_reasons.values()),
+        skipReasons=skip_reasons,
+        priceStats=AdminBulkPriceStatsResponse(
+            minimum=min(changed_prices) if changed_prices else None,
+            maximum=max(changed_prices) if changed_prices else None,
+            totalDelta=total_delta,
+        ),
+        items=items,
+    )
+
+
+def _bulk_skip_reason(product: ShowcaseProduct, request: AdminBulkOperationRequest) -> str:
+    if request.operation == "show" and product.sold:
+        return "已售商品不能直接显示"
+    if request.filters.sold is not None and product.sold != request.filters.sold:
+        return "已售" if product.sold else "未售"
+    if request.filters.visible is not None and product.visible != request.filters.visible:
+        return "展示中" if product.visible else "已隐藏"
+    return ""
 
 
 def _bulk_new_price(old_price: int, request: AdminBulkOperationRequest) -> int:
-    if request.priceMode in {"set", "fixed_final"}:
+    if request.priceMode == "fixed_final":
         return request.amount
-    if request.priceMode == "tiered_increment":
-        if old_price < 300:
-            return old_price + 100
-        if old_price < 500:
-            return old_price + 170
-        if old_price < 800:
-            return old_price + 210
-        return old_price + 300
+    if request.priceMode == "decrement":
+        return old_price - request.amount
     return old_price + request.amount
 
 
-def _bulk_operation_summary(request: AdminBulkOperationRequest, updated_count: int) -> str:
+def _bulk_price_range_text(filters: AdminBulkProductFilters) -> str:
+    if filters.priceMin is not None and filters.priceMax is not None:
+        return f"{filters.priceMin}～{filters.priceMax} 元"
+    if filters.priceMin is not None:
+        return f"{filters.priceMin}元以上"
+    if filters.priceMax is not None:
+        return f"{filters.priceMax}元以内"
+    return "全部价格"
+
+
+def _bulk_operation_summary(request: AdminBulkOperationRequest, changed_count: int) -> str:
+    scope_text = {
+        "selected": "已勾选商品",
+        "filtered": "当前筛选结果",
+        "all": "全部库存",
+    }[request.scope]
     if request.operation == "hide":
-        return f"批量隐藏 {updated_count} 台商品"
-    if request.operation == "show":
-        return f"批量显示 {updated_count} 台商品"
-    if request.priceMode == "tiered_increment":
-        return f"按价格段批量加价 {updated_count} 台商品"
-    if request.priceMode in {"set", "fixed_final"}:
-        return f"批量改为固定价 {request.amount} 元，影响 {updated_count} 台"
-    return f"批量加价 {request.amount} 元，影响 {updated_count} 台"
+        action_text = "批量隐藏"
+    elif request.operation == "show":
+        action_text = "批量显示"
+    elif request.priceMode == "fixed_final":
+        action_text = f"固定为{request.amount}元"
+    elif request.priceMode == "decrement":
+        action_text = f"减价{request.amount}元"
+    else:
+        action_text = f"加价{request.amount}元"
+    return (
+        f"{scope_text} · {_bulk_price_range_text(request.filters)} · "
+        f"{action_text} · 修改 {changed_count} 台"
+    )
+
+
+def _bulk_filter_text(request: AdminBulkOperationRequest) -> str:
+    values: list[tuple[str, object]] = [("scope", request.scope)]
+    values.extend(request.filters.model_dump().items())
+    parts: list[str] = []
+    for key, value in values:
+        if value is None or value == "" or value == []:
+            continue
+        if isinstance(value, bool):
+            text = str(value).lower()
+        elif isinstance(value, list):
+            text = ",".join(str(item) for item in value)
+        else:
+            text = str(value)
+        parts.append(f"{key}={text}")
+    return "; ".join(parts)
 
 
 def _duplicate_model_counts(

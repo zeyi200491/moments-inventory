@@ -20,6 +20,22 @@ def save_preview(repo, owner, request, items):
     return preview_id, expires
 
 
+def load_preview_items(repo, owner, preview_id):
+    """读取属于当前管理员会话、且仍在有效期内的完整预览快照。"""
+    now = datetime.now(timezone.utc).isoformat()
+    with repo._lock, repo._get_connection() as conn:
+        row = conn.execute(
+            '''SELECT owner, expires_at, items_json
+               FROM showcase_bulk_previews WHERE preview_id=?''',
+            (preview_id,),
+        ).fetchone()
+    if row is None or row[0] != owner:
+        raise HTTPException(404, '预览不存在')
+    if row[1] < now:
+        raise HTTPException(409, '预览已过期，请重新预览')
+    return json.loads(row[2])
+
+
 def _cached(conn, owner, key, fingerprint):
     row = conn.execute('SELECT * FROM showcase_idempotency WHERE idempotency_key=?', (key,)).fetchone()
     if row is None:
@@ -29,11 +45,13 @@ def _cached(conn, owner, key, fingerprint):
     return json.loads(row['response_json'])
 
 
-def _write_operation(conn, operation_id, operation_type, items, now, parent=''):
+def _write_operation(
+    conn, operation_id, operation_type, items, now, summary, filter_text, parent,
+):
     conn.execute('''INSERT INTO showcase_admin_operation_logs
         (operation_id,operation_type,summary,filter_text,updated_count,created_at,undone_at,parent_operation_id)
         VALUES (?,?,?,?,?,?,?,?)''',
-        (operation_id, operation_type, f'批量{operation_type}：{len(items)}台', '', len(items), now, '', parent))
+        (operation_id, operation_type, summary, filter_text, len(items), now, '', parent))
     conn.executemany('''INSERT INTO showcase_admin_operation_items
             (item_id,operation_id,product_id,old_price,new_price,old_visible,new_visible,old_version,new_version,
              old_price_override,new_price_override,old_visibility_override,new_visibility_override,
@@ -70,21 +88,29 @@ def execute(repo, owner, key, reference, *, undo=False):
                           oldOverrideOrigin=r['new_override_origin'] or '',
                           newOverrideOrigin=r['old_override_origin'] or '') for r in rows]
             operation_type = 'undo'
+            summary = f"撤销：{operation['summary']}"
+            filter_text = operation['filter_text']
         else:
             preview = conn.execute('SELECT * FROM showcase_bulk_previews WHERE preview_id=?', (reference,)).fetchone()
             if preview is None or preview['owner'] != owner:
                 raise HTTPException(404, '预览不存在')
             if preview['operation_id'] or preview['expires_at'] < now:
                 raise HTTPException(409, '预览已使用或过期，请重新预览')
-            items = json.loads(preview['items_json'])
-            operation_type = json.loads(preview['request_json'])['operation']
+            request_data = json.loads(preview['request_json'])
+            items = [
+                item for item in json.loads(preview['items_json'])
+                if item.get('changed') and not item.get('skippedReason')
+            ]
+            operation_type = request_data['operation']
+            summary = request_data.get('operationSummary', '')
+            filter_text = request_data.get('filterText', '')
         # 分块读取一次性完成全量校验；任何异常由连接上下文回滚所有商品与日志。
         product_ids = [item['productId'] for item in items]
         current_products = {}
         for start in range(0, len(product_ids), 500):
             chunk = product_ids[start : start + 500]
             placeholders = ','.join('?' for _ in chunk)
-            rows = conn.execute(f'''SELECT product_id,row_version,sold,price_override,
+            rows = conn.execute(f'''SELECT product_id,row_version,sold,visible,display_price,price_override,
                 visibility_override,override_origin FROM showcase_products
                 WHERE product_id IN ({placeholders})''', chunk).fetchall()
             current_products.update({row['product_id']: row for row in rows})
@@ -92,7 +118,9 @@ def execute(repo, owner, key, reference, *, undo=False):
             product = current_products.get(item['productId'])
             if product is None or product['row_version'] != item['rowVersion']:
                 raise HTTPException(409, '商品已被修改，请重新预览')
-            if operation_type == 'show' and product['sold']:
+            if undo and not _matches_undo_snapshot(product, item):
+                raise HTTPException(409, '商品已被修改，请重新预览')
+            if not undo and product['sold'] and not product['visible'] and item['newVisible']:
                 raise HTTPException(409, '已售商品不能直接重新展示')
             if not undo:
                 item['oldPriceOverride'] = product['price_override']
@@ -121,7 +149,16 @@ def execute(repo, owner, key, reference, *, undo=False):
                 [(item['newPrice'], item['newVisible'], now, item['productId']) for item in changed],
             )
         operation_id = uuid.uuid4().hex
-        _write_operation(conn, operation_id, operation_type, changed, now, reference if undo else '')
+        _write_operation(
+            conn,
+            operation_id,
+            operation_type,
+            changed,
+            now,
+            summary,
+            filter_text,
+            reference if undo else '',
+        )
         if undo:
             conn.execute('UPDATE showcase_admin_operation_logs SET undone_at=? WHERE operation_id=?', (now, reference))
         else:
@@ -129,3 +166,14 @@ def execute(repo, owner, key, reference, *, undo=False):
         result = dict(ok=True, operationId=operation_id, updatedCount=len(changed))
         conn.execute('INSERT INTO showcase_idempotency VALUES (?,?,?,?)', (key, owner, fingerprint, json.dumps(result)))
         return result
+
+
+def _matches_undo_snapshot(product, item):
+    """撤销只能还原仍精确处于原操作结果状态的商品。"""
+    return (
+        product['display_price'] == item['oldPrice']
+        and bool(product['visible']) == bool(item['oldVisible'])
+        and product['price_override'] == item.get('oldPriceOverride')
+        and product['visibility_override'] == item.get('oldVisibilityOverride')
+        and (product['override_origin'] or '') == item.get('oldOverrideOrigin', '')
+    )
