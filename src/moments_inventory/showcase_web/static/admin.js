@@ -15,9 +15,11 @@ const adminLoadMoreButton = document.getElementById("adminLoadMoreButton");
 const bulkPreviewPanel = document.getElementById("bulkPreviewPanel");
 const bulkPreviewSummary = document.getElementById("bulkPreviewSummary");
 const bulkPreviewStatus = document.getElementById("bulkPreviewStatus");
+const generateBulkPreviewButton = document.getElementById("generateBulkPreviewButton");
 const openBulkConfirmButton = document.getElementById("openBulkConfirmButton");
 const exportBulkPreviewButton = document.getElementById("exportBulkPreviewButton");
 const bulkConfirmDialog = document.getElementById("bulkConfirmDialog");
+const bulkConfirmStatus = document.getElementById("bulkConfirmStatus");
 const applyBulkButton = document.getElementById("applyBulkButton");
 const sampleMatchingSummary = document.getElementById("sampleMatchingSummary");
 const sampleMatchProductList = document.getElementById("sampleMatchProductList");
@@ -46,6 +48,9 @@ const adminState = {
   productLoading: false,
   bulkBusy: false,
   previewRequestId: 0,
+  previewController: null,
+  previewBusy: false,
+  bulkAuthExpired: false,
   undoKeys: new Map(),
   pendingImageFiles: new Map(),
 };
@@ -59,15 +64,6 @@ const BULK_PRICE_RANGES = {
   "601_800": [601, 800],
   "801_plus": [801, null],
 };
-const BULK_PRICE_RANGE_LABELS = {
-  all: "全部价格",
-  up_to_200: "200 元以内",
-  "201_300": "201～300 元",
-  "301_600": "301～600 元",
-  "601_800": "601～800 元",
-  "801_plus": "801 元以上",
-  custom: "自定义价格区间",
-};
 
 function escapeHtml(value) {
   return String(value ?? "")
@@ -78,13 +74,13 @@ function escapeHtml(value) {
     .replaceAll("'", "&#039;");
 }
 
-async function requestJson(url, options = {}) {
+async function requestJson(url, options = {}, behavior = {}) {
   const response = await fetch(url, {
     headers: { "Content-Type": "application/json", ...(options.headers || {}) },
     ...options,
   });
   if (!response.ok) {
-    if (response.status === 401 && url !== "/api/admin/login") {
+    if (response.status === 401 && url !== "/api/admin/login" && !behavior.deferUnauthorizedUi) {
       adminApp.hidden = true;
       loginPanel.hidden = false;
       loginError.textContent = "登录已过期，请重新登录；草稿和待上传文件仍保留";
@@ -1226,6 +1222,18 @@ function selectedBulkPriceRange() {
   return BULK_PRICE_RANGES[value] || [null, null];
 }
 
+function maximumNullablePrice(left, right) {
+  if (left === null) return right;
+  if (right === null) return left;
+  return Math.max(left, right);
+}
+
+function minimumNullablePrice(left, right) {
+  if (left === null) return right;
+  if (right === null) return left;
+  return Math.min(left, right);
+}
+
 function buildBulkRequest() {
   const scope = document.getElementById("bulkScopeInput")?.value || "filtered";
   const filters = scope === "filtered" ? collectAdminFilters() : {
@@ -1233,9 +1241,14 @@ function buildBulkRequest() {
     visible: null, sold: null, hasBodyImage: null,
     hasSampleImage: null, manualPrice: null, reviewState: "", tags: [],
   };
-  const [priceMin, priceMax] = selectedBulkPriceRange();
-  filters.priceMin = priceMin;
-  filters.priceMax = priceMax;
+  const [bulkPriceMin, bulkPriceMax] = selectedBulkPriceRange();
+  if (scope === "filtered") {
+    filters.priceMin = maximumNullablePrice(filters.priceMin, bulkPriceMin);
+    filters.priceMax = minimumNullablePrice(filters.priceMax, bulkPriceMax);
+  } else {
+    filters.priceMin = bulkPriceMin;
+    filters.priceMax = bulkPriceMax;
+  }
   filters.visible = nullableBooleanValue("bulkVisibleInput");
   filters.sold = nullableBooleanValue("bulkSoldInput");
   return {
@@ -1266,9 +1279,13 @@ function validateBulkRequest(request) {
       throw new Error("价格范围必须填写 0 或正整数");
     }
   }
+  const [bulkPriceMin, bulkPriceMax] = selectedBulkPriceRange();
+  if (bulkPriceMin !== null && bulkPriceMax !== null && bulkPriceMin > bulkPriceMax) {
+    throw new Error("最低价格不能高于最高价格");
+  }
   if (request.filters.priceMin !== null && request.filters.priceMax !== null &&
       request.filters.priceMin > request.filters.priceMax) {
-    throw new Error("最低价格不能高于最高价格");
+    throw new Error("商品筛选价格范围与批量价格段没有交集，请调整其中一个范围");
   }
   if (request.operation === "price") {
     if (!Number.isInteger(request.amount) || request.amount < 0) {
@@ -1284,10 +1301,12 @@ function syncBulkControls() {
   const operation = document.getElementById("bulkOperationInput")?.value || "price";
   const priceMode = document.getElementById("bulkPriceModeInput")?.value || "increment";
   const rangeMode = document.getElementById("bulkPriceRangeInput")?.value || "all";
-  document.querySelectorAll(".bulk-price-field").forEach((field) => {
+  document.querySelectorAll(".bulk-price-action-field").forEach((field) => {
     field.hidden = operation !== "price";
   });
-  const showCustom = operation === "price" && rangeMode === "custom";
+  const rangeField = document.getElementById("bulkPriceRangeField");
+  if (rangeField) rangeField.hidden = false;
+  const showCustom = rangeMode === "custom";
   const minField = document.getElementById("bulkCustomMinField");
   const maxField = document.getElementById("bulkCustomMaxField");
   if (minField) minField.hidden = !showCustom;
@@ -1301,14 +1320,12 @@ function syncBulkControls() {
   if (amountLabel) amountLabel.textContent = labels[priceMode] || labels.increment;
 }
 
-function bulkPriceRangeLabel() {
-  const range = document.getElementById("bulkPriceRangeInput")?.value || "all";
-  if (range !== "custom") return BULK_PRICE_RANGE_LABELS[range] || BULK_PRICE_RANGE_LABELS.all;
-  const [minimum, maximum] = selectedBulkPriceRange();
-  if (Number.isNaN(minimum) || Number.isNaN(maximum)) return BULK_PRICE_RANGE_LABELS.custom;
-  if (minimum === null && maximum === null) return BULK_PRICE_RANGE_LABELS.custom;
+function formatPriceRange(minimum, maximum) {
+  if (Number.isNaN(minimum) || Number.isNaN(maximum)) return "自定义价格区间";
+  if (minimum === null && maximum === null) return "全部价格";
   if (minimum === null) return `${maximum} 元以内`;
   if (maximum === null) return `${minimum} 元以上`;
+  if (minimum === maximum) return `${minimum} 元`;
   return `${minimum}～${maximum} 元`;
 }
 
@@ -1320,10 +1337,23 @@ function updateBulkScopeSummary() {
       ? "以全部库存为基础范围"
       : `当前筛选结果共 ${adminState.productTotal} 台`;
   const target = document.getElementById("bulkScopeSummary");
-  if (target) target.textContent = `${scopeText} · ${bulkPriceRangeLabel()}`;
+  if (target) {
+    const filters = buildBulkRequest().filters;
+    target.textContent = `${scopeText} · ${formatPriceRange(filters.priceMin, filters.priceMax)}`;
+  }
+}
+
+function setBulkPreviewBusy(busy) {
+  adminState.previewBusy = busy;
+  if (!generateBulkPreviewButton) return;
+  generateBulkPreviewButton.disabled = busy;
+  generateBulkPreviewButton.textContent = busy ? "预览生成中…" : "生成预览";
 }
 
 function invalidateBulkPreview(message = "条件已变化，请重新生成预览") {
+  adminState.previewController?.abort();
+  adminState.previewController = null;
+  setBulkPreviewBusy(false);
   ++adminState.previewRequestId;
   adminState.lastBulkRequest = null;
   adminState.lastBulkPreview = null;
@@ -1377,12 +1407,16 @@ document.getElementById("batchPriceForm")?.addEventListener("submit", async (eve
   if (adminState.bulkBusy) return;
   invalidateBulkPreview("正在生成预览…");
   const previewRequestId = adminState.previewRequestId;
+  const controller = new AbortController();
+  adminState.previewController = controller;
+  setBulkPreviewBusy(true);
   try {
     const request = buildBulkRequest();
     validateBulkRequest(request);
     const preview = await requestJson("/api/admin/products/bulk-preview", {
       method: "POST",
       body: JSON.stringify(request),
+      signal: controller.signal,
     });
     if (previewRequestId !== adminState.previewRequestId) return;
     adminState.lastBulkPreview = preview;
@@ -1398,8 +1432,13 @@ document.getElementById("batchPriceForm")?.addEventListener("submit", async (eve
     if (applyBulkButton) applyBulkButton.disabled = !canExecute;
     if (exportBulkPreviewButton) exportBulkPreviewButton.disabled = !preview.previewId;
   } catch (error) {
-    if (previewRequestId === adminState.previewRequestId && bulkPreviewStatus) {
+    if (error.name !== "AbortError" && previewRequestId === adminState.previewRequestId && bulkPreviewStatus) {
       bulkPreviewStatus.textContent = `无法生成预览：${error.message}`;
+    }
+  } finally {
+    if (adminState.previewController === controller) {
+      adminState.previewController = null;
+      setBulkPreviewBusy(false);
     }
   }
 });
@@ -1435,10 +1474,38 @@ document.getElementById("clearBulkSelectionButton")?.addEventListener("click", (
 syncBulkControls();
 updateBulkScopeSummary();
 
+function bulkScopeLabel(request) {
+  if (request.scope === "selected") return `已勾选 ${request.productIds.length} 台商品`;
+  if (request.scope === "all") return "全部库存";
+  return "当前筛选结果";
+}
+
+function bulkStatusLabel(request) {
+  const visible = request.filters.visible === true
+    ? "展示中"
+    : request.filters.visible === false ? "已隐藏" : "展示中和已隐藏";
+  const sold = request.filters.sold === true
+    ? "已售"
+    : request.filters.sold === false ? "未售" : "未售和已售";
+  return `${visible}、${sold}`;
+}
+
+function bulkActionLabel(request) {
+  if (request.operation === "hide") return "隐藏商品";
+  if (request.operation === "show") return "显示商品";
+  const labels = {
+    increment: "统一加价",
+    decrement: "统一减价",
+    fixed_final: "固定最终价",
+  };
+  return `${labels[request.priceMode] || "批量改价"} ${request.amount} 元`;
+}
+
 openBulkConfirmButton?.addEventListener("click", () => {
   const preview = adminState.lastBulkPreview;
   if (!preview || !adminState.lastBulkRequest) return;
   const request = buildBulkRequest();
+  adminState.bulkAuthExpired = false;
   const warnings = [];
   if (request.scope === "all") {
     warnings.push("本次以全部库存为基础范围。请再次核对价格段和状态条件。");
@@ -1453,18 +1520,42 @@ openBulkConfirmButton?.addEventListener("click", () => {
   const summary = document.getElementById("bulkConfirmSummary");
   const warningList = document.getElementById("bulkConfirmWarnings");
   if (summary) {
-    summary.textContent = `匹配 ${preview.matchedCount ?? 0} 台，实际修改 ${preview.changedCount ?? 0} 台，跳过 ${preview.skippedCount ?? 0} 台。`;
+    summary.textContent = [
+      bulkScopeLabel(request),
+      `最终价格范围：${formatPriceRange(request.filters.priceMin, request.filters.priceMax)}`,
+      `状态：${bulkStatusLabel(request)}`,
+      `动作：${bulkActionLabel(request)}`,
+      `匹配 ${preview.matchedCount ?? 0} 台，实际修改 ${preview.changedCount ?? 0} 台，跳过 ${preview.skippedCount ?? 0} 台`,
+    ].join(" · ");
   }
   if (warningList) {
     warningList.innerHTML = warnings.length
       ? warnings.map((warning) => `<p>${escapeHtml(warning)}</p>`).join("")
       : "<p>未发现额外风险提示，请核对上方数量后执行。</p>";
   }
+  if (bulkConfirmStatus) {
+    bulkConfirmStatus.textContent = "";
+    bulkConfirmStatus.hidden = true;
+  }
+  if (bulkConfirmDialog) bulkConfirmDialog.returnValue = "";
   bulkConfirmDialog?.showModal();
 });
 
 bulkConfirmDialog?.addEventListener("close", () => {
-  openBulkConfirmButton?.focus();
+  if (adminState.bulkAuthExpired) {
+    adminState.bulkAuthExpired = false;
+    adminApp.hidden = true;
+    loginPanel.hidden = false;
+    loginError.textContent = "登录已过期，请重新登录";
+    loginError.hidden = false;
+    document.getElementById("adminPasswordInput")?.focus();
+    return;
+  }
+  if (bulkConfirmDialog.returnValue === "confirm" || !adminState.lastBulkRequest) {
+    bulkPreviewStatus?.focus();
+  } else {
+    openBulkConfirmButton?.focus();
+  }
 });
 
 exportBulkPreviewButton?.addEventListener("click", () => {
@@ -1483,18 +1574,40 @@ applyBulkButton?.addEventListener("click", async () => {
     const result = await requestJson("/api/admin/products/bulk-apply", {
       method: "POST",
       body: JSON.stringify(adminState.lastBulkRequest),
-    });
-    bulkConfirmDialog?.close("confirm");
-    if (bulkPreviewStatus) bulkPreviewStatus.textContent = `已执行，实际修改 ${result.updatedCount} 台商品。`;
+    }, { deferUnauthorizedUi: true });
     adminState.lastBulkRequest = null;
     adminState.lastBulkPreview = null;
     adminState.selectedProductIds = new Set();
     if (openBulkConfirmButton) openBulkConfirmButton.disabled = true;
     if (exportBulkPreviewButton) exportBulkPreviewButton.disabled = true;
+    if (bulkPreviewStatus) bulkPreviewStatus.textContent = `已执行，实际修改 ${result.updatedCount} 台商品。`;
+    bulkConfirmDialog?.close("confirm");
     await Promise.all([loadProducts(), loadSections(), loadDiagnostics(), loadOperations()]);
   } catch (error) {
-    if (bulkPreviewStatus) {
-      bulkPreviewStatus.textContent = `执行未确认：${error.message}。可重试同一预览，系统不会重复执行。`;
+    const recoverable = !error.status || error.status >= 500;
+    let message;
+    if (recoverable) {
+      message = error.status
+        ? `服务暂时不可用（${error.status}）。可重试同一预览，系统不会重复执行。`
+        : `网络连接异常：${error.message}。可重试同一预览，系统不会重复执行。`;
+    } else {
+      const messages = {
+        401: "登录已过期。请关闭窗口后重新登录，再重新生成预览。",
+        404: "预览不存在或已过期，请重新生成预览。",
+        409: "商品数据已经变化，请重新生成预览并核对差异。",
+        422: "执行参数已失效，请检查条件后重新生成预览。",
+      };
+      message = messages[error.status] || `当前预览无法继续执行（${error.status}），请重新生成预览。`;
+      adminState.bulkAuthExpired = error.status === 401;
+      invalidateBulkPreview(message);
+    }
+    if (bulkConfirmStatus) {
+      bulkConfirmStatus.textContent = message;
+      bulkConfirmStatus.hidden = false;
+      bulkConfirmStatus.focus();
+    }
+    if (bulkPreviewStatus && recoverable) {
+      bulkPreviewStatus.textContent = message;
     }
   } finally {
     adminState.bulkBusy = false;

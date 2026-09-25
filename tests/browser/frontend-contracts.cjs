@@ -36,6 +36,9 @@ test('商品管理包含明确的批量作用范围和价格段控件', () => {
   }
   assert.ok(html.indexOf('id="bulkPricingPanel"') > html.indexOf('<h2>商品管理</h2>'));
   assert.match(html, /id="bulkPreviewStatus"[^>]*aria-live="polite"/);
+  assert.match(html, /id="bulkConfirmStatus"[^>]*role="alert"/);
+  assert.match(html, /showcase\.css\?v=20260925-bulk-price-workflow/);
+  assert.match(html, /admin\.js\?v=20260925-bulk-price-workflow/);
 });
 
 function pageContext(file) {
@@ -60,7 +63,18 @@ function pageContext(file) {
   }
   const context = vm.createContext({
     console, URL, URLSearchParams, AbortController, setTimeout, clearTimeout, alert() {}, crypto: { randomUUID: () => 'test-key' },
-    document: { activeElement: null, getElementById: node, querySelector: () => null, querySelectorAll: () => [], addEventListener() {} },
+    document: {
+      activeElement: null,
+      getElementById: node,
+      querySelector: () => null,
+      querySelectorAll(selector) {
+        if (selector === '.bulk-price-action-field') {
+          return [node('bulkPriceModeField'), node('bulkAmountField')];
+        }
+        return [];
+      },
+      addEventListener() {},
+    },
     window: { addEventListener() {}, history: {replaceState() {}}, location: {search:'',pathname:'/',href:''}, setTimeout() {}, scrollTo() {} },
     sessionStorage: {getItem: () => null, removeItem() {}},
     fetch: async () => { throw new Error('未配置请求'); },
@@ -105,6 +119,42 @@ test('批量价格段转换为包含边界且默认排除隐藏和已售商品',
   c.nodes.get('bulkScopeInput').value = 'selected';
   const selectedRequest = vm.runInContext('buildBulkRequest()', c);
   assert.equal(JSON.stringify(selectedRequest.productIds), JSON.stringify(['p1', 'p2']));
+
+  c.nodes.get('adminBrandFilterInput').value = '佳能';
+  c.nodes.get('adminMinPriceInput').value = '250';
+  c.nodes.get('adminMaxPriceInput').value = '700';
+  c.nodes.get('bulkScopeInput').value = 'filtered';
+  c.nodes.get('bulkPriceRangeInput').value = '301_600';
+  const intersectedRequest = vm.runInContext('buildBulkRequest()', c);
+  assert.equal(JSON.stringify(intersectedRequest.filters.brands), JSON.stringify(['佳能']));
+  assert.equal(intersectedRequest.filters.priceMin, 301);
+  assert.equal(intersectedRequest.filters.priceMax, 600);
+
+  c.nodes.get('adminMinPriceInput').value = '400';
+  vm.runInContext('updateBulkScopeSummary()', c);
+  assert.match(c.nodes.get('bulkScopeSummary').textContent, /400～600 元/);
+
+  c.nodes.get('adminMinPriceInput').value = '700';
+  assert.throws(() => vm.runInContext('validateBulkRequest(buildBulkRequest())', c), /没有交集/);
+
+  c.nodes.get('bulkScopeInput').value = 'all';
+  const allRequest = vm.runInContext('buildBulkRequest()', c);
+  assert.equal(JSON.stringify(allRequest.filters.brands), JSON.stringify([]));
+  assert.equal(allRequest.filters.priceMin, 301);
+  assert.equal(allRequest.filters.priceMax, 600);
+});
+
+test('显示和隐藏操作保留价格范围筛选并只隐藏改价动作字段', () => {
+  const c = pageContext('admin.js');
+  c.nodes.get('bulkOperationInput').value = 'show';
+  c.nodes.get('bulkPriceRangeInput').value = 'custom';
+  c.nodes.get('bulkOperationInput').listeners.change();
+
+  assert.equal(c.nodes.get('bulkPriceRangeField').hidden, false);
+  assert.equal(c.nodes.get('bulkCustomMinField').hidden, false);
+  assert.equal(c.nodes.get('bulkCustomMaxField').hidden, false);
+  assert.equal(c.nodes.get('bulkPriceModeField').hidden, true);
+  assert.equal(c.nodes.get('bulkAmountField').hidden, true);
 });
 
 test('批量请求校验作用范围、自定义区间和改价金额', () => {
@@ -209,8 +259,78 @@ test('批量确认提示高风险条件并在关闭后恢复焦点', () => {
   assert.match(c.nodes.get('bulkConfirmWarnings').innerHTML, /230 台/);
   assert.match(c.nodes.get('bulkConfirmWarnings').innerHTML, /已售商品/);
   assert.match(c.nodes.get('bulkConfirmWarnings').innerHTML, /0 元/);
+  assert.match(c.nodes.get('bulkConfirmSummary').textContent, /全部库存/);
+  assert.match(c.nodes.get('bulkConfirmSummary').textContent, /全部价格/);
+  assert.match(c.nodes.get('bulkConfirmSummary').textContent, /展示中和已隐藏/);
+  assert.match(c.nodes.get('bulkConfirmSummary').textContent, /未售和已售/);
+  assert.match(c.nodes.get('bulkConfirmSummary').textContent, /固定最终价 0 元/);
+  assert.match(c.nodes.get('bulkConfirmSummary').textContent, /匹配 250 台/);
   c.nodes.get('bulkConfirmDialog').close('cancel');
   assert.equal(c.document.activeElement, c.nodes.get('openBulkConfirmButton'));
+});
+
+test('批量执行区分可重试和失效错误并在模态框内提示', async () => {
+  const network = pageContext('admin.js');
+  vm.runInContext(`adminState.lastBulkRequest = {previewId:'preview-1',idempotencyKey:'same-key'};
+    adminState.lastBulkPreview = {matchedCount:2,changedCount:2,skippedCount:0};`, network);
+  network.fetch = async () => { throw new Error('连接断开'); };
+  await network.nodes.get('applyBulkButton').listeners.click();
+  assert.equal(vm.runInContext('adminState.lastBulkRequest.idempotencyKey', network), 'same-key');
+  assert.match(network.nodes.get('bulkConfirmStatus').textContent, /可重试/);
+  assert.equal(network.document.activeElement, network.nodes.get('bulkConfirmStatus'));
+
+  const conflict = pageContext('admin.js');
+  vm.runInContext(`adminState.lastBulkRequest = {previewId:'preview-2',idempotencyKey:'conflict-key'};
+    adminState.lastBulkPreview = {matchedCount:2,changedCount:2,skippedCount:0};`, conflict);
+  conflict.fetch = async () => ({ok:false,status:409,text:async () => '版本冲突'});
+  await conflict.nodes.get('applyBulkButton').listeners.click();
+  assert.equal(vm.runInContext('adminState.lastBulkRequest', conflict), null);
+  assert.match(conflict.nodes.get('bulkConfirmStatus').textContent, /重新生成预览/);
+  assert.equal(conflict.nodes.get('applyBulkButton').disabled, true);
+  assert.equal(conflict.document.activeElement, conflict.nodes.get('bulkConfirmStatus'));
+
+  const expired = pageContext('admin.js');
+  expired.nodes.get('adminApp').hidden = false;
+  expired.nodes.get('loginPanel').hidden = true;
+  vm.runInContext(`adminState.lastBulkRequest = {previewId:'preview-3',idempotencyKey:'expired-key'};
+    adminState.lastBulkPreview = {matchedCount:1,changedCount:1,skippedCount:0};`, expired);
+  expired.fetch = async () => ({ok:false,status:401,text:async () => '登录过期'});
+  await expired.nodes.get('applyBulkButton').listeners.click();
+  assert.equal(expired.nodes.get('adminApp').hidden, false);
+  assert.match(expired.nodes.get('bulkConfirmStatus').textContent, /重新登录/);
+  expired.nodes.get('bulkConfirmDialog').close('cancel');
+  assert.equal(expired.nodes.get('adminApp').hidden, true);
+  assert.equal(expired.nodes.get('loginPanel').hidden, false);
+  assert.equal(expired.document.activeElement, expired.nodes.get('adminPasswordInput'));
+});
+
+test('新预览会取消旧请求并维护预览按钮忙碌状态', async () => {
+  const c = pageContext('admin.js');
+  c.nodes.get('bulkScopeInput').value = 'filtered';
+  c.nodes.get('bulkPriceRangeInput').value = 'up_to_200';
+  c.nodes.get('bulkVisibleInput').value = 'true';
+  c.nodes.get('bulkSoldInput').value = 'false';
+  c.nodes.get('bulkPriceModeInput').value = 'increment';
+  c.nodes.get('batchAmountInput').value = '30';
+  const pending = [];
+  c.fetch = (url, options) => new Promise((resolve, reject) => {
+    options.signal.addEventListener('abort', () => {
+      const error = new Error('已取消');
+      error.name = 'AbortError';
+      reject(error);
+    });
+    pending.push({resolve, signal:options.signal});
+  });
+
+  const first = c.nodes.get('batchPriceForm').listeners.submit({preventDefault() {}});
+  assert.equal(c.nodes.get('generateBulkPreviewButton').disabled, true);
+  assert.match(c.nodes.get('generateBulkPreviewButton').textContent, /生成中/);
+  const second = c.nodes.get('batchPriceForm').listeners.submit({preventDefault() {}});
+  assert.equal(pending[0].signal.aborted, true);
+  pending[1].resolve({ok:true,json:async () => ({previewId:'new',matchedCount:1,changedCount:1,items:[]})});
+  await Promise.all([first, second]);
+  assert.equal(c.nodes.get('generateBulkPreviewButton').disabled, false);
+  assert.equal(vm.runInContext('adminState.lastBulkRequest.previewId', c), 'new');
 });
 
 test('批量对话框和禁用按钮具备窄屏安全样式', () => {
@@ -305,6 +425,7 @@ test('批量执行拒绝双击且网络失败后重用幂等键', async () => {
   pending[1].resolve({ok:true,json:async () => ({updatedCount:2})});
   await retry;
   assert.equal(vm.runInContext('adminState.lastBulkRequest',c), null);
+  assert.equal(c.document.activeElement, c.nodes.get('bulkPreviewStatus'));
 });
 test('保存仅提交草稿变化与原版本并保留其他行草稿', async () => {
   const c = pageContext('admin.js');
