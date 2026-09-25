@@ -2573,9 +2573,10 @@ def _bulk_preview_response(
     repo: SQLiteShowcaseRepository,
     request: AdminBulkOperationRequest,
 ) -> AdminBulkPreviewResponse:
+    product_references = [*request.productIds, *request.publicIds]
     summaries = repo.list_admin_products_for_bulk(
         _admin_search_from_bulk_filters(request.filters),
-        product_ids=repo.resolve_product_references(request.publicIds or request.productIds),
+        product_ids=repo.resolve_product_references(product_references),
     )
     items: list[AdminBulkPreviewItemResponse] = []
     for summary in sorted(

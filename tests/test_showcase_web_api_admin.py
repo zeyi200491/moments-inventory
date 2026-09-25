@@ -616,6 +616,91 @@ def test_admin_bulk_selected_scope_rejects_blank_product_references(
     assert "items" not in response.json()
 
 
+def test_admin_bulk_selected_scope_combines_and_deduplicates_product_references(
+    authenticated_client: TestClient,
+    repo: SQLiteShowcaseRepository,
+) -> None:
+    repo.upsert_product(_product_with("by-product-id", model="佳能a", brand="佳能", price=300))
+    repo.upsert_product(_product_with("by-public-id", model="索尼t", brand="索尼", price=500))
+    repo.upsert_product(_product_with("not-selected", model="富士f50", brand="富士", price=700))
+    public_id = repo.get_product("by-public-id").public_id  # type: ignore[union-attr]
+
+    response = authenticated_client.post(
+        "/api/admin/products/bulk-preview",
+        json={
+            "scope": "selected",
+            "operation": "hide",
+            "productIds": ["by-product-id", "by-product-id", "missing"],
+            "publicIds": [public_id, public_id],
+        },
+    )
+
+    assert response.status_code == 200
+    assert response.json()["total"] == 2
+    assert {item["productId"] for item in response.json()["items"]} == {
+        "by-product-id",
+        "by-public-id",
+    }
+
+
+@pytest.mark.parametrize(
+    "payload",
+    [
+        {
+            "scope": "filtered",
+            "operation": "hide",
+            "productIds": ["p1"],
+            "filters": {"priceMax": 500},
+        },
+        {
+            "scope": "all",
+            "operation": "hide",
+            "publicIds": ["public-p1"],
+        },
+    ],
+)
+def test_admin_bulk_non_selected_scope_rejects_product_references(
+    authenticated_client: TestClient,
+    payload: dict[str, object],
+) -> None:
+    response = authenticated_client.post("/api/admin/products/bulk-preview", json=payload)
+
+    assert response.status_code == 422
+
+
+def test_admin_bulk_filtered_scope_rejects_visibility_only_filters(
+    authenticated_client: TestClient,
+) -> None:
+    response = authenticated_client.post(
+        "/api/admin/products/bulk-preview",
+        json={
+            "scope": "filtered",
+            "operation": "hide",
+            "filters": {"visible": True, "sold": False},
+        },
+    )
+
+    assert response.status_code == 422
+
+
+@pytest.mark.parametrize("price_mode", ["set", "tiered_increment"])
+def test_admin_bulk_rejects_removed_price_modes(
+    authenticated_client: TestClient,
+    price_mode: str,
+) -> None:
+    response = authenticated_client.post(
+        "/api/admin/products/bulk-preview",
+        json={
+            "scope": "all",
+            "operation": "price",
+            "priceMode": price_mode,
+            "amount": 30,
+        },
+    )
+
+    assert response.status_code == 422
+
+
 def test_admin_bulk_all_scope_accepts_visibility_filters(
     authenticated_client: TestClient,
     repo: SQLiteShowcaseRepository,
