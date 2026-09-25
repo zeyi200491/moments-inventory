@@ -472,18 +472,27 @@ class AdminBulkOperationRequest(BaseModel):
         return self
 
 
+class AdminBulkPriceStatsResponse(BaseModel):
+    minimum: int | None = None
+    maximum: int | None = None
+    totalDelta: int = 0
+
+
 class AdminBulkPreviewItemResponse(BaseModel):
     productId: str
     publicId: str = ""
     rowVersion: int = 0
     model: str
     brand: str
+    sourcePrice: int
     oldPrice: int
     newPrice: int
     delta: int
     oldVisible: bool
     newVisible: bool
     sold: bool
+    changed: bool = False
+    skippedReason: str = ""
 
 
 class AdminBulkPreviewResponse(BaseModel):
@@ -491,6 +500,12 @@ class AdminBulkPreviewResponse(BaseModel):
     expiresAt: str = ""
     operation: str
     total: int
+    matchedCount: int = 0
+    changedCount: int = 0
+    unchangedCount: int = 0
+    skippedCount: int = 0
+    skipReasons: dict[str, int] = Field(default_factory=dict)
+    priceStats: AdminBulkPriceStatsResponse = Field(default_factory=AdminBulkPriceStatsResponse)
     displayedCount: int = 0
     truncated: bool = False
     items: list[AdminBulkPreviewItemResponse] = Field(default_factory=list)
@@ -2573,12 +2588,21 @@ def _bulk_preview_response(
     repo: SQLiteShowcaseRepository,
     request: AdminBulkOperationRequest,
 ) -> AdminBulkPreviewResponse:
-    product_references = [*request.productIds, *request.publicIds]
+    search = _admin_search_from_bulk_filters(request.filters)
+    product_ids = None
+    if request.scope == "selected":
+        product_references = [*request.productIds, *request.publicIds]
+        product_ids = repo.resolve_product_references(product_references)
     summaries = repo.list_admin_products_for_bulk(
-        _admin_search_from_bulk_filters(request.filters),
-        product_ids=repo.resolve_product_references(product_references),
+        replace(search, visible=None, sold=None),
+        product_ids=product_ids,
     )
     items: list[AdminBulkPreviewItemResponse] = []
+    changed_count = 0
+    unchanged_count = 0
+    skip_reasons: dict[str, int] = {}
+    changed_prices: list[int] = []
+    total_delta = 0
     for summary in sorted(
         summaries,
         key=lambda item: (-item.product.display_price, item.product.product_id),
@@ -2586,12 +2610,30 @@ def _bulk_preview_response(
         product = summary.product
         new_price = product.display_price
         new_visible = product.visible
-        if request.operation == "price":
-            new_price = _bulk_new_price(product.display_price, request)
-        elif request.operation == "hide":
-            new_visible = False
-        elif request.operation == "show":
-            new_visible = True
+        skipped_reason = _bulk_skip_reason(product, request)
+        if not skipped_reason:
+            if request.operation == "price":
+                candidate_price = _bulk_new_price(product.display_price, request)
+                if candidate_price < 0:
+                    skipped_reason = "减价后低于 0 元"
+                else:
+                    new_price = candidate_price
+            elif request.operation == "hide":
+                new_visible = False
+            elif request.operation == "show":
+                new_visible = True
+        changed = not skipped_reason and (
+            new_price != product.display_price or new_visible != product.visible
+        )
+        if skipped_reason:
+            skip_reasons[skipped_reason] = skip_reasons.get(skipped_reason, 0) + 1
+        elif changed:
+            changed_count += 1
+            if new_price != product.display_price:
+                changed_prices.append(new_price)
+                total_delta += new_price - product.display_price
+        else:
+            unchanged_count += 1
         items.append(
             AdminBulkPreviewItemResponse(
                 productId=product.product_id,
@@ -2599,22 +2641,50 @@ def _bulk_preview_response(
                 rowVersion=product.row_version,
                 model=product.model,
                 brand=product.brand,
+                sourcePrice=product.source_display_price,
                 oldPrice=product.display_price,
                 newPrice=new_price,
                 delta=new_price - product.display_price,
                 oldVisible=product.visible,
                 newVisible=new_visible,
                 sold=product.sold,
+                changed=changed,
+                skippedReason=skipped_reason,
             )
         )
-    return AdminBulkPreviewResponse(operation=request.operation, total=len(items), items=items)
+    matched_count = len(items)
+    return AdminBulkPreviewResponse(
+        operation=request.operation,
+        total=matched_count,
+        matchedCount=matched_count,
+        changedCount=changed_count,
+        unchangedCount=unchanged_count,
+        skippedCount=sum(skip_reasons.values()),
+        skipReasons=skip_reasons,
+        priceStats=AdminBulkPriceStatsResponse(
+            minimum=min(changed_prices) if changed_prices else None,
+            maximum=max(changed_prices) if changed_prices else None,
+            totalDelta=total_delta,
+        ),
+        items=items,
+    )
+
+
+def _bulk_skip_reason(product: ShowcaseProduct, request: AdminBulkOperationRequest) -> str:
+    if request.operation == "show" and product.sold:
+        return "已售商品不能直接显示"
+    if request.filters.sold is not None and product.sold != request.filters.sold:
+        return "已售" if product.sold else "未售"
+    if request.filters.visible is not None and product.visible != request.filters.visible:
+        return "展示中" if product.visible else "已隐藏"
+    return ""
 
 
 def _bulk_new_price(old_price: int, request: AdminBulkOperationRequest) -> int:
     if request.priceMode == "fixed_final":
         return request.amount
     if request.priceMode == "decrement":
-        return max(0, old_price - request.amount)
+        return old_price - request.amount
     return old_price + request.amount
 
 
