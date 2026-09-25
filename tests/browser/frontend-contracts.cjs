@@ -402,7 +402,12 @@ test('批量对话框和禁用按钮具备窄屏安全样式', () => {
 
 test('后台紧凑列表在窄屏降为单列', () => {
   const css = fs.readFileSync(path.join(root, 'showcase.css'), 'utf8');
-  assert.match(css, /\.admin-product-row,\s*\.admin-compact-row\s*\{\s*grid-template-columns:\s*1fr;/s);
+  const mediaStart = css.indexOf('@media (max-width: 760px) {');
+  const mediaEnd = css.indexOf('/* 搜索进入手机首屏', mediaStart);
+  assert.notEqual(mediaStart, -1, '缺少 760px 窄屏媒体查询');
+  assert.notEqual(mediaEnd, -1, '无法定位 760px 窄屏媒体查询结尾');
+  const mobileCss = css.slice(mediaStart, mediaEnd);
+  assert.match(mobileCss, /\.admin-product-row,\s*\.admin-compact-row\s*\{\s*grid-template-columns:\s*1fr;/s);
 });
 test('后台追加固定80条并防止旧请求覆盖', async () => {
   const c = pageContext('admin.js');

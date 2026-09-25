@@ -31,6 +31,17 @@ Excel 导入默认为增量预览。全量导入必须显式声明 `--mode full 
 5. 停止旧服务，使用 `start_showcase_server.bat` 启动 8899。
 6. 核对商品数、schema 版本、图片 404、错误率和接口延迟，再解除后台写入冻结。
 
+候选恢复和隔离启动必须使用恢复目录自己的配置，完整命令如下：
+
+```powershell
+$env:PYTHONPATH = "$PWD\src"
+$candidateDir = Join-Path 'tmp' ('candidate-showcase-' + (Get-Date -Format 'yyyyMMdd-HHmmss'))
+python -m moments_inventory.cli showcase-db-restore --snapshot "备份快照目录" --destination $candidateDir
+python -m moments_inventory.cli showcase-server --showcase-config (Join-Path $candidateDir 'config/showcase.yaml') --host 127.0.0.1 --port 8898
+```
+
+候选命令不得使用正式 `config/showcase.yaml`，也不得监听 8899。
+
 迁移脚本幂等，应用启动只执行尚未记录的版本。不要把工作树中的空 `output/ccdcpt` 当成正式样片库；实际路径以配置为准。
 
 备份命令因媒体引用不存在而停止时，必须先修复正式媒体路径，再重新生成带完整 `manifest.json` 的快照；不得跳过媒体校验或用占位文件作为正式备份。
@@ -42,7 +53,7 @@ Excel 导入默认为增量预览。全量导入必须显式声明 `--mode full 
 需要数据回滚时：
 
 1. 再次冻结写入并对当前状态制作完整快照。
-2. 使用 `showcase-db-restore --snapshot ... --destination ...` 恢复到全新目录。
+2. 使用 `python -m moments_inventory.cli showcase-db-restore --snapshot "备份快照目录" --destination "全新恢复目录"` 恢复到全新目录。
 3. 检查恢复报告、数据库完整性、商品数和媒体哈希。
 4. 在其他端口启动恢复副本并完成验收。
 5. 明确比较冻结后新增的写入，再人工决定是否切换配置。
