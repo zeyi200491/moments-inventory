@@ -83,6 +83,35 @@ test('客户自动恢复最多请求五页', async () => {
   await vm.runInContext('restoreListStateIfAvailable()', c);
   assert.equal(calls, 5);
 });
+test('操作记录安全显示筛选条件并按操作状态提供撤销', async () => {
+  const c = pageContext('admin.js');
+  c.fetch = async (url) => {
+    assert.equal(url, '/api/admin/operations');
+    return {ok:true,json:async () => ({operations:[
+      {operationId:'price',operationType:'price',summary:'改价',filterText:'scope=<all>&sold=false',createdAt:'1',undoneAt:''},
+      {operationId:'hide',operationType:'hide',summary:'隐藏',filterText:'scope=all',createdAt:'2',undoneAt:''},
+      {operationId:'show',operationType:'show',summary:'显示',filterText:'scope=all',createdAt:'3',undoneAt:''},
+      {operationId:'undo',operationType:'undo',summary:'撤销',filterText:'scope=all',createdAt:'4',undoneAt:''},
+      {operationId:'undone',operationType:'price',summary:'已撤销改价',filterText:'scope=all',createdAt:'5',undoneAt:'6'},
+    ]})};
+  };
+
+  await vm.runInContext('loadOperations()', c);
+  const html = c.nodes.get('operationList').innerHTML;
+  const operationRow = (id) => {
+    const match = html.match(new RegExp(`<div[^>]*data-operation-id="${id}"[\\s\\S]*?</div>`));
+    assert.ok(match, `缺少操作记录 ${id}`);
+    return match[0];
+  };
+
+  assert.match(operationRow('price'), /scope=&lt;all&gt;&amp;sold=false/);
+  assert.doesNotMatch(operationRow('price'), /scope=<all>&sold=false/);
+  assert.match(operationRow('price'), /class="undo-operation"/);
+  assert.match(operationRow('hide'), /class="undo-operation"/);
+  assert.match(operationRow('show'), /class="undo-operation"/);
+  assert.doesNotMatch(operationRow('undo'), /class="undo-operation"/);
+  assert.doesNotMatch(operationRow('undone'), /class="undo-operation"/);
+});
 test('批量执行拒绝双击且网络失败后重用幂等键', async () => {
   const c = pageContext('admin.js');
   vm.runInContext('adminState.lastBulkRequest = {previewId:"preview-1",idempotencyKey:"key-1"}; loadProducts = loadSections = loadDiagnostics = loadOperations = async () => {};', c);

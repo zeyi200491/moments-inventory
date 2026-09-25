@@ -1,5 +1,4 @@
 from dataclasses import replace
-from pathlib import Path
 
 import pytest
 from fastapi.testclient import TestClient
@@ -213,14 +212,39 @@ def test_bulk_hide_can_be_undone_and_restores_visibility(repo, authenticated_cli
     assert undo_log[2] == applied.json()['operationId']
 
 
-def test_operation_list_offers_undo_for_every_non_undo_operation():
-    admin_js = (
-        Path(__file__).parents[1]
-        / 'src/moments_inventory/showcase_web/static/admin.js'
-    ).read_text(encoding='utf-8')
+def test_bulk_undo_rejects_showing_sold_product_without_partial_updates(
+    repo, authenticated_client,
+):
+    repo.upsert_product(_product('a-unsold', visible=True, display_price=200))
+    repo.upsert_product(replace(
+        _product('z-sold', visible=True, display_price=200), sold=True,
+    ))
+    preview = authenticated_client.post('/api/admin/products/bulk-preview', json={
+        'scope': 'selected',
+        'operation': 'hide',
+        'productIds': ['a-unsold', 'z-sold'],
+    }).json()
+    applied = authenticated_client.post('/api/admin/products/bulk-apply', json={
+        'previewId': preview['previewId'],
+        'idempotencyKey': 'hide-sold-and-unsold',
+    })
+    assert applied.status_code == 200
+    assert applied.json()['updatedCount'] == 2
+    assert repo.get_product('a-unsold').visible is False
+    assert repo.get_product('z-sold').visible is False
 
-    assert 'operation.operationType !== "undo" && !operation.undoneAt' in admin_js
-    assert '撤销这次操作' in admin_js
+    undone = authenticated_client.post(
+        '/api/admin/operations/' + applied.json()['operationId'] + '/undo',
+        json={'idempotencyKey': 'reject-undo-show-sold'},
+    )
+
+    assert undone.status_code == 409
+    assert repo.get_product('a-unsold').visible is False
+    assert repo.get_product('z-sold').visible is False
+    operations = repo.list_admin_operations()
+    assert len(operations) == 1
+    assert operations[0].operation_id == applied.json()['operationId']
+    assert operations[0].undone_at == ''
 
 
 @pytest.mark.parametrize(

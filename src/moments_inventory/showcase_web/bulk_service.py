@@ -94,7 +94,7 @@ def execute(repo, owner, key, reference, *, undo=False):
         for start in range(0, len(product_ids), 500):
             chunk = product_ids[start : start + 500]
             placeholders = ','.join('?' for _ in chunk)
-            rows = conn.execute(f'''SELECT product_id,row_version,sold,price_override,
+            rows = conn.execute(f'''SELECT product_id,row_version,sold,visible,price_override,
                 visibility_override,override_origin FROM showcase_products
                 WHERE product_id IN ({placeholders})''', chunk).fetchall()
             current_products.update({row['product_id']: row for row in rows})
@@ -102,7 +102,7 @@ def execute(repo, owner, key, reference, *, undo=False):
             product = current_products.get(item['productId'])
             if product is None or product['row_version'] != item['rowVersion']:
                 raise HTTPException(409, '商品已被修改，请重新预览')
-            if operation_type == 'show' and product['sold']:
+            if product['sold'] and not product['visible'] and item['newVisible']:
                 raise HTTPException(409, '已售商品不能直接重新展示')
             if not undo:
                 item['oldPriceOverride'] = product['price_override']
