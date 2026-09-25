@@ -64,6 +64,7 @@ const BULK_PRICE_RANGES = {
   "601_800": [601, 800],
   "801_plus": [801, null],
 };
+const BULK_FILTER_CONFLICT = "__bulk_filter_conflict__";
 
 function escapeHtml(value) {
   return String(value ?? "")
@@ -1234,6 +1235,12 @@ function minimumNullablePrice(left, right) {
   return Math.min(left, right);
 }
 
+function intersectNullableCondition(left, right) {
+  if (left === null) return right;
+  if (right === null) return left;
+  return left === right ? left : BULK_FILTER_CONFLICT;
+}
+
 function buildBulkRequest() {
   const scope = document.getElementById("bulkScopeInput")?.value || "filtered";
   const filters = scope === "filtered" ? collectAdminFilters() : {
@@ -1249,8 +1256,15 @@ function buildBulkRequest() {
     filters.priceMin = bulkPriceMin;
     filters.priceMax = bulkPriceMax;
   }
-  filters.visible = nullableBooleanValue("bulkVisibleInput");
-  filters.sold = nullableBooleanValue("bulkSoldInput");
+  const bulkVisible = nullableBooleanValue("bulkVisibleInput");
+  const bulkSold = nullableBooleanValue("bulkSoldInput");
+  if (scope === "filtered") {
+    filters.visible = intersectNullableCondition(filters.visible, bulkVisible);
+    filters.sold = intersectNullableCondition(filters.sold, bulkSold);
+  } else {
+    filters.visible = bulkVisible;
+    filters.sold = bulkSold;
+  }
   return {
     scope,
     operation: document.getElementById("bulkOperationInput")?.value || "price",
@@ -1264,6 +1278,12 @@ function buildBulkRequest() {
 function validateBulkRequest(request) {
   if (request.scope === "selected" && request.productIds.length === 0) {
     throw new Error("请先勾选商品，或改用当前筛选结果");
+  }
+  if (request.filters.visible === BULK_FILTER_CONFLICT) {
+    throw new Error("商品筛选与批量面板的展示状态条件没有交集，请调整其中一个条件");
+  }
+  if (request.filters.sold === BULK_FILTER_CONFLICT) {
+    throw new Error("商品筛选与批量面板的已售状态条件没有交集，请调整其中一个条件");
   }
   const hasNarrowingFilter = Boolean(
     request.filters.query || request.filters.brands.length ||
@@ -1520,13 +1540,19 @@ openBulkConfirmButton?.addEventListener("click", () => {
   const summary = document.getElementById("bulkConfirmSummary");
   const warningList = document.getElementById("bulkConfirmWarnings");
   if (summary) {
-    summary.textContent = [
+    const ruleParts = [
       bulkScopeLabel(request),
-      `最终价格范围：${formatPriceRange(request.filters.priceMin, request.filters.priceMax)}`,
+      `执行前当前展示价范围：${formatPriceRange(request.filters.priceMin, request.filters.priceMax)}`,
       `状态：${bulkStatusLabel(request)}`,
       `动作：${bulkActionLabel(request)}`,
-      `匹配 ${preview.matchedCount ?? 0} 台，实际修改 ${preview.changedCount ?? 0} 台，跳过 ${preview.skippedCount ?? 0} 台`,
-    ].join(" · ");
+    ];
+    const priceStats = preview.priceStats || {};
+    if (request.operation === "price" && priceStats.minimum !== null && priceStats.minimum !== undefined &&
+        priceStats.maximum !== null && priceStats.maximum !== undefined) {
+      ruleParts.push(`实际修改项新价格范围：${formatPriceRange(priceStats.minimum, priceStats.maximum)}`);
+    }
+    ruleParts.push(`匹配 ${preview.matchedCount ?? 0} 台，实际修改 ${preview.changedCount ?? 0} 台，跳过 ${preview.skippedCount ?? 0} 台`);
+    summary.textContent = ruleParts.join(" · ");
   }
   if (warningList) {
     warningList.innerHTML = warnings.length
@@ -1571,10 +1597,39 @@ applyBulkButton?.addEventListener("click", async () => {
   const originalLabel = applyBulkButton.textContent;
   applyBulkButton.textContent = "正在执行…";
   try {
-    const result = await requestJson("/api/admin/products/bulk-apply", {
-      method: "POST",
-      body: JSON.stringify(adminState.lastBulkRequest),
-    }, { deferUnauthorizedUi: true });
+    let result;
+    try {
+      result = await requestJson("/api/admin/products/bulk-apply", {
+        method: "POST",
+        body: JSON.stringify(adminState.lastBulkRequest),
+      }, { deferUnauthorizedUi: true });
+    } catch (error) {
+      const recoverable = !error.status || error.status >= 500;
+      let message;
+      if (recoverable) {
+        message = error.status
+          ? `服务暂时不可用（${error.status}）。可重试同一预览，系统不会重复执行。`
+          : `网络连接异常：${error.message}。可重试同一预览，系统不会重复执行。`;
+      } else {
+        const messages = {
+          401: "登录已过期。请关闭窗口后重新登录，再重新生成预览。",
+          404: "预览不存在或已过期，请重新生成预览。",
+          409: "商品数据已经变化，请重新生成预览并核对差异。",
+          422: "执行参数已失效，请检查条件后重新生成预览。",
+        };
+        message = messages[error.status] || `当前预览无法继续执行（${error.status}），请重新生成预览。`;
+        adminState.bulkAuthExpired = error.status === 401;
+        invalidateBulkPreview(message);
+      }
+      if (bulkConfirmStatus) {
+        bulkConfirmStatus.textContent = message;
+        bulkConfirmStatus.hidden = false;
+        bulkConfirmStatus.focus();
+      }
+      if (bulkPreviewStatus && recoverable) bulkPreviewStatus.textContent = message;
+      return;
+    }
+
     adminState.lastBulkRequest = null;
     adminState.lastBulkPreview = null;
     adminState.selectedProductIds = new Set();
@@ -1582,32 +1637,13 @@ applyBulkButton?.addEventListener("click", async () => {
     if (exportBulkPreviewButton) exportBulkPreviewButton.disabled = true;
     if (bulkPreviewStatus) bulkPreviewStatus.textContent = `已执行，实际修改 ${result.updatedCount} 台商品。`;
     bulkConfirmDialog?.close("confirm");
-    await Promise.all([loadProducts(), loadSections(), loadDiagnostics(), loadOperations()]);
-  } catch (error) {
-    const recoverable = !error.status || error.status >= 500;
-    let message;
-    if (recoverable) {
-      message = error.status
-        ? `服务暂时不可用（${error.status}）。可重试同一预览，系统不会重复执行。`
-        : `网络连接异常：${error.message}。可重试同一预览，系统不会重复执行。`;
-    } else {
-      const messages = {
-        401: "登录已过期。请关闭窗口后重新登录，再重新生成预览。",
-        404: "预览不存在或已过期，请重新生成预览。",
-        409: "商品数据已经变化，请重新生成预览并核对差异。",
-        422: "执行参数已失效，请检查条件后重新生成预览。",
-      };
-      message = messages[error.status] || `当前预览无法继续执行（${error.status}），请重新生成预览。`;
-      adminState.bulkAuthExpired = error.status === 401;
-      invalidateBulkPreview(message);
-    }
-    if (bulkConfirmStatus) {
-      bulkConfirmStatus.textContent = message;
-      bulkConfirmStatus.hidden = false;
-      bulkConfirmStatus.focus();
-    }
-    if (bulkPreviewStatus && recoverable) {
-      bulkPreviewStatus.textContent = message;
+    try {
+      await Promise.all([loadProducts(), loadSections(), loadDiagnostics(), loadOperations()]);
+    } catch (_refreshError) {
+      if (bulkPreviewStatus) {
+        bulkPreviewStatus.textContent = "执行已完成，但数据刷新失败，请重新加载页面";
+        bulkPreviewStatus.focus();
+      }
     }
   } finally {
     adminState.bulkBusy = false;

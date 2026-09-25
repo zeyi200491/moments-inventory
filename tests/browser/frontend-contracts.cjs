@@ -157,6 +157,45 @@ test('显示和隐藏操作保留价格范围筛选并只隐藏改价动作字�
   assert.equal(c.nodes.get('bulkAmountField').hidden, true);
 });
 
+test('筛选范围对商品区和批量面板状态条件求交集', () => {
+  const c = pageContext('admin.js');
+  c.nodes.get('bulkScopeInput').value = 'filtered';
+  c.nodes.get('bulkPriceRangeInput').value = 'up_to_200';
+  c.nodes.get('batchAmountInput').value = '30';
+
+  c.nodes.get('adminVisibleFilterInput').value = '';
+  c.nodes.get('bulkVisibleInput').value = 'true';
+  assert.equal(vm.runInContext('buildBulkRequest().filters.visible', c), true);
+
+  c.nodes.get('adminVisibleFilterInput').value = 'false';
+  c.nodes.get('bulkVisibleInput').value = '';
+  assert.equal(vm.runInContext('buildBulkRequest().filters.visible', c), false);
+
+  c.nodes.get('adminVisibleFilterInput').value = 'true';
+  c.nodes.get('bulkVisibleInput').value = 'true';
+  assert.equal(vm.runInContext('buildBulkRequest().filters.visible', c), true);
+
+  c.nodes.get('adminVisibleFilterInput').value = 'false';
+  assert.throws(() => vm.runInContext('validateBulkRequest(buildBulkRequest())', c), /展示状态条件没有交集/);
+
+  c.nodes.get('adminVisibleFilterInput').value = '';
+  c.nodes.get('bulkVisibleInput').value = 'true';
+  c.nodes.get('adminSoldFilterInput').value = '';
+  c.nodes.get('bulkSoldInput').value = 'false';
+  assert.equal(vm.runInContext('buildBulkRequest().filters.sold', c), false);
+
+  c.nodes.get('adminSoldFilterInput').value = 'false';
+  assert.equal(vm.runInContext('buildBulkRequest().filters.sold', c), false);
+
+  c.nodes.get('adminSoldFilterInput').value = 'true';
+  assert.throws(() => vm.runInContext('validateBulkRequest(buildBulkRequest())', c), /已售状态条件没有交集/);
+
+  c.nodes.get('bulkScopeInput').value = 'all';
+  const allRequest = vm.runInContext('buildBulkRequest()', c);
+  assert.equal(allRequest.filters.visible, true);
+  assert.equal(allRequest.filters.sold, false);
+});
+
 test('批量请求校验作用范围、自定义区间和改价金额', () => {
   const c = pageContext('admin.js');
   c.nodes.get('bulkScopeInput').value = 'filtered';
@@ -250,7 +289,8 @@ test('批量确认提示高风险条件并在关闭后恢复焦点', () => {
   c.nodes.get('bulkPriceModeInput').value = 'fixed_final';
   c.nodes.get('batchAmountInput').value = '0';
   vm.runInContext(`adminState.lastBulkRequest = {previewId:'preview-1',idempotencyKey:'key-1'};
-    adminState.lastBulkPreview = {matchedCount:250,changedCount:230,skippedCount:4};`, c);
+    adminState.lastBulkPreview = {matchedCount:250,changedCount:230,skippedCount:4,
+      priceStats:{minimum:0,maximum:0,totalDelta:-1000}};`, c);
 
   c.nodes.get('openBulkConfirmButton').focus();
   c.nodes.get('openBulkConfirmButton').listeners.click();
@@ -260,7 +300,9 @@ test('批量确认提示高风险条件并在关闭后恢复焦点', () => {
   assert.match(c.nodes.get('bulkConfirmWarnings').innerHTML, /已售商品/);
   assert.match(c.nodes.get('bulkConfirmWarnings').innerHTML, /0 元/);
   assert.match(c.nodes.get('bulkConfirmSummary').textContent, /全部库存/);
-  assert.match(c.nodes.get('bulkConfirmSummary').textContent, /全部价格/);
+  assert.match(c.nodes.get('bulkConfirmSummary').textContent, /执行前当前展示价范围：全部价格/);
+  assert.doesNotMatch(c.nodes.get('bulkConfirmSummary').textContent, /最终价格范围/);
+  assert.match(c.nodes.get('bulkConfirmSummary').textContent, /实际修改项新价格范围：0 元/);
   assert.match(c.nodes.get('bulkConfirmSummary').textContent, /展示中和已隐藏/);
   assert.match(c.nodes.get('bulkConfirmSummary').textContent, /未售和已售/);
   assert.match(c.nodes.get('bulkConfirmSummary').textContent, /固定最终价 0 元/);
@@ -331,6 +373,23 @@ test('新预览会取消旧请求并维护预览按钮忙碌状态', async () =>
   await Promise.all([first, second]);
   assert.equal(c.nodes.get('generateBulkPreviewButton').disabled, false);
   assert.equal(vm.runInContext('adminState.lastBulkRequest.previewId', c), 'new');
+});
+
+test('批量提交成功后刷新失败不会回退为执行未确认', async () => {
+  const c = pageContext('admin.js');
+  vm.runInContext(`adminState.lastBulkRequest = {previewId:'preview-ok',idempotencyKey:'key-ok'};
+    adminState.lastBulkPreview = {matchedCount:2,changedCount:2,skippedCount:0};
+    loadProducts = async () => { throw new Error('刷新失败'); };
+    loadSections = loadDiagnostics = loadOperations = async () => {};`, c);
+  c.fetch = async () => ({ok:true,json:async () => ({updatedCount:2})});
+
+  await c.nodes.get('applyBulkButton').listeners.click();
+
+  assert.equal(vm.runInContext('adminState.lastBulkRequest', c), null);
+  assert.equal(vm.runInContext('adminState.lastBulkPreview', c), null);
+  assert.equal(c.nodes.get('applyBulkButton').disabled, true);
+  assert.equal(c.nodes.get('bulkPreviewStatus').textContent, '执行已完成，但数据刷新失败，请重新加载页面');
+  assert.doesNotMatch(c.nodes.get('bulkPreviewStatus').textContent, /执行未确认|可重试/);
 });
 
 test('批量对话框和禁用按钮具备窄屏安全样式', () => {
