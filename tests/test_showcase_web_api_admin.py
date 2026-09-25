@@ -644,6 +644,35 @@ def test_admin_bulk_selected_scope_combines_and_deduplicates_product_references(
 
 
 @pytest.mark.parametrize(
+    ("reference_field", "missing_reference"),
+    [
+        ("productIds", "missing-only"),
+        ("publicIds", "missing-public-only"),
+    ],
+)
+def test_admin_bulk_selected_scope_with_only_missing_references_returns_empty_preview(
+    authenticated_client: TestClient,
+    repo: SQLiteShowcaseRepository,
+    reference_field: str,
+    missing_reference: str,
+) -> None:
+    repo.upsert_product(_product_with("existing", model="佳能a", brand="佳能", price=300))
+
+    response = authenticated_client.post(
+        "/api/admin/products/bulk-preview",
+        json={
+            "scope": "selected",
+            "operation": "hide",
+            reference_field: [missing_reference],
+        },
+    )
+
+    assert response.status_code == 200
+    assert response.json()["total"] == 0
+    assert response.json()["items"] == []
+
+
+@pytest.mark.parametrize(
     "payload",
     [
         {
