@@ -1,16 +1,15 @@
 from __future__ import annotations
 
+import csv
 from dataclasses import replace
 from pathlib import Path
-from io import BytesIO
+from io import BytesIO, StringIO
 
 import pytest
-from fastapi import HTTPException
 from fastapi.testclient import TestClient
 
 from moments_inventory.showcase_web.app import create_showcase_app
 from moments_inventory.showcase_web.auth import hash_password
-from moments_inventory.showcase_web import bulk_service
 from moments_inventory.showcase_web.models import ShowcaseProduct, ShowcaseSection
 from moments_inventory.showcase_web.repository import SQLiteShowcaseRepository
 from PIL import Image
@@ -1047,6 +1046,9 @@ def test_admin_can_export_complete_bulk_preview_csv(
     assert response.status_code == 200
     assert response.headers["content-type"].startswith("text/csv")
     assert "attachment" in response.headers["content-disposition"]
+    assert response.headers["cache-control"] == "no-store"
+    assert response.headers["x-content-type-options"] == "nosniff"
+    assert "content-length" not in response.headers
     assert response.content.startswith(b"\xef\xbb\xbf")
     assert response.text.count("\n") == 206
     assert "p-204" in response.text
@@ -1057,31 +1059,141 @@ def test_admin_can_export_complete_bulk_preview_csv(
 
 
 def test_bulk_preview_snapshot_is_private_to_its_owner(
+    authenticated_client: TestClient,
     repo: SQLiteShowcaseRepository,
 ) -> None:
-    preview_id, _ = bulk_service.save_preview(repo, "owner-a", {}, [{"productId": "p1"}])
+    repo.upsert_product(_product_with("p1", model="佳能a", brand="佳能", price=200))
+    preview = authenticated_client.post(
+        "/api/admin/products/bulk-preview",
+        json={
+            "scope": "selected",
+            "operation": "price",
+            "priceMode": "increment",
+            "amount": 30,
+            "productIds": ["p1"],
+        },
+    ).json()
+    other_client = TestClient(create_showcase_app(repository=repo))
+    login = other_client.post("/api/admin/login", json={"password": "admin-pass"})
+    assert login.status_code == 200
 
-    with pytest.raises(HTTPException) as error:
-        bulk_service.load_preview_items(repo, "owner-b", preview_id)
+    response = other_client.get(
+        f"/api/admin/products/bulk-preview/{preview['previewId']}/export"
+    )
 
-    assert getattr(error.value, "status_code", None) == 404
+    assert response.status_code == 404
 
 
 def test_bulk_preview_snapshot_rejects_expired_preview(
+    authenticated_client: TestClient,
     repo: SQLiteShowcaseRepository,
 ) -> None:
-    preview_id, _ = bulk_service.save_preview(repo, "owner-a", {}, [{"productId": "p1"}])
+    repo.upsert_product(_product_with("p1", model="佳能a", brand="佳能", price=200))
+    preview = authenticated_client.post(
+        "/api/admin/products/bulk-preview",
+        json={
+            "scope": "selected",
+            "operation": "price",
+            "priceMode": "increment",
+            "amount": 30,
+            "productIds": ["p1"],
+        },
+    ).json()
     with repo._lock, repo._get_connection() as connection:
         connection.execute(
             "UPDATE showcase_bulk_previews SET expires_at=? WHERE preview_id=?",
-            ("2000-01-01T00:00:00+00:00", preview_id),
+            ("2000-01-01T00:00:00+00:00", preview["previewId"]),
         )
 
-    with pytest.raises(HTTPException) as error:
-        bulk_service.load_preview_items(repo, "owner-a", preview_id)
+    response = authenticated_client.get(
+        f"/api/admin/products/bulk-preview/{preview['previewId']}/export"
+    )
 
-    assert getattr(error.value, "status_code", None) == 409
-    assert "过期" in str(getattr(error.value, "detail", ""))
+    assert response.status_code == 409
+    assert "过期" in response.json()["detail"]
+
+
+def test_bulk_preview_export_requires_admin_login(
+    repo: SQLiteShowcaseRepository,
+) -> None:
+    client = TestClient(create_showcase_app(repository=repo))
+
+    response = client.get("/api/admin/products/bulk-preview/missing/export")
+
+    assert response.status_code == 401
+
+
+def test_bulk_preview_export_uses_saved_snapshot_after_inventory_changes(
+    authenticated_client: TestClient,
+    repo: SQLiteShowcaseRepository,
+) -> None:
+    repo.upsert_product(_product_with("p1", model="快照型号", brand="佳能", price=200))
+    preview = authenticated_client.post(
+        "/api/admin/products/bulk-preview",
+        json={
+            "scope": "selected",
+            "operation": "price",
+            "priceMode": "increment",
+            "amount": 30,
+            "productIds": ["p1"],
+        },
+    ).json()
+    assert repo.update_product_price("p1", 999) is True
+
+    response = authenticated_client.get(
+        f"/api/admin/products/bulk-preview/{preview['previewId']}/export"
+    )
+    rows = list(csv.reader(StringIO(response.content.decode("utf-8-sig"), newline="")))
+
+    assert response.status_code == 200
+    assert rows[1][0] == "p1"
+    assert rows[1][4:7] == ["200", "230", "30"]
+
+
+def test_bulk_preview_export_escapes_formula_prefixes_and_preserves_csv_text(
+    authenticated_client: TestClient,
+    repo: SQLiteShowcaseRepository,
+) -> None:
+    dangerous_prefixes = ("=", "+", "-", "@", "\t", "\r", "\n")
+    for index, prefix in enumerate(dangerous_prefixes):
+        repo.upsert_product(_product_with(
+            f"{prefix}id-{index}",
+            model=f"{prefix}型号-{index}",
+            brand=f"{prefix}品牌-{index}",
+            price=200 + index,
+        ))
+    special_model = '机型,"旗舰"\n第二行'
+    special_brand = '品,牌"甲"'
+    repo.upsert_product(_product_with(
+        "quoted", model=special_model, brand=special_brand, price=300,
+    ))
+    preview = authenticated_client.post(
+        "/api/admin/products/bulk-preview",
+        json={
+            "scope": "all",
+            "operation": "price",
+            "priceMode": "decrement",
+            "amount": 30,
+            "filters": {"visible": True, "sold": False},
+        },
+    ).json()
+
+    response = authenticated_client.get(
+        f"/api/admin/products/bulk-preview/{preview['previewId']}/export"
+    )
+    rows = list(csv.reader(StringIO(response.content.decode("utf-8-sig"), newline="")))
+
+    assert response.status_code == 200
+    assert len(rows[0]) == 11
+    data_rows = {row[0]: row for row in rows[1:]}
+    for index, prefix in enumerate(dangerous_prefixes):
+        row = data_rows[f"'{prefix}id-{index}"]
+        assert row[1] == f"'{prefix}型号-{index}"
+        assert row[2] == f"'{prefix}品牌-{index}"
+        assert row[6] == "-30"
+    quoted_row = data_rows["quoted"]
+    assert quoted_row[1] == special_model
+    assert quoted_row[2] == special_brand
 
 
 def test_admin_diagnostics_reports_abnormal_products(

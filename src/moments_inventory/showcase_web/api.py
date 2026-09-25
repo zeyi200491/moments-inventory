@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import csv
-import io
 from dataclasses import replace
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
@@ -12,6 +11,7 @@ import uuid
 
 from fastapi import APIRouter, Cookie, Depends, File, Form, HTTPException, UploadFile
 from fastapi import Response
+from fastapi.responses import StreamingResponse
 from pydantic import BaseModel, Field, field_validator, model_validator
 from PIL import Image, UnidentifiedImageError
 from moments_inventory.showcase_web import bulk_service
@@ -51,6 +51,22 @@ from moments_inventory.showcase_web.sample_images import (
 _MAX_UPLOAD_BYTES = 10 * 1024 * 1024
 _MAX_IMAGE_PIXELS = 40_000_000
 _IMAGE_SUFFIXES = {"JPEG": ".jpg", "PNG": ".png", "WEBP": ".webp"}
+_CSV_FORMULA_PREFIXES = ("=", "+", "-", "@", "\t", "\r", "\n")
+
+
+class _CsvLineSink:
+    """让 csv.writer 直接返回单行文本，避免累积完整 CSV。"""
+
+    @staticmethod
+    def write(value: str) -> str:
+        return value
+
+
+def _safe_csv_text(value: str) -> str:
+    """阻止电子表格把来自库存数据的文本识别为公式。"""
+    if value.startswith(_CSV_FORMULA_PREFIXES):
+        return f"'{value}"
+    return value
 
 
 async def _validated_image_upload(file: UploadFile, directory: Path) -> tuple[Path, str]:
@@ -1367,38 +1383,42 @@ def create_admin_router(
         preview_id: str,
         showcase_admin_session: str = Cookie(default=""),
         repo: SQLiteShowcaseRepository = Depends(get_repository),
-    ) -> Response:
+    ) -> StreamingResponse:
         items = bulk_service.load_preview_items(
             repo, showcase_admin_session, preview_id,
         )
-        output = io.StringIO()
-        writer = csv.writer(output, lineterminator="\n")
-        writer.writerow([
-            "商品ID", "型号", "品牌", "导入原价", "当前展示价", "新展示价",
-            "变化金额", "是否修改", "跳过原因", "展示状态", "已售状态",
-        ])
-        for item in items:
-            writer.writerow([
-                item["productId"],
-                item["model"],
-                item["brand"],
-                item["sourcePrice"],
-                item["oldPrice"],
-                item["newPrice"],
-                item["delta"],
-                "是" if item["changed"] else "否",
-                item["skippedReason"],
-                "展示" if item["oldVisible"] else "隐藏",
-                "已售" if item["sold"] else "未售",
+
+        def iter_csv_rows():
+            writer = csv.writer(_CsvLineSink(), lineterminator="\n")
+            yield "\ufeff"
+            yield writer.writerow([
+                "商品ID", "型号", "品牌", "导入原价", "当前展示价", "新展示价",
+                "变化金额", "是否修改", "跳过原因", "展示状态", "已售状态",
             ])
-        content = "\ufeff" + output.getvalue()
-        return Response(
-            content=content.encode("utf-8"),
+            for item in items:
+                yield writer.writerow([
+                    _safe_csv_text(item["productId"]),
+                    _safe_csv_text(item["model"]),
+                    _safe_csv_text(item["brand"]),
+                    item["sourcePrice"],
+                    item["oldPrice"],
+                    item["newPrice"],
+                    item["delta"],
+                    "是" if item["changed"] else "否",
+                    _safe_csv_text(item["skippedReason"]),
+                    "展示" if item["oldVisible"] else "隐藏",
+                    "已售" if item["sold"] else "未售",
+                ])
+
+        return StreamingResponse(
+            iter_csv_rows(),
             media_type="text/csv; charset=utf-8",
             headers={
                 "Content-Disposition": (
                     f'attachment; filename="ccd-bulk-preview-{preview_id}.csv"'
                 ),
+                "Cache-Control": "no-store",
+                "X-Content-Type-Options": "nosniff",
             },
         )
 
