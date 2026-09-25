@@ -1115,6 +1115,85 @@ textarea {
   grid-template-columns: repeat(auto-fit, minmax(150px, 1fr));
 }
 
+.bulk-workbench {
+  margin: 16px 0;
+  padding: 16px;
+  border: 2px solid rgba(216, 78, 134, 0.32);
+  background: #fffafb;
+}
+
+.bulk-workbench-heading,
+.bulk-preview-actions,
+.bulk-confirm-actions {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  gap: 12px;
+  flex-wrap: wrap;
+}
+
+.bulk-workbench-heading h3 {
+  margin: 0 0 4px;
+}
+
+.bulk-workbench-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(170px, 1fr));
+  align-items: end;
+  gap: 12px;
+  margin-top: 14px;
+}
+
+.bulk-preview-stats {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(120px, 1fr));
+  gap: 8px;
+  margin-top: 12px;
+}
+
+.bulk-preview-stat {
+  padding: 10px;
+  border: 1px solid var(--line);
+  background: var(--surface);
+}
+
+.bulk-preview-stat strong {
+  display: block;
+  font-size: 20px;
+  font-variant-numeric: tabular-nums;
+}
+
+.bulk-confirm-dialog {
+  width: min(620px, calc(100vw - 32px));
+  border: 1px solid var(--line);
+  padding: 22px;
+  background: var(--surface);
+  color: var(--ink);
+  box-shadow: var(--shadow);
+}
+
+.bulk-confirm-dialog::backdrop {
+  background: rgba(38, 24, 31, 0.46);
+}
+
+.bulk-confirm-dialog h3 {
+  margin-top: 0;
+}
+
+.bulk-warning-list {
+  color: #9d3e2e;
+  font-weight: 800;
+}
+
+button:focus-visible,
+a:focus-visible,
+input:focus-visible,
+select:focus-visible,
+textarea:focus-visible {
+  outline: 3px solid rgba(216, 78, 134, 0.42);
+  outline-offset: 2px;
+}
+
 .admin-actions-row {
   display: flex;
   flex-wrap: wrap;
@@ -1661,6 +1740,15 @@ textarea {
 
   .toolbar {
     grid-template-columns: 1fr;
+  }
+
+  .bulk-workbench-grid {
+    grid-template-columns: 1fr;
+  }
+
+  .bulk-preview-actions > button,
+  .bulk-confirm-actions > button {
+    width: 100%;
   }
 
   .access-form,

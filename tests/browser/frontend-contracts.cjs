@@ -24,6 +24,19 @@ test('草稿仅包含变更字段', () => {
   const u = helpers();
   assert.equal(JSON.stringify(u.changedFields({model:'A',displayPrice:12,recommendTags:['a']},{model:'B',displayPrice:12,recommendTags:['a']})), '{"model":"B"}');
 });
+test('商品管理包含明确的批量作用范围和价格段控件', () => {
+  const html = fs.readFileSync(path.join(root, 'admin.html'), 'utf8');
+  assert.match(html, /id="bulkScopeInput"/);
+  assert.match(html, /value="selected"/);
+  assert.match(html, /value="filtered"/);
+  assert.match(html, /value="all"/);
+  assert.match(html, /id="bulkPriceRangeInput"/);
+  for (const value of ['up_to_200', '201_300', '301_600', '601_800', '801_plus', 'custom']) {
+    assert.match(html, new RegExp(`value="${value}"`));
+  }
+  assert.ok(html.indexOf('id="bulkPricingPanel"') > html.indexOf('<h2>商品管理</h2>'));
+  assert.match(html, /id="bulkPreviewStatus"[^>]*aria-live="polite"/);
+});
 
 function pageContext(file) {
   const nodes = new Map();
