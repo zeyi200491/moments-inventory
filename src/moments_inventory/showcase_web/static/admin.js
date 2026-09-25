@@ -13,6 +13,11 @@ const adminProductSearchInput = document.getElementById("adminProductSearchInput
 const adminProductCount = document.getElementById("adminProductCount");
 const adminLoadMoreButton = document.getElementById("adminLoadMoreButton");
 const bulkPreviewPanel = document.getElementById("bulkPreviewPanel");
+const bulkPreviewSummary = document.getElementById("bulkPreviewSummary");
+const bulkPreviewStatus = document.getElementById("bulkPreviewStatus");
+const openBulkConfirmButton = document.getElementById("openBulkConfirmButton");
+const exportBulkPreviewButton = document.getElementById("exportBulkPreviewButton");
+const bulkConfirmDialog = document.getElementById("bulkConfirmDialog");
 const applyBulkButton = document.getElementById("applyBulkButton");
 const sampleMatchingSummary = document.getElementById("sampleMatchingSummary");
 const sampleMatchProductList = document.getElementById("sampleMatchProductList");
@@ -34,6 +39,7 @@ const adminState = {
   productTotal: 0,
   productHasMore: false,
   lastBulkRequest: null,
+  lastBulkPreview: null,
   drafts: new Map(),
   productRequestId: 0,
   productController: null,
@@ -45,6 +51,23 @@ const adminState = {
 };
 
 const ADMIN_PRODUCT_PAGE_SIZE = 80;
+const BULK_PRICE_RANGES = {
+  all: [null, null],
+  up_to_200: [null, 200],
+  "201_300": [201, 300],
+  "301_600": [301, 600],
+  "601_800": [601, 800],
+  "801_plus": [801, null],
+};
+const BULK_PRICE_RANGE_LABELS = {
+  all: "全部价格",
+  up_to_200: "200 元以内",
+  "201_300": "201～300 元",
+  "301_600": "301～600 元",
+  "601_800": "601～800 元",
+  "801_plus": "801 元以上",
+  custom: "自定义价格区间",
+};
 
 function escapeHtml(value) {
   return String(value ?? "")
@@ -160,6 +183,7 @@ function clearAdminFilters() {
   }
   adminState.visibleProductCount = ADMIN_PRODUCT_PAGE_SIZE;
   adminState.selectedProductIds = new Set();
+  invalidateBulkPreview();
   loadProducts();
 }
 
@@ -231,6 +255,7 @@ function renderAdminProducts() {
   if (adminLoadMoreButton) {
     adminLoadMoreButton.hidden = !adminState.productHasMore;
   }
+  updateBulkScopeSummary();
 }
 
 async function loadProducts({ append = false } = {}) {
@@ -697,6 +722,7 @@ adminProductSearchInput?.addEventListener("input", (event) => {
   ++adminState.productRequestId;
   adminState.productQuery = event.target.value.trim().toLowerCase();
   adminState.visibleProductCount = ADMIN_PRODUCT_PAGE_SIZE;
+  invalidateBulkPreview();
   adminSearchTimer = setTimeout(() => loadProducts(), 300);
 });
 
@@ -709,11 +735,13 @@ for (const id of [
   "adminBodyImageFilterInput",
   "adminSampleImageFilterInput",
   "adminManualPriceFilterInput",
+  "adminReviewStateFilterInput",
   "adminTagFilterInput",
 ]) {
   document.getElementById(id)?.addEventListener("change", () => {
     adminState.visibleProductCount = ADMIN_PRODUCT_PAGE_SIZE;
     adminState.selectedProductIds = new Set();
+    invalidateBulkPreview();
     loadProducts();
   });
 }
@@ -1173,75 +1201,305 @@ partnerList.addEventListener("click", async (event) => {
   }
 });
 
-document.getElementById("batchPriceForm").addEventListener("submit", async (event) => {
-  event.preventDefault();
-  if (adminState.bulkBusy) return;
-  adminState.lastBulkRequest = null;
-  if (applyBulkButton) applyBulkButton.disabled = true;
-  const previewRequestId = ++adminState.previewRequestId;
-  const request = buildBulkRequest();
-  try {
-  const preview = await requestJson("/api/admin/products/bulk-preview", {
-    method: "POST",
-    body: JSON.stringify(request),
-  });
-  if (previewRequestId !== adminState.previewRequestId) return;
-  adminState.lastBulkRequest = { previewId: preview.previewId, idempotencyKey: crypto.randomUUID() };
-  renderBulkPreview(preview);
-  if (applyBulkButton) applyBulkButton.disabled = preview.total === 0 || !preview.previewId;
-  } catch (error) {
-    if (previewRequestId === adminState.previewRequestId) bulkPreviewPanel.textContent = `预览失败：${error.message}`;
+function nullableBooleanValue(id) {
+  const value = document.getElementById(id)?.value ?? "";
+  if (value === "true") return true;
+  if (value === "false") return false;
+  return null;
+}
+
+function nonNegativeNumberInputValue(id) {
+  const raw = String(document.getElementById(id)?.value ?? "").trim();
+  if (raw === "") return null;
+  const value = Number(raw);
+  return Number.isInteger(value) && value >= 0 ? value : Number.NaN;
+}
+
+function selectedBulkPriceRange() {
+  const value = document.getElementById("bulkPriceRangeInput")?.value || "all";
+  if (value === "custom") {
+    return [
+      nonNegativeNumberInputValue("bulkMinPriceInput"),
+      nonNegativeNumberInputValue("bulkMaxPriceInput"),
+    ];
   }
-});
+  return BULK_PRICE_RANGES[value] || [null, null];
+}
 
 function buildBulkRequest() {
+  const scope = document.getElementById("bulkScopeInput")?.value || "filtered";
+  const filters = scope === "filtered" ? collectAdminFilters() : {
+    query: "", brands: [], priceMin: null, priceMax: null,
+    visible: null, sold: null, hasBodyImage: null,
+    hasSampleImage: null, manualPrice: null, reviewState: "", tags: [],
+  };
+  const [priceMin, priceMax] = selectedBulkPriceRange();
+  filters.priceMin = priceMin;
+  filters.priceMax = priceMax;
+  filters.visible = nullableBooleanValue("bulkVisibleInput");
+  filters.sold = nullableBooleanValue("bulkSoldInput");
   return {
+    scope,
     operation: document.getElementById("bulkOperationInput")?.value || "price",
     priceMode: document.getElementById("bulkPriceModeInput")?.value || "increment",
     amount: Number(document.getElementById("batchAmountInput")?.value || 0),
-    productIds: [...adminState.selectedProductIds],
-    filters: collectAdminFilters(),
+    productIds: scope === "selected" ? [...adminState.selectedProductIds] : [],
+    filters,
   };
 }
 
-function renderBulkPreview(preview) {
-  if (!bulkPreviewPanel) return;
-  const items = Array.isArray(preview.items) ? preview.items : [];
-  bulkPreviewPanel.innerHTML = `
-    <div class="admin-compact-row">
-      <strong>即将影响 ${preview.total || 0} 台商品</strong>
-      <span>下方最多显示前 ${items.length} 台预览，确认后才会写入数据库。</span>
-    </div>
-    ${items.map((item) => `
-      <div class="admin-compact-row">
-        <strong>${escapeHtml(item.model)} · ${escapeHtml(item.brand)}</strong>
-        <span>价格 ${item.oldPrice} -> ${item.newPrice}（${item.delta >= 0 ? "+" : ""}${item.delta}） · 状态 ${item.oldVisible ? "展示" : "隐藏"} -> ${item.newVisible ? "展示" : "隐藏"}</span>
-      </div>
-    `).join("")}
-  `;
+function validateBulkRequest(request) {
+  if (request.scope === "selected" && request.productIds.length === 0) {
+    throw new Error("请先勾选商品，或改用当前筛选结果");
+  }
+  const hasNarrowingFilter = Boolean(
+    request.filters.query || request.filters.brands.length ||
+    request.filters.priceMin !== null || request.filters.priceMax !== null ||
+    request.filters.hasBodyImage !== null || request.filters.hasSampleImage !== null ||
+    request.filters.manualPrice !== null || request.filters.reviewState || request.filters.tags.length
+  );
+  if (request.scope === "filtered" && !hasNarrowingFilter) {
+    throw new Error("请先选择价格段或设置商品筛选；如需处理全部展示中未售商品，请明确选择全部库存");
+  }
+  for (const value of [request.filters.priceMin, request.filters.priceMax]) {
+    if (value !== null && (!Number.isInteger(value) || value < 0)) {
+      throw new Error("价格范围必须填写 0 或正整数");
+    }
+  }
+  if (request.filters.priceMin !== null && request.filters.priceMax !== null &&
+      request.filters.priceMin > request.filters.priceMax) {
+    throw new Error("最低价格不能高于最高价格");
+  }
+  if (request.operation === "price") {
+    if (!Number.isInteger(request.amount) || request.amount < 0) {
+      throw new Error("改价金额必须填写 0 或正整数");
+    }
+    if (request.priceMode !== "fixed_final" && request.amount <= 0) {
+      throw new Error("加价或减价金额必须大于 0");
+    }
+  }
 }
+
+function syncBulkControls() {
+  const operation = document.getElementById("bulkOperationInput")?.value || "price";
+  const priceMode = document.getElementById("bulkPriceModeInput")?.value || "increment";
+  const rangeMode = document.getElementById("bulkPriceRangeInput")?.value || "all";
+  document.querySelectorAll(".bulk-price-field").forEach((field) => {
+    field.hidden = operation !== "price";
+  });
+  const showCustom = operation === "price" && rangeMode === "custom";
+  const minField = document.getElementById("bulkCustomMinField");
+  const maxField = document.getElementById("bulkCustomMaxField");
+  if (minField) minField.hidden = !showCustom;
+  if (maxField) maxField.hidden = !showCustom;
+  const labels = {
+    increment: "每台增加金额",
+    decrement: "每台减少金额",
+    fixed_final: "新的展示价格",
+  };
+  const amountLabel = document.getElementById("bulkAmountLabel");
+  if (amountLabel) amountLabel.textContent = labels[priceMode] || labels.increment;
+}
+
+function bulkPriceRangeLabel() {
+  const range = document.getElementById("bulkPriceRangeInput")?.value || "all";
+  if (range !== "custom") return BULK_PRICE_RANGE_LABELS[range] || BULK_PRICE_RANGE_LABELS.all;
+  const [minimum, maximum] = selectedBulkPriceRange();
+  if (Number.isNaN(minimum) || Number.isNaN(maximum)) return BULK_PRICE_RANGE_LABELS.custom;
+  if (minimum === null && maximum === null) return BULK_PRICE_RANGE_LABELS.custom;
+  if (minimum === null) return `${maximum} 元以内`;
+  if (maximum === null) return `${minimum} 元以上`;
+  return `${minimum}～${maximum} 元`;
+}
+
+function updateBulkScopeSummary() {
+  const scope = document.getElementById("bulkScopeInput")?.value || "filtered";
+  const scopeText = scope === "selected"
+    ? `已勾选 ${adminState.selectedProductIds.size} 台商品`
+    : scope === "all"
+      ? "以全部库存为基础范围"
+      : `当前筛选结果共 ${adminState.productTotal} 台`;
+  const target = document.getElementById("bulkScopeSummary");
+  if (target) target.textContent = `${scopeText} · ${bulkPriceRangeLabel()}`;
+}
+
+function invalidateBulkPreview(message = "条件已变化，请重新生成预览") {
+  ++adminState.previewRequestId;
+  adminState.lastBulkRequest = null;
+  adminState.lastBulkPreview = null;
+  if (openBulkConfirmButton) openBulkConfirmButton.disabled = true;
+  if (exportBulkPreviewButton) exportBulkPreviewButton.disabled = true;
+  if (applyBulkButton) applyBulkButton.disabled = true;
+  if (bulkPreviewSummary) bulkPreviewSummary.innerHTML = "";
+  if (bulkPreviewPanel) bulkPreviewPanel.innerHTML = "";
+  if (bulkPreviewStatus) bulkPreviewStatus.textContent = message;
+}
+
+function renderBulkPreview(preview) {
+  if (!bulkPreviewPanel || !bulkPreviewSummary) return;
+  const items = Array.isArray(preview.items) ? preview.items : [];
+  const stats = preview.priceStats || {};
+  const skipReasons = Object.entries(preview.skipReasons || {});
+  const statCards = [
+    ["匹配", preview.matchedCount ?? 0],
+    ["实际修改", preview.changedCount ?? 0],
+    ["价格不变", preview.unchangedCount ?? 0],
+    ["跳过", preview.skippedCount ?? 0],
+    ["最低新价格", stats.minimum ?? "—"],
+    ["最高新价格", stats.maximum ?? "—"],
+    ["合计变化", stats.totalDelta ?? 0],
+  ].map(([label, value]) => `
+    <div class="bulk-preview-stat"><strong>${escapeHtml(value)}</strong><span>${label}</span></div>
+  `).join("");
+  const skipReasonText = skipReasons.length
+    ? skipReasons.map(([reason, count]) => `${escapeHtml(reason)} ${escapeHtml(count)} 台`).join(" · ")
+    : "无跳过商品";
+  bulkPreviewSummary.innerHTML = `${statCards}<p class="bulk-skip-reasons">跳过原因：${skipReasonText}</p>`;
+  bulkPreviewPanel.innerHTML = items.length ? items.map((item) => `
+    <div class="admin-compact-row">
+      <strong>${escapeHtml(item.model)} · ${escapeHtml(item.brand)}</strong>
+      <span>导入价 ${escapeHtml(item.sourcePrice)} · 当前价 ${escapeHtml(item.oldPrice)} → 新价格 ${escapeHtml(item.newPrice)}
+        （${item.delta >= 0 ? "+" : ""}${escapeHtml(item.delta)}） ·
+        状态 ${item.oldVisible ? "展示" : "隐藏"} → ${item.newVisible ? "展示" : "隐藏"}
+        ${item.skippedReason ? ` · 跳过：${escapeHtml(item.skippedReason)}` : ""}</span>
+    </div>
+  `).join("") : `<p class="empty-admin-text">当前范围没有可预览的商品</p>`;
+  if (bulkPreviewStatus) {
+    const displayedCount = preview.displayedCount ?? items.length;
+    bulkPreviewStatus.textContent = preview.truncated
+      ? `只展示前 ${displayedCount} 台，完整结果请导出 CSV。预览 15 分钟内有效。`
+      : `已生成 ${preview.matchedCount ?? 0} 台商品的完整预览，预览 15 分钟内有效。`;
+  }
+}
+
+document.getElementById("batchPriceForm")?.addEventListener("submit", async (event) => {
+  event.preventDefault();
+  if (adminState.bulkBusy) return;
+  invalidateBulkPreview("正在生成预览…");
+  const previewRequestId = adminState.previewRequestId;
+  try {
+    const request = buildBulkRequest();
+    validateBulkRequest(request);
+    const preview = await requestJson("/api/admin/products/bulk-preview", {
+      method: "POST",
+      body: JSON.stringify(request),
+    });
+    if (previewRequestId !== adminState.previewRequestId) return;
+    adminState.lastBulkPreview = preview;
+    adminState.lastBulkRequest = {
+      previewId: preview.previewId,
+      idempotencyKey: crypto.randomUUID(),
+    };
+    renderBulkPreview(preview);
+    const canExecute = (preview.changedCount ?? 0) > 0 && Boolean(preview.previewId);
+    if (openBulkConfirmButton) {
+      openBulkConfirmButton.disabled = !canExecute;
+    }
+    if (applyBulkButton) applyBulkButton.disabled = !canExecute;
+    if (exportBulkPreviewButton) exportBulkPreviewButton.disabled = !preview.previewId;
+  } catch (error) {
+    if (previewRequestId === adminState.previewRequestId && bulkPreviewStatus) {
+      bulkPreviewStatus.textContent = `无法生成预览：${error.message}`;
+    }
+  }
+});
+
+for (const id of [
+  "bulkScopeInput", "bulkOperationInput", "bulkPriceRangeInput",
+  "bulkMinPriceInput", "bulkMaxPriceInput", "bulkVisibleInput",
+  "bulkSoldInput", "bulkPriceModeInput", "batchAmountInput",
+]) {
+  const input = document.getElementById(id);
+  const eventName = ["bulkMinPriceInput", "bulkMaxPriceInput", "batchAmountInput"].includes(id)
+    ? "input"
+    : "change";
+  input?.addEventListener(eventName, () => {
+    if (id === "bulkOperationInput") {
+      const operation = document.getElementById("bulkOperationInput")?.value || "price";
+      const visibleInput = document.getElementById("bulkVisibleInput");
+      if (visibleInput) visibleInput.value = operation === "show" ? "false" : "true";
+    }
+    syncBulkControls();
+    updateBulkScopeSummary();
+    invalidateBulkPreview();
+  });
+}
+
+document.getElementById("clearBulkSelectionButton")?.addEventListener("click", () => {
+  adminState.selectedProductIds = new Set();
+  renderAdminProducts();
+  updateBulkScopeSummary();
+  invalidateBulkPreview("已清空商品选择，请重新生成预览");
+});
+
+syncBulkControls();
+updateBulkScopeSummary();
+
+openBulkConfirmButton?.addEventListener("click", () => {
+  const preview = adminState.lastBulkPreview;
+  if (!preview || !adminState.lastBulkRequest) return;
+  const request = buildBulkRequest();
+  const warnings = [];
+  if (request.scope === "all") {
+    warnings.push("本次以全部库存为基础范围。请再次核对价格段和状态条件。");
+  }
+  if ((preview.changedCount ?? 0) > 200) {
+    warnings.push(`本次将修改 ${preview.changedCount} 台商品。`);
+  }
+  if (request.filters.sold !== false) warnings.push("本次范围可能包含已售商品。");
+  if (request.operation === "price" && request.priceMode === "fixed_final" && request.amount === 0) {
+    warnings.push("本次会把目标商品价格改为 0 元。");
+  }
+  const summary = document.getElementById("bulkConfirmSummary");
+  const warningList = document.getElementById("bulkConfirmWarnings");
+  if (summary) {
+    summary.textContent = `匹配 ${preview.matchedCount ?? 0} 台，实际修改 ${preview.changedCount ?? 0} 台，跳过 ${preview.skippedCount ?? 0} 台。`;
+  }
+  if (warningList) {
+    warningList.innerHTML = warnings.length
+      ? warnings.map((warning) => `<p>${escapeHtml(warning)}</p>`).join("")
+      : "<p>未发现额外风险提示，请核对上方数量后执行。</p>";
+  }
+  bulkConfirmDialog?.showModal();
+});
+
+bulkConfirmDialog?.addEventListener("close", () => {
+  openBulkConfirmButton?.focus();
+});
+
+exportBulkPreviewButton?.addEventListener("click", () => {
+  const previewId = adminState.lastBulkRequest?.previewId;
+  if (!previewId) return;
+  window.location.href = `/api/admin/products/bulk-preview/${encodeURIComponent(previewId)}/export`;
+});
 
 applyBulkButton?.addEventListener("click", async () => {
   if (!adminState.lastBulkRequest || adminState.bulkBusy) return;
   adminState.bulkBusy = true;
   applyBulkButton.disabled = true;
+  const originalLabel = applyBulkButton.textContent;
+  applyBulkButton.textContent = "正在执行…";
   try {
-  const result = await requestJson("/api/admin/products/bulk-apply", {
-    method: "POST",
-    body: JSON.stringify(adminState.lastBulkRequest),
-  });
-  if (bulkPreviewPanel) {
-    bulkPreviewPanel.innerHTML = `<div class="admin-compact-row"><strong>已执行</strong><span>影响 ${result.updatedCount} 台商品</span></div>`;
-  }
-  adminState.lastBulkRequest = null;
-  applyBulkButton.disabled = true;
-  adminState.selectedProductIds = new Set();
-  await Promise.all([loadProducts(), loadSections(), loadDiagnostics(), loadOperations()]);
+    const result = await requestJson("/api/admin/products/bulk-apply", {
+      method: "POST",
+      body: JSON.stringify(adminState.lastBulkRequest),
+    });
+    bulkConfirmDialog?.close("confirm");
+    if (bulkPreviewStatus) bulkPreviewStatus.textContent = `已执行，实际修改 ${result.updatedCount} 台商品。`;
+    adminState.lastBulkRequest = null;
+    adminState.lastBulkPreview = null;
+    adminState.selectedProductIds = new Set();
+    if (openBulkConfirmButton) openBulkConfirmButton.disabled = true;
+    if (exportBulkPreviewButton) exportBulkPreviewButton.disabled = true;
+    await Promise.all([loadProducts(), loadSections(), loadDiagnostics(), loadOperations()]);
   } catch (error) {
-    bulkPreviewPanel.textContent = `执行未确认：${error.message}。可重试同一预览，避免重复执行。`;
+    if (bulkPreviewStatus) {
+      bulkPreviewStatus.textContent = `执行未确认：${error.message}。可重试同一预览，系统不会重复执行。`;
+    }
   } finally {
     adminState.bulkBusy = false;
     applyBulkButton.disabled = !adminState.lastBulkRequest;
+    applyBulkButton.textContent = originalLabel;
   }
 });
 
@@ -1278,6 +1536,8 @@ adminProductList.addEventListener("click", async (event) => {
     } else {
       adminState.selectedProductIds.delete(productId);
     }
+    updateBulkScopeSummary();
+    invalidateBulkPreview();
     return;
   }
   if (event.target.classList.contains("admin-discard-draft")) {

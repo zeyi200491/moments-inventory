@@ -41,13 +41,27 @@ test('商品管理包含明确的批量作用范围和价格段控件', () => {
 function pageContext(file) {
   const nodes = new Map();
   function node(id) {
-    if (!nodes.has(id)) nodes.set(id, { value: '', hidden: false, dataset: {}, listeners: {}, addEventListener(event, callback) {this.listeners[event] = callback;}, removeAttribute() {}, setAttribute() {} });
+    if (!nodes.has(id)) nodes.set(id, {
+      value: '', hidden: false, disabled: false, checked: false, open: false,
+      textContent: '', innerHTML: '', dataset: {}, listeners: {},
+      tagName: id.toLowerCase().includes('input') ? 'INPUT' : 'SELECT',
+      classList: { contains() { return false; } },
+      addEventListener(event, callback) { this.listeners[event] = callback; },
+      removeAttribute() {}, setAttribute() {},
+      focus() { context.document.activeElement = this; },
+      showModal() { this.open = true; },
+      close(returnValue = '') {
+        this.open = false;
+        this.returnValue = returnValue;
+        this.listeners.close?.();
+      },
+    });
     return nodes.get(id);
   }
   const context = vm.createContext({
     console, URL, URLSearchParams, AbortController, setTimeout, clearTimeout, alert() {}, crypto: { randomUUID: () => 'test-key' },
-    document: { getElementById: node, querySelector: () => null, querySelectorAll: () => [], addEventListener() {} },
-    window: { addEventListener() {}, history: {replaceState() {}}, location: {search:'',pathname:'/'}, setTimeout() {}, scrollTo() {} },
+    document: { activeElement: null, getElementById: node, querySelector: () => null, querySelectorAll: () => [], addEventListener() {} },
+    window: { addEventListener() {}, history: {replaceState() {}}, location: {search:'',pathname:'/',href:''}, setTimeout() {}, scrollTo() {} },
     sessionStorage: {getItem: () => null, removeItem() {}},
     fetch: async () => { throw new Error('未配置请求'); },
   });
@@ -57,6 +71,155 @@ function pageContext(file) {
   context.nodes = nodes;
   return context;
 }
+
+test('批量价格段转换为包含边界且默认排除隐藏和已售商品', () => {
+  const c = pageContext('admin.js');
+  c.nodes.get('bulkScopeInput').value = 'filtered';
+  c.nodes.get('bulkOperationInput').value = 'price';
+  c.nodes.get('bulkPriceRangeInput').value = '201_300';
+  c.nodes.get('bulkVisibleInput').value = 'true';
+  c.nodes.get('bulkSoldInput').value = 'false';
+  c.nodes.get('bulkPriceModeInput').value = 'increment';
+  c.nodes.get('batchAmountInput').value = '50';
+
+  const request = vm.runInContext('buildBulkRequest()', c);
+  assert.equal(JSON.stringify(request), JSON.stringify({
+    scope: 'filtered', operation: 'price', priceMode: 'increment', amount: 50,
+    productIds: [], filters: {
+      query: '', brands: [], priceMin: 201, priceMax: 300,
+      visible: true, sold: false, hasBodyImage: null,
+      hasSampleImage: null, manualPrice: null, reviewState: '', tags: [],
+    },
+  }));
+
+  const ranges = {
+    all: [null, null], up_to_200: [null, 200], '201_300': [201, 300],
+    '301_600': [301, 600], '601_800': [601, 800], '801_plus': [801, null],
+  };
+  for (const [value, expected] of Object.entries(ranges)) {
+    c.nodes.get('bulkPriceRangeInput').value = value;
+    assert.equal(JSON.stringify(vm.runInContext('selectedBulkPriceRange()', c)), JSON.stringify(expected));
+  }
+
+  vm.runInContext("adminState.selectedProductIds = new Set(['p1','p2'])", c);
+  c.nodes.get('bulkScopeInput').value = 'selected';
+  const selectedRequest = vm.runInContext('buildBulkRequest()', c);
+  assert.equal(JSON.stringify(selectedRequest.productIds), JSON.stringify(['p1', 'p2']));
+});
+
+test('批量请求校验作用范围、自定义区间和改价金额', () => {
+  const c = pageContext('admin.js');
+  c.nodes.get('bulkScopeInput').value = 'filtered';
+  c.nodes.get('bulkPriceRangeInput').value = 'all';
+  c.nodes.get('bulkVisibleInput').value = 'true';
+  c.nodes.get('bulkSoldInput').value = 'false';
+  c.nodes.get('bulkPriceModeInput').value = 'increment';
+  c.nodes.get('batchAmountInput').value = '0';
+  assert.throws(() => vm.runInContext('validateBulkRequest(buildBulkRequest())', c), /筛选/);
+
+  c.nodes.get('bulkScopeInput').value = 'selected';
+  assert.throws(() => vm.runInContext('validateBulkRequest(buildBulkRequest())', c), /勾选商品/);
+
+  c.nodes.get('bulkScopeInput').value = 'all';
+  c.nodes.get('bulkPriceRangeInput').value = 'custom';
+  c.nodes.get('bulkMinPriceInput').value = '500';
+  c.nodes.get('bulkMaxPriceInput').value = '300';
+  assert.throws(() => vm.runInContext('validateBulkRequest(buildBulkRequest())', c), /最低价格/);
+
+  c.nodes.get('bulkMinPriceInput').value = '';
+  c.nodes.get('bulkMaxPriceInput').value = '';
+  assert.throws(() => vm.runInContext('validateBulkRequest(buildBulkRequest())', c), /必须大于 0/);
+  c.nodes.get('bulkPriceModeInput').value = 'fixed_final';
+  assert.doesNotThrow(() => vm.runInContext('validateBulkRequest(buildBulkRequest())', c));
+});
+
+test('修改批量条件会清除旧预览和执行能力', () => {
+  const c = pageContext('admin.js');
+  vm.runInContext(`adminState.lastBulkRequest = {previewId:'old',idempotencyKey:'key'};
+    adminState.lastBulkPreview = {changedCount:3};`, c);
+  c.nodes.get('openBulkConfirmButton').disabled = false;
+  c.nodes.get('exportBulkPreviewButton').disabled = false;
+  c.nodes.get('applyBulkButton').disabled = false;
+
+  c.nodes.get('bulkPriceRangeInput').listeners.change();
+
+  assert.equal(vm.runInContext('adminState.lastBulkRequest', c), null);
+  assert.equal(vm.runInContext('adminState.lastBulkPreview', c), null);
+  assert.equal(c.nodes.get('openBulkConfirmButton').disabled, true);
+  assert.equal(c.nodes.get('exportBulkPreviewButton').disabled, true);
+  assert.equal(c.nodes.get('applyBulkButton').disabled, true);
+  assert.match(c.nodes.get('bulkPreviewStatus').textContent, /重新生成预览/);
+
+  vm.runInContext(`adminState.lastBulkRequest = {previewId:'new',idempotencyKey:'key'};
+    adminState.lastBulkPreview = {changedCount:2};`, c);
+  c.nodes.get('adminReviewStateFilterInput').listeners.change();
+  assert.equal(vm.runInContext('adminState.lastBulkRequest', c), null);
+});
+
+test('批量预览渲染统计、跳过原因和完整导出入口', async () => {
+  const c = pageContext('admin.js');
+  c.nodes.get('applyBulkButton').disabled = true;
+  c.nodes.get('bulkScopeInput').value = 'filtered';
+  c.nodes.get('bulkPriceRangeInput').value = 'up_to_200';
+  c.nodes.get('bulkVisibleInput').value = 'true';
+  c.nodes.get('bulkSoldInput').value = 'false';
+  c.nodes.get('bulkPriceModeInput').value = 'increment';
+  c.nodes.get('batchAmountInput').value = '30';
+  c.fetch = async (url) => {
+    assert.equal(url, '/api/admin/products/bulk-preview');
+    return {ok:true,json:async () => ({
+      previewId:'preview-1', matchedCount:205, changedCount:202, unchangedCount:1,
+      skippedCount:2, skipReasons:{'已售':2},
+      priceStats:{minimum:130,maximum:230,totalDelta:6060},
+      displayedCount:200,truncated:true,
+      items:[{model:'A',brand:'佳能',sourcePrice:90,oldPrice:100,newPrice:130,delta:30,oldVisible:true,newVisible:true,skippedReason:''}],
+    })};
+  };
+  await c.nodes.get('batchPriceForm').listeners.submit({preventDefault() {}});
+  const summary = c.nodes.get('bulkPreviewSummary').innerHTML;
+  assert.match(summary, /205/);
+  assert.match(summary, /202/);
+  assert.match(summary, /6060/);
+  assert.match(summary, /已售/);
+  assert.match(c.nodes.get('bulkPreviewPanel').innerHTML, /导入价 90/);
+  assert.match(c.nodes.get('bulkPreviewStatus').textContent, /前 200 台/);
+  assert.equal(c.nodes.get('openBulkConfirmButton').disabled, false);
+  assert.equal(c.nodes.get('exportBulkPreviewButton').disabled, false);
+  assert.equal(c.nodes.get('applyBulkButton').disabled, false);
+
+  c.nodes.get('exportBulkPreviewButton').listeners.click();
+  assert.equal(c.window.location.href, '/api/admin/products/bulk-preview/preview-1/export');
+});
+
+test('批量确认提示高风险条件并在关闭后恢复焦点', () => {
+  const c = pageContext('admin.js');
+  c.nodes.get('bulkScopeInput').value = 'all';
+  c.nodes.get('bulkPriceRangeInput').value = 'all';
+  c.nodes.get('bulkVisibleInput').value = '';
+  c.nodes.get('bulkSoldInput').value = '';
+  c.nodes.get('bulkPriceModeInput').value = 'fixed_final';
+  c.nodes.get('batchAmountInput').value = '0';
+  vm.runInContext(`adminState.lastBulkRequest = {previewId:'preview-1',idempotencyKey:'key-1'};
+    adminState.lastBulkPreview = {matchedCount:250,changedCount:230,skippedCount:4};`, c);
+
+  c.nodes.get('openBulkConfirmButton').focus();
+  c.nodes.get('openBulkConfirmButton').listeners.click();
+  assert.equal(c.nodes.get('bulkConfirmDialog').open, true);
+  assert.match(c.nodes.get('bulkConfirmWarnings').innerHTML, /全部库存/);
+  assert.match(c.nodes.get('bulkConfirmWarnings').innerHTML, /230 台/);
+  assert.match(c.nodes.get('bulkConfirmWarnings').innerHTML, /已售商品/);
+  assert.match(c.nodes.get('bulkConfirmWarnings').innerHTML, /0 元/);
+  c.nodes.get('bulkConfirmDialog').close('cancel');
+  assert.equal(c.document.activeElement, c.nodes.get('openBulkConfirmButton'));
+});
+
+test('批量对话框和禁用按钮具备窄屏安全样式', () => {
+  const css = fs.readFileSync(path.join(root, 'showcase.css'), 'utf8');
+  assert.match(css, /\.bulk-confirm-dialog\s*\{[^}]*max-height:/s);
+  assert.match(css, /\.bulk-confirm-dialog\s*\{[^}]*overflow-y:\s*auto/s);
+  assert.match(css, /\.bulk-confirm-dialog\s*\{[^}]*overscroll-behavior:\s*contain/s);
+  assert.match(css, /button:disabled\s*\{[^}]*cursor:\s*not-allowed/s);
+});
 test('后台追加固定80条并防止旧请求覆盖', async () => {
   const c = pageContext('admin.js');
   vm.runInContext('renderAdminProducts = () => {};', c);

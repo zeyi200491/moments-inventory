@@ -1165,6 +1165,9 @@ textarea {
 
 .bulk-confirm-dialog {
   width: min(620px, calc(100vw - 32px));
+  max-height: min(80dvh, 760px);
+  overflow-y: auto;
+  overscroll-behavior: contain;
   border: 1px solid var(--line);
   padding: 22px;
   background: var(--surface);
@@ -1183,6 +1186,20 @@ textarea {
 .bulk-warning-list {
   color: #9d3e2e;
   font-weight: 800;
+}
+
+.bulk-skip-reasons {
+  grid-column: 1 / -1;
+  margin: 2px 0 0;
+  color: var(--muted);
+  font-size: 13px;
+  font-weight: 800;
+}
+
+button:disabled {
+  cursor: not-allowed;
+  opacity: 0.56;
+  filter: saturate(0.48);
 }
 
 button:focus-visible,
@@ -1749,6 +1766,12 @@ textarea:focus-visible {
   .bulk-preview-actions > button,
   .bulk-confirm-actions > button {
     width: 100%;
+  }
+
+  .bulk-confirm-dialog {
+    width: calc(100vw - 20px);
+    max-height: calc(100dvh - 20px);
+    padding: 16px;
   }
 
   .access-form,
