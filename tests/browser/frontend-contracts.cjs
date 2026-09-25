@@ -300,6 +300,43 @@ test('隐藏预览把未变化统计显示为状态不变并标注已售状态',
   assert.match(c.nodes.get('bulkPreviewStatus').textContent, /到期/);
 });
 
+test('批量预览到期时间无效时显示明确降级文案', () => {
+  const c = pageContext('admin.js');
+  vm.runInContext(`renderBulkPreview({
+    operation:'price', expiresAt:'invalid-date', matchedCount:0,
+    changedCount:0, unchangedCount:0, skippedCount:0, skipReasons:{},
+    priceStats:{minimum:null,maximum:null,totalDelta:0}, displayedCount:0,
+    truncated:false, items:[]
+  })`, c);
+
+  assert.match(c.nodes.get('bulkPreviewStatus').textContent, /到期时间不可用/);
+  assert.match(c.nodes.get('bulkPreviewStatus').textContent, /15 分钟内/);
+});
+
+test('批量预览对商品及跳过原因中的 HTML 做转义', () => {
+  const c = pageContext('admin.js');
+  vm.runInContext(`renderBulkPreview({
+    operation:'price', expiresAt:'2026-09-25T08:30:00.000Z', matchedCount:1,
+    changedCount:0, unchangedCount:0, skippedCount:1,
+    skipReasons:{'<img src=x onerror=alert(1)>':1},
+    priceStats:{minimum:null,maximum:null,totalDelta:0}, displayedCount:1,
+    truncated:false, items:[{
+      model:'<script>alert(1)</script>', brand:'<b>恶意品牌</b>', sourcePrice:100,
+      oldPrice:100, newPrice:100, delta:0, oldVisible:true, newVisible:true,
+      sold:false, skippedReason:'<svg onload=alert(1)>'
+    }]
+  })`, c);
+
+  const summary = c.nodes.get('bulkPreviewSummary').innerHTML;
+  const panel = c.nodes.get('bulkPreviewPanel').innerHTML;
+  assert.doesNotMatch(summary, /<img src=x/);
+  assert.match(summary, /&lt;img src=x onerror=alert\(1\)&gt;/);
+  assert.doesNotMatch(panel, /<script>|<b>|<svg/);
+  assert.match(panel, /&lt;script&gt;alert\(1\)&lt;\/script&gt;/);
+  assert.match(panel, /&lt;b&gt;恶意品牌&lt;\/b&gt;/);
+  assert.match(panel, /&lt;svg onload=alert\(1\)&gt;/);
+});
+
 test('批量确认提示高风险条件并在关闭后恢复焦点', () => {
   const c = pageContext('admin.js');
   c.nodes.get('bulkScopeInput').value = 'all';

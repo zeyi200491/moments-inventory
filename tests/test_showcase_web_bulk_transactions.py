@@ -299,10 +299,21 @@ def test_bulk_undo_hide_requires_exact_snapshot_without_partial_updates(
         'idempotencyKey': 'hide-before-snapshot-tamper',
     }).json()
     with repo._get_connection() as conn:
+        expected_version = conn.execute(
+            '''SELECT new_version FROM showcase_admin_operation_items
+               WHERE operation_id=? AND product_id=?''',
+            (applied['operationId'], 'z-tampered'),
+        ).fetchone()[0]
+    with repo._get_connection() as conn:
         conn.execute(
             "UPDATE showcase_products SET override_origin='external' WHERE product_id=?",
             ('z-tampered',),
         )
+        conn.execute(
+            "UPDATE showcase_products SET row_version=? WHERE product_id=?",
+            (expected_version, 'z-tampered'),
+        )
+    assert repo.get_product('z-tampered').row_version == expected_version
 
     undone = authenticated_client.post(
         '/api/admin/operations/' + applied['operationId'] + '/undo',
@@ -314,6 +325,7 @@ def test_bulk_undo_hide_requires_exact_snapshot_without_partial_updates(
     assert repo.get_product('z-tampered').visible is False
     operations = repo.list_admin_operations()
     assert len(operations) == 1
+    assert operations[0].operation_id == applied['operationId']
     assert operations[0].undone_at == ''
 
 

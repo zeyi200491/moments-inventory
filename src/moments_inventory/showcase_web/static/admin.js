@@ -1419,15 +1419,18 @@ function renderBulkPreview(preview) {
   if (bulkPreviewStatus) {
     const displayedCount = preview.displayedCount ?? items.length;
     const expiryText = formatBulkExpiry(preview.expiresAt);
+    const validityText = expiryText
+      ? `预览将在 ${expiryText} 到期（最长 15 分钟）。`
+      : "预览到期时间不可用，请在 15 分钟内完成操作。";
     bulkPreviewStatus.textContent = preview.truncated
-      ? `只展示前 ${displayedCount} 台，完整结果请导出 CSV。预览将在 ${expiryText} 到期（最长 15 分钟）。`
-      : `已生成 ${preview.matchedCount ?? 0} 台商品的完整预览，预览将在 ${expiryText} 到期（最长 15 分钟）。`;
+      ? `只展示前 ${displayedCount} 台，完整结果请导出 CSV。${validityText}`
+      : `已生成 ${preview.matchedCount ?? 0} 台商品的完整预览，${validityText}`;
   }
 }
 
 function formatBulkExpiry(expiresAt) {
   const expiry = new Date(expiresAt || "");
-  if (Number.isNaN(expiry.getTime())) return "15 分钟内";
+  if (Number.isNaN(expiry.getTime())) return "";
   return expiry.toLocaleString("zh-CN", { hour12: false });
 }
 
