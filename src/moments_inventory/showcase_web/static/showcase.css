@@ -1793,7 +1793,8 @@ textarea:focus-visible {
     grid-template-columns: 1fr;
   }
 
-  .admin-product-row {
+  .admin-product-row,
+  .admin-compact-row {
     grid-template-columns: 1fr;
   }
 

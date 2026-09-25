@@ -399,6 +399,11 @@ test('批量对话框和禁用按钮具备窄屏安全样式', () => {
   assert.match(css, /\.bulk-confirm-dialog\s*\{[^}]*overscroll-behavior:\s*contain/s);
   assert.match(css, /button:disabled\s*\{[^}]*cursor:\s*not-allowed/s);
 });
+
+test('后台紧凑列表在窄屏降为单列', () => {
+  const css = fs.readFileSync(path.join(root, 'showcase.css'), 'utf8');
+  assert.match(css, /\.admin-product-row,\s*\.admin-compact-row\s*\{\s*grid-template-columns:\s*1fr;/s);
+});
 test('后台追加固定80条并防止旧请求覆盖', async () => {
   const c = pageContext('admin.js');
   vm.runInContext('renderAdminProducts = () => {};', c);
