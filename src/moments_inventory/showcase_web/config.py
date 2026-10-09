@@ -18,6 +18,8 @@ class ShowcaseSettings:
     backup_dir: str
     host: str = '127.0.0.1'
     port: int = 8899
+    admin_login_path: str = '/admin-xingxing'
+    customer_access_cookie_days: int = 7
 
 
 def load_showcase_settings(config_path: str | Path | None = None, **overrides: object) -> ShowcaseSettings:
@@ -52,4 +54,21 @@ def load_showcase_settings(config_path: str | Path | None = None, **overrides: o
     values['port'] = int(overrides.get('port') if overrides.get('port') is not None else server.get('port', 8899))
     if not 1 <= values['port'] <= 65535:
         raise ValueError('展示服务端口必须介于 1 和 65535')
+    admin = data.get('admin', {})
+    if not isinstance(admin, dict):
+        raise ValueError('admin 配置必须是键值映射')
+    admin_login_path = str(admin.get('login_path', '/admin-xingxing')).strip()
+    if not admin_login_path.startswith('/') or admin_login_path.startswith('//') or any(mark in admin_login_path for mark in ('?', '#')):
+        raise ValueError('管理员登录路径必须是站内绝对路径')
+    customer = data.get('customer', {})
+    if not isinstance(customer, dict):
+        raise ValueError('customer 配置必须是键值映射')
+    try:
+        customer_access_cookie_days = int(customer.get('access_cookie_days', 7))
+    except (TypeError, ValueError) as exc:
+        raise ValueError('客户访问会话天数必须是整数') from exc
+    if not 1 <= customer_access_cookie_days <= 365:
+        raise ValueError('客户访问会话天数必须介于 1 和 365')
+    values['admin_login_path'] = admin_login_path
+    values['customer_access_cookie_days'] = customer_access_cookie_days
     return ShowcaseSettings(**values)

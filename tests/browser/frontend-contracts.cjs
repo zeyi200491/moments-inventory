@@ -3,7 +3,7 @@ const assert = require('node:assert/strict');
 const fs = require('node:fs');
 const vm = require('node:vm');
 const path = require('node:path');
-const root = path.resolve(__dirname, '../../src/moments_inventory/showcase_web/static');
+const root = process.env.CCD_STATIC_ROOT || path.resolve(__dirname, '../../src/moments_inventory/showcase_web/static');
 function helpers() {
   const context = vm.createContext({});
   vm.runInContext(fs.readFileSync(path.join(root, 'shared/product-utils.js'), 'utf8'), context);
@@ -24,6 +24,27 @@ test('草稿仅包含变更字段', () => {
   const u = helpers();
   assert.equal(JSON.stringify(u.changedFields({model:'A',displayPrice:12,recommendTags:['a']},{model:'B',displayPrice:12,recommendTags:['a']})), '{"model":"B"}');
 });
+test('筛选元数据返回前保留恢复品牌，成功加载后才清除无效品牌', async () => {
+  const c = pageContext('showcase.js');
+  vm.runInContext("state.filters = {brands:[]}; state.brands = new Set(['佳能', '索尼']); renderBrands()", c);
+  assert.deepEqual(Array.from(vm.runInContext('[...state.brands]', c)), ['佳能', '索尼']);
+  c.fetch = async () => ({ ok: true, json: async () => ({ brands: ['佳能'], tags: [], pricePresets: [] }) });
+  await vm.runInContext('loadFilters()', c);
+  assert.deepEqual(Array.from(vm.runInContext('[...state.brands]', c)), ['佳能']);
+});
+
+test('库存列表错误区域显示实际恢复提示，409刷新提示不会被固定文案覆盖', async () => {
+  const c = pageContext('showcase.js');
+  const errorMessage = c.document.getElementById('listErrorMessage');
+  vm.runInContext("state.loadError = '已恢复前 400 台，点击显示更多继续'; renderList()", c);
+  assert.equal(errorMessage.textContent, '已恢复前 400 台，点击显示更多继续');
+  let calls = 0;
+  c.fetch = async () => ++calls === 1
+    ? { status: 409, ok: false }
+    : { status: 200, ok: true, json: async () => ({ products: [], total: 0, hasMore: false, catalogRevision: 'r2' }) };
+  await vm.runInContext('loadProductPage()', c);
+  assert.match(errorMessage.textContent, /库存刚刚更新/);
+});
 test('商品管理包含明确的批量作用范围和价格段控件', () => {
   const html = fs.readFileSync(path.join(root, 'admin.html'), 'utf8');
   assert.match(html, /id="bulkScopeInput"/);
@@ -38,11 +59,13 @@ test('商品管理包含明确的批量作用范围和价格段控件', () => {
   assert.match(html, /id="bulkPreviewStatus"[^>]*aria-live="polite"/);
   assert.match(html, /id="bulkConfirmStatus"[^>]*role="alert"/);
   assert.match(html, /showcase\.css\?v=20260925-bulk-price-workflow/);
-  assert.match(html, /admin\.js\?v=20260925-bulk-price-workflow/);
+  assert.match(html, /admin\.js\?v=20261009-admin-ux-round5/);
 });
 
 function pageContext(file) {
   const nodes = new Map();
+  const documentListeners = {};
+  const windowListeners = {};
   function node(id) {
     if (!nodes.has(id)) nodes.set(id, {
       value: '', hidden: false, disabled: false, checked: false, open: false,
@@ -73,9 +96,9 @@ function pageContext(file) {
         }
         return [];
       },
-      addEventListener() {},
+      addEventListener(event, callback, options) { documentListeners[event] = { callback, options }; },
     },
-    window: { addEventListener() {}, history: {replaceState() {}}, location: {search:'',pathname:'/',href:''}, setTimeout() {}, scrollTo() {} },
+    window: { addEventListener(event, callback) { windowListeners[event] = callback; }, history: {replaceState() {}}, location: {search:'',pathname:'/',href:''}, setTimeout() {}, scrollTo() {} },
     sessionStorage: {getItem: () => null, removeItem() {}},
     fetch: async () => { throw new Error('未配置请求'); },
   });
@@ -83,8 +106,176 @@ function pageContext(file) {
   const source = fs.readFileSync(path.join(root, file), 'utf8').replace('initListPage().catch(showStartupError);', '').replace('initDetailPage().catch(showStartupError);', '');
   vm.runInContext(source, context);
   context.nodes = nodes;
+  context.documentListeners = documentListeners;
+  context.windowListeners = windowListeners;
   return context;
 }
+
+test('管理员删除按钮先展示实体名称并允许取消请求', () => {
+  const c = pageContext('admin.js');
+  let confirmation = '';
+  c.window.confirm = (message) => { confirmation = message; return false; };
+  const modelInput = { value: 'PowerShot A80' };
+  const row = { querySelector: () => modelInput, querySelectorAll: () => [] };
+  const button = {
+    classList: { contains: (name) => name === 'admin-delete-product' },
+    closest: (selector) => selector.includes('admin-product-row') ? row : button,
+  };
+  let prevented = false;
+  let stopped = false;
+  c.documentListeners.click.callback({
+    target: button,
+    preventDefault() { prevented = true; },
+    stopImmediatePropagation() { stopped = true; },
+  });
+  assert.match(confirmation, /PowerShot A80/);
+  assert.equal(prevented, true);
+  assert.equal(stopped, true);
+});
+
+test('动态管理输入与详情图片按钮具有上下文无障碍名称', () => {
+  const admin = fs.readFileSync(path.join(root, 'admin.js'), 'utf8');
+  const showcase = fs.readFileSync(path.join(root, 'showcase.js'), 'utf8');
+  assert.match(admin, /aria-label="\$\{escapeHtml\(product\.model\).*?型号/);
+  assert.match(admin, /aria-label="\$\{escapeHtml\(product\.model\).*?品牌/);
+  assert.match(admin, /aria-label="\$\{escapeHtml\(product\.model\).*?展示价格/);
+  assert.match(admin, /aria-label="\$\{escapeHtml\(partner\.name\).*?合作方名称/);
+  assert.match(admin, /aria-label="\$\{escapeHtml\(album\.title\).*?上传图片/);
+  assert.match(showcase, /aria-label="查看\$\{escapeHtml\(title\)}图片，第\$\{index \+ 1\}张"/);
+});
+
+test('批量操作执行期间阻止 Esc 关闭确认框并丢失重试状态', () => {
+  const c = pageContext('admin.js');
+  vm.runInContext('adminState.bulkBusy = true', c);
+  let prevented = false;
+  c.nodes.get('bulkConfirmDialog').listeners.cancel({ preventDefault() { prevented = true; } });
+  assert.equal(prevented, true);
+  assert.match(c.nodes.get('bulkConfirmStatus').textContent, /正在执行/);
+});
+
+test('样片商品筛选只应用最后一次请求的结果', async () => {
+  const c = pageContext('admin.js');
+  let resolveMissing;
+  let resolveMatched;
+  c.nodes.get('sampleMatchStatusFilter').value = 'missing';
+  c.fetch = (url) => new Promise((resolve) => {
+    if (url.includes('status=missing')) resolveMissing = resolve;
+    else resolveMatched = resolve;
+  });
+  const first = vm.runInContext('loadSampleMatchingProducts()', c);
+  c.nodes.get('sampleMatchStatusFilter').value = 'matched';
+  const second = vm.runInContext('loadSampleMatchingProducts()', c);
+  resolveMatched({ ok: true, json: async () => ({ products: [{ productId: 'new-filter' }] }) });
+  await second;
+  resolveMissing({ ok: true, json: async () => ({ products: [{ productId: 'old-filter' }] }) });
+  await first;
+  assert.equal(vm.runInContext('adminState.sampleMatchingProducts[0].productId', c), 'new-filter');
+});
+
+test('样片匹配商品列表可分页追加且最后一页隐藏加载按钮', async () => {
+  const c = pageContext('admin.js');
+  const offsets = [];
+  c.nodes.get('sampleMatchStatusFilter').value = 'all';
+  c.fetch = async (url) => {
+    offsets.push(new URL(url, 'http://local').searchParams.get('offset'));
+    const first = offsets.length === 1;
+    return { ok: true, json: async () => ({
+      products: [{ productId: first ? 'sample-a' : 'sample-b', model: first ? 'A' : 'B', brand: '佳能' }],
+      hasMore: first, total: first ? null : 2,
+    }) };
+  };
+  await vm.runInContext('loadSampleMatchingProducts()', c);
+  await vm.runInContext('loadSampleMatchingProducts({append:true})', c);
+  assert.deepEqual(offsets, ['0', '1']);
+  assert.deepEqual(Array.from(vm.runInContext('adminState.sampleMatchingProducts.map((item) => item.productId)', c)), ['sample-a', 'sample-b']);
+  assert.equal(c.nodes.get('sampleMatchLoadMoreButton').hidden, true);
+});
+
+test('管理列表刷新后保留其他实体尚未保存的字段草稿', () => {
+  const c = pageContext('admin.js');
+  const makeControl = (value) => ({
+    className: 'section-title', type: 'text', value,
+    getAttribute(name) { return name === 'class' ? this.className : null; },
+  });
+  const originalRow = { dataset: { sectionId: 'section-a' }, querySelectorAll: () => [makeControl('未保存标题')] };
+  c.originalRow = originalRow;
+  vm.runInContext('rememberManagementRow(originalRow)', c);
+  const refreshedControl = makeControl('服务端旧标题');
+  const refreshedRow = { dataset: { sectionId: 'section-a' }, querySelectorAll: () => [refreshedControl] };
+  c.refreshedRow = refreshedRow;
+  vm.runInContext('restoreManagementRow(refreshedRow)', c);
+  assert.equal(refreshedControl.value, '未保存标题');
+});
+
+test('后台异步写入失败时展示可理解的错误并且不冒报成功', () => {
+  const c = pageContext('admin.js');
+  const errorPanel = c.document.getElementById('adminActionError');
+  let prevented = false;
+  c.windowListeners.unhandledrejection({
+    reason: Object.assign(new Error('网络断开'), { status: 0 }),
+    preventDefault() { prevented = true; },
+  });
+  assert.equal(prevented, true);
+  assert.match(errorPanel.textContent, /操作失败/);
+  assert.match(errorPanel.textContent, /网络断开/);
+  assert.equal(errorPanel.hidden, false);
+});
+
+test('设置保存失败会清除上一次的成功状态', async () => {
+  const c = pageContext('admin.js');
+  const status = c.document.getElementById('settingsStatus');
+  status.textContent = '已保存';
+  c.fetch = async () => ({ ok: false, status: 500, text: async () => '数据库暂时不可用' });
+  await assert.rejects(c.nodes.get('settingsForm').listeners.submit({ preventDefault() {} }));
+  assert.equal(status.textContent, '');
+});
+
+test('样片重建失败后不残留正在处理状态', async () => {
+  const c = pageContext('admin.js');
+  const status = c.document.getElementById('sampleMatchingStatus');
+  c.fetch = async () => ({ ok: false, status: 503, text: async () => '数据库暂时不可用' });
+  await assert.rejects(c.nodes.get('rebuildSampleMatchingButton').listeners.click());
+  assert.match(status.textContent, /重建失败/);
+});
+
+test('同一后台写请求并发触发时合并为一次网络提交', async () => {
+  const c = pageContext('admin.js');
+  let calls = 0;
+  c.fetch = async () => { calls += 1; return { ok: true, json: async () => ({ saved: true }) }; };
+  const first = vm.runInContext('requestJson("/api/admin/settings", {method:"PATCH", body:"{}"})', c);
+  const second = vm.runInContext('requestJson("/api/admin/settings", {method:"PATCH", body:"{}"})', c);
+  assert.deepEqual(await Promise.all([first, second]), [{ saved: true }, { saved: true }]);
+  assert.equal(calls, 1);
+});
+
+test('重新加载管理设置保留未保存文本，样片专栏选择和相册待上传文件也保留', async () => {
+  const c = pageContext('admin.js');
+  vm.runInContext("adminState.settingsDraft.set('statementInput', '未保存声明'); adminState.createSectionSelection.add('section-a'); adminState.pendingGalleryFiles.set('album-a', {name:'pending.jpg'}); adminState.sections = [{sectionId:'section-a', title:'精选', active:true}]", c);
+  c.fetch = async () => ({ ok: true, json: async () => ({ statementText: '服务器旧值', shopIntroText: '', watermarkText: '星星CCD', inventoryUpdatedAt: '', hasCustomerPassword: false }) });
+  await vm.runInContext('loadSettings()', c);
+  assert.equal(c.nodes.get('statementInput').value, '未保存声明');
+  const picker = c.nodes.get('createSectionPicker');
+  picker.querySelectorAll = () => [];
+  vm.runInContext('renderCreateSectionPicker()', c);
+  assert.match(picker.innerHTML, /value="section-a" checked/);
+  const gallery = c.nodes.get('galleryAlbumList');
+  gallery.querySelectorAll = () => [];
+  vm.runInContext("renderGalleryAlbums([{albumId:'album-a', title:'橱窗', images:[]}])", c);
+  assert.match(gallery.innerHTML, /pending\.jpg/);
+});
+
+test('登录成功但管理模块加载失败时不误报密码错误，并允许重试模块加载', async () => {
+  const c = pageContext('admin.js');
+  c.fetch = async (url) => url === '/api/admin/login'
+    ? { ok: true, json: async () => ({ ok: true }) }
+    : { ok: false, status: 500, text: async () => '模块不可用' };
+  await c.nodes.get('loginForm').listeners.submit({ preventDefault() {} });
+  assert.match(c.nodes.get('adminStartupStatus').textContent, /管理模块加载失败/);
+  assert.doesNotMatch(c.nodes.get('loginError').textContent, /密码错误/);
+  assert.equal(c.nodes.get('loginPanel').hidden, true);
+  assert.equal(c.nodes.get('adminApp').hidden, false);
+  assert.equal(typeof c.nodes.get('retryAdminStartupButton').listeners.click, 'function');
+});
 
 test('批量价格段转换为包含边界且默认排除隐藏和已售商品', () => {
   const c = pageContext('admin.js');
@@ -97,14 +288,14 @@ test('批量价格段转换为包含边界且默认排除隐藏和已售商品',
   c.nodes.get('batchAmountInput').value = '50';
 
   const request = vm.runInContext('buildBulkRequest()', c);
-  assert.equal(JSON.stringify(request), JSON.stringify({
+  assert.deepEqual(JSON.parse(JSON.stringify(request)), {
     scope: 'filtered', operation: 'price', priceMode: 'increment', amount: 50,
     productIds: [], filters: {
-      query: '', brands: [], priceMin: 201, priceMax: 300,
-      visible: true, sold: false, hasBodyImage: null,
+      query: '', brands: [], visible: true, sold: false, hasBodyImage: null,
       hasSampleImage: null, manualPrice: null, reviewState: '', tags: [],
+      sourcePriceMin: 201, sourcePriceMax: 300, displayPriceMin: null, displayPriceMax: null,
     },
-  }));
+  });
 
   const ranges = {
     all: [null, null], up_to_200: [null, 200], '201_300': [201, 300],
@@ -127,21 +318,29 @@ test('批量价格段转换为包含边界且默认排除隐藏和已售商品',
   c.nodes.get('bulkPriceRangeInput').value = '301_600';
   const intersectedRequest = vm.runInContext('buildBulkRequest()', c);
   assert.equal(JSON.stringify(intersectedRequest.filters.brands), JSON.stringify(['佳能']));
-  assert.equal(intersectedRequest.filters.priceMin, 301);
-  assert.equal(intersectedRequest.filters.priceMax, 600);
+  assert.equal(intersectedRequest.filters.sourcePriceMin, 301);
+  assert.equal(intersectedRequest.filters.sourcePriceMax, 600);
+  assert.equal(intersectedRequest.filters.displayPriceMin, 250);
+  assert.equal(intersectedRequest.filters.displayPriceMax, 700);
 
   c.nodes.get('adminMinPriceInput').value = '400';
   vm.runInContext('updateBulkScopeSummary()', c);
-  assert.match(c.nodes.get('bulkScopeSummary').textContent, /400～600 元/);
+  assert.match(c.nodes.get('bulkScopeSummary').textContent, /原价 301～600 元；当前展示价 400～700 元/);
 
   c.nodes.get('adminMinPriceInput').value = '700';
-  assert.throws(() => vm.runInContext('validateBulkRequest(buildBulkRequest())', c), /没有交集/);
+  const independentRanges = vm.runInContext('buildBulkRequest()', c).filters;
+  assert.equal(independentRanges.sourcePriceMin, 301);
+  assert.equal(independentRanges.sourcePriceMax, 600);
+  assert.equal(independentRanges.displayPriceMin, 700);
+  assert.equal(independentRanges.displayPriceMax, 700);
 
   c.nodes.get('bulkScopeInput').value = 'all';
   const allRequest = vm.runInContext('buildBulkRequest()', c);
   assert.equal(JSON.stringify(allRequest.filters.brands), JSON.stringify([]));
-  assert.equal(allRequest.filters.priceMin, 301);
-  assert.equal(allRequest.filters.priceMax, 600);
+  assert.equal(allRequest.filters.sourcePriceMin, 301);
+  assert.equal(allRequest.filters.sourcePriceMax, 600);
+  assert.equal(allRequest.filters.displayPriceMin, null);
+  assert.equal(allRequest.filters.displayPriceMax, null);
 });
 
 test('显示和隐藏操作保留价格范围筛选并只隐藏改价动作字段', () => {
@@ -357,7 +556,7 @@ test('批量确认提示高风险条件并在关闭后恢复焦点', () => {
   assert.match(c.nodes.get('bulkConfirmWarnings').innerHTML, /已售商品/);
   assert.match(c.nodes.get('bulkConfirmWarnings').innerHTML, /0 元/);
   assert.match(c.nodes.get('bulkConfirmSummary').textContent, /全部库存/);
-  assert.match(c.nodes.get('bulkConfirmSummary').textContent, /执行前当前展示价范围：全部价格/);
+  assert.match(c.nodes.get('bulkConfirmSummary').textContent, /价格筛选：原价不限，当前展示价不限/);
   assert.doesNotMatch(c.nodes.get('bulkConfirmSummary').textContent, /最终价格范围/);
   assert.match(c.nodes.get('bulkConfirmSummary').textContent, /实际修改项新价格范围：0 元/);
   assert.match(c.nodes.get('bulkConfirmSummary').textContent, /展示中和已隐藏/);
@@ -558,6 +757,7 @@ test('保存仅提交草稿变化与原版本并保留其他行草稿', async ()
   vm.runInContext(`adminState.products = [{publicId:'p1',model:'A',rowVersion:3}];
     adminState.drafts.set('p1', {original:adminState.products[0],changes:{model:'B'}});
     adminState.drafts.set('p2', {original:{rowVersion:1},changes:{brand:'未保存'}});
+    readProductDraft = () => ({model:'B'});
     loadSections = async () => {};`, c);
   let request;
   c.fetch = async (url, options) => {request = {url, options};return {ok:true,json:async () => ({publicId:'p1',model:'B',rowVersion:4})};};
@@ -567,4 +767,118 @@ test('保存仅提交草稿变化与原版本并保留其他行草稿', async ()
   assert.deepEqual(JSON.parse(request.options.body), {model:'B',expectedVersion:3});
   assert.equal(vm.runInContext('adminState.products[0].rowVersion',c),4);
   assert.equal(vm.runInContext('adminState.drafts.has("p2")',c),true);
+});
+
+test('保存请求中把输入改回旧值仍会生成基于新版本的可保存草稿', async () => {
+  const c = pageContext('admin.js');
+  const original = {
+    publicId: 'p1', productId: 'p1', model: 'A', brand: '佳能', displayPrice: 100,
+    displayCopy: '原文案', shortSellingPoint: '', recommendTags: [], sold: false, rowVersion: 1,
+  };
+  const updated = { ...original, displayPrice: 110, rowVersion: 2 };
+  const fields = new Map([
+    ['.admin-model-input', { value: 'A' }], ['.admin-brand-input', { value: '佳能' }],
+    ['.admin-price-input', { value: '100' }], ['.admin-copy-input', { value: '原文案' }],
+    ['.admin-selling-point-input', { value: '' }], ['.admin-tags-input', { value: '' }],
+    ['.admin-sold-input', { checked: false }],
+  ]);
+  const row = { dataset: { productId: 'p1' }, querySelector: (selector) => fields.get(selector) };
+  const button = { disabled: false, textContent: '保存草稿', classList: { contains: (name) => name === 'admin-save-product' }, closest: () => row };
+  c.adminProductList = c.nodes.get('adminProductList');
+  vm.runInContext(`adminState.products = [${JSON.stringify(original)}];
+    adminState.drafts.set('p1', {original:${JSON.stringify(original)},changes:{displayPrice:110}});`, c);
+  let resolveSave;
+  c.fetch = (url) => url.includes('/products/')
+    ? new Promise((resolve) => { resolveSave = resolve; })
+    : Promise.resolve({ ok: true, json: async () => ({ sections: [] }) });
+  const save = c.adminProductList.listeners.click({ target: button });
+
+  fields.get('.admin-price-input').value = '100';
+  vm.runInContext("adminState.drafts.delete('p1')", c);
+  resolveSave({ ok: true, json: async () => ({ product: updated }) });
+  await save;
+
+  const draft = vm.runInContext("adminState.drafts.get('p1')", c);
+  assert.equal(draft.original.rowVersion, 2);
+  assert.deepEqual(JSON.parse(JSON.stringify(draft.changes)), { displayPrice: 100 });
+});
+
+test('样片文件夹复制不可用时提供可手动复制路径且不显示假成功', async () => {
+  const c = pageContext('admin.js');
+  c.navigator = {};
+  let promptArgs;
+  c.window.prompt = (...args) => { promptArgs = args; return null; };
+  const target = { dataset: { folderPath: 'samples/canon/ixus' }, classList: { contains: (name) => name === 'sample-copy-folder' } };
+
+  await c.nodes.get('sampleAssetSearchResults').listeners.click({ target });
+
+  assert.deepEqual(promptArgs, ['无法自动复制，请手动复制文件夹路径：', 'samples/canon/ixus']);
+  assert.match(c.nodes.get('sampleMatchingStatus').textContent, /请手动复制/);
+  assert.doesNotMatch(c.nodes.get('sampleMatchingStatus').textContent, /已复制/);
+
+  c.navigator.clipboard = { writeText: async () => {} };
+  await c.nodes.get('sampleAssetSearchResults').listeners.click({ target });
+  assert.match(c.nodes.get('sampleMatchingStatus').textContent, /^已复制：/);
+});
+
+test('客户剪贴板失败时把完整咨询文案提供给手动复制', async () => {
+  const c = pageContext('showcase.js');
+  c.navigator = { clipboard: { writeText: async () => { throw new Error('权限拒绝'); } } };
+  c.window.isSecureContext = true;
+  let promptArgs;
+  c.window.prompt = (...args) => { promptArgs = args; return null; };
+  c.document.body = { appendChild() {} };
+  c.document.createElement = () => ({ value: '', className: '', setAttribute() {}, select() {}, remove() {} });
+  c.document.execCommand = () => false;
+
+  const result = await vm.runInContext('copyText("完整商品咨询文案")', c);
+
+  assert.deepEqual(promptArgs, ['自动复制失败，请手动复制以下完整咨询文案：', '完整商品咨询文案']);
+  assert.deepEqual(JSON.parse(JSON.stringify(result)), { copied: false, manualFallback: true });
+});
+
+test('上传旧图片期间选择的新文件保留，上传成功后不允许重复发送旧文件', async () => {
+  const c = pageContext('admin.js');
+  const fileA = { name: 'a.jpg' };
+  const fileB = { name: 'b.jpg' };
+  let selectedFiles = [fileA];
+  let inputValue = 'a.jpg';
+  const fileInput = {
+    get files() { return selectedFiles; },
+    set files(value) { selectedFiles = value; },
+    get value() { return inputValue; },
+    set value(value) { inputValue = value; if (!value) selectedFiles = []; },
+    closest: () => row,
+    classList: { contains: (name) => name === 'admin-image-file' },
+  };
+  const status = { textContent: '' };
+  const row = { dataset: { productId: 'p1' }, querySelector: (selector) => selector === '.admin-image-file' ? fileInput : status };
+  const uploadButton = { disabled: false, classList: { contains: (name) => name === 'admin-upload-image' }, closest: () => row };
+  c.FormData = class { append() {} };
+  vm.runInContext("adminState.pendingImageFiles.set('p1', {name:'a.jpg'}); loadImages = async () => {}", c);
+  let resolveUpload;
+  let uploadCount = 0;
+  c.fetch = () => {
+    uploadCount += 1;
+    if (uploadCount === 1) return new Promise((resolve) => { resolveUpload = resolve; });
+    return Promise.resolve({ ok: true, json: async () => ({ imageId: 'image-b' }) });
+  };
+  const click = c.nodes.get('adminProductList').listeners.click;
+  const input = c.nodes.get('adminProductList').listeners.input;
+  const uploadA = click({ target: uploadButton });
+  fileInput.files = [fileB]; fileInput.value = 'b.jpg';
+  input({ target: fileInput });
+  resolveUpload({ ok: true, json: async () => ({ imageId: 'image-a' }) });
+  await uploadA;
+
+  assert.equal(vm.runInContext("adminState.pendingImageFiles.get('p1').name", c), 'b.jpg');
+  assert.equal(fileInput.value, 'b.jpg');
+  assert.equal(uploadButton.disabled, false);
+
+  await click({ target: uploadButton });
+  assert.equal(uploadCount, 2);
+  assert.equal(vm.runInContext("adminState.pendingImageFiles.has('p1')", c), false);
+  assert.equal(fileInput.value, '');
+  await click({ target: uploadButton });
+  assert.equal(uploadCount, 2);
 });

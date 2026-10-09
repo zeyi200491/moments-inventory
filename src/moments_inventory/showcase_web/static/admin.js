@@ -19,6 +19,7 @@ const generateBulkPreviewButton = document.getElementById("generateBulkPreviewBu
 const openBulkConfirmButton = document.getElementById("openBulkConfirmButton");
 const exportBulkPreviewButton = document.getElementById("exportBulkPreviewButton");
 const bulkConfirmDialog = document.getElementById("bulkConfirmDialog");
+const cancelBulkConfirmButton = document.getElementById("cancelBulkConfirmButton");
 const bulkConfirmStatus = document.getElementById("bulkConfirmStatus");
 const applyBulkButton = document.getElementById("applyBulkButton");
 const sampleMatchingSummary = document.getElementById("sampleMatchingSummary");
@@ -34,6 +35,16 @@ const adminState = {
   sampleMatchingProducts: [],
   sampleMatchingGroups: [],
   sampleAssets: [],
+  sampleProductsHasMore: false,
+  sampleGroupsHasMore: false,
+  sampleAssetsHasMore: false,
+  sampleProductsTotal: null,
+  sampleGroupsTotal: null,
+  sampleAssetTotal: 0,
+  sampleSummaryRequestId: 0,
+  sampleProductsRequestId: 0,
+  sampleGroupsRequestId: 0,
+  sampleAssetsRequestId: 0,
   sectionSearchResults: {},
   productQuery: "",
   selectedProductIds: new Set(),
@@ -43,6 +54,12 @@ const adminState = {
   lastBulkRequest: null,
   lastBulkPreview: null,
   drafts: new Map(),
+  managementDrafts: new Map(),
+  pendingGalleryFiles: new Map(),
+  galleryUploads: new Set(),
+  settingsDraft: new Map(),
+  createSectionSelection: new Set(),
+  createFormDirty: new Set(),
   productRequestId: 0,
   productController: null,
   productLoading: false,
@@ -53,6 +70,7 @@ const adminState = {
   bulkAuthExpired: false,
   undoKeys: new Map(),
   pendingImageFiles: new Map(),
+  imageUploads: new Set(),
 };
 
 const ADMIN_PRODUCT_PAGE_SIZE = 80;
@@ -66,6 +84,115 @@ const BULK_PRICE_RANGES = {
 };
 const BULK_FILTER_CONFLICT = "__bulk_filter_conflict__";
 
+function managementRowKey(row) {
+  const identities = [
+    ["partnerId", "partner"], ["sectionId", "section"], ["itemId", "section-item"],
+    ["stepId", "step"], ["albumId", "album"], ["imageId", "gallery-image"],
+  ];
+  for (const [attribute, type] of identities) {
+    if (row?.dataset?.[attribute]) return `${type}:${row.dataset[attribute]}`;
+  }
+  return "";
+}
+
+function rememberManagementRow(row) {
+  const key = managementRowKey(row);
+  if (!key) return;
+  const draft = adminState.managementDrafts.get(key) || {};
+  for (const control of row.querySelectorAll("input, textarea, select")) {
+    if (control.type === "file") continue;
+    const className = String(control.className || control.getAttribute("class") || "").trim().split(/\s+/)[0];
+    if (!className) continue;
+    draft[className] = control.type === "checkbox" ? control.checked : control.value;
+  }
+  adminState.managementDrafts.set(key, draft);
+}
+
+function restoreManagementRow(row) {
+  const draft = adminState.managementDrafts.get(managementRowKey(row));
+  if (!draft) return;
+  for (const control of row.querySelectorAll("input, textarea, select")) {
+    if (control.type === "file") continue;
+    const className = String(control.className || control.getAttribute("class") || "").trim().split(/\s+/)[0];
+    if (!Object.prototype.hasOwnProperty.call(draft, className)) continue;
+    if (control.type === "checkbox") control.checked = draft[className];
+    else control.value = draft[className];
+  }
+}
+
+function clearManagementRowDraft(row, { clearPendingFile = false, clearChildren = false } = {}) {
+  const key = managementRowKey(row);
+  if (key) adminState.managementDrafts.delete(key);
+  if (clearPendingFile && row?.dataset?.albumId) adminState.pendingGalleryFiles.delete(row.dataset.albumId);
+  if (clearChildren && row?.dataset?.sectionId) {
+    row.querySelectorAll(".section-item-row").forEach((item) => adminState.managementDrafts.delete(managementRowKey(item)));
+  }
+  if (clearChildren && row?.dataset?.albumId) {
+    row.querySelectorAll(".gallery-image-row").forEach((image) => adminState.managementDrafts.delete(managementRowKey(image)));
+  }
+}
+
+function restoreManagementRows(container, selector) {
+  container?.querySelectorAll(selector).forEach(restoreManagementRow);
+}
+
+const managementRowSelector = ".partner-admin-row, .section-admin-row, .section-item-row, .purchase-step-admin-row, .gallery-admin-row, .gallery-image-row";
+document.addEventListener("input", (event) => {
+  const row = event.target.closest?.(managementRowSelector);
+  if (row) rememberManagementRow(row);
+});
+document.addEventListener("change", (event) => {
+  const row = event.target.closest?.(managementRowSelector);
+  if (row) rememberManagementRow(row);
+  if (!event.target.classList.contains("gallery-image-file")) return;
+  const albumRow = event.target.closest(".gallery-admin-row");
+  if (!albumRow) return;
+  const file = event.target.files[0];
+  if (file) adminState.pendingGalleryFiles.set(albumRow.dataset.albumId, file);
+  else adminState.pendingGalleryFiles.delete(albumRow.dataset.albumId);
+  const status = albumRow.querySelector(".gallery-pending-file");
+  if (status) status.textContent = file?.name || "";
+});
+document.getElementById("settingsForm")?.addEventListener("input", (event) => {
+  if (["statementInput", "shopIntroInput", "watermarkInput", "inventoryUpdatedInput"].includes(event.target.id)) {
+    adminState.settingsDraft.set(event.target.id, event.target.value);
+  }
+});
+window.addEventListener("unhandledrejection", (event) => {
+  event.preventDefault();
+  const panel = document.getElementById("adminActionError");
+  if (!panel) return;
+  const error = event.reason || {};
+  const message = error.status === 401
+    ? "登录已过期，请重新登录；未确认成功的操作请先核对列表。"
+    : error.status === 422
+      ? "操作内容未通过校验，请检查输入后重试。"
+      : error.status >= 500
+        ? `服务暂时不可用（${error.status}），请核对操作结果后重试。`
+        : `操作失败，请检查网络或输入后重试：${String(error.message || "未知错误").slice(0, 180)}`;
+  panel.textContent = message;
+  panel.hidden = false;
+});
+document.addEventListener("input", () => {
+  const panel = document.getElementById("adminActionError");
+  if (panel) panel.hidden = true;
+});
+createSectionPicker?.addEventListener("change", () => {
+  adminState.createSectionSelection = new Set(
+    Array.from(createSectionPicker.querySelectorAll?.(".create-section-checkbox:checked") || [], (input) => input.value)
+  );
+});
+const createFormIds = ["partnerForm", "sectionForm", "galleryForm", "purchaseStepForm", "createProductForm"];
+for (const formId of createFormIds) {
+  const form = document.getElementById(formId);
+  form?.addEventListener("input", () => adminState.createFormDirty.add(formId));
+  form?.addEventListener("change", () => adminState.createFormDirty.add(formId));
+}
+function resetAdminCreateForm(form) {
+  form.reset();
+  adminState.createFormDirty.delete(form.id);
+}
+
 function escapeHtml(value) {
   return String(value ?? "")
     .replaceAll("&", "&amp;")
@@ -75,23 +202,36 @@ function escapeHtml(value) {
     .replaceAll("'", "&#039;");
 }
 
+const inFlightMutationRequests = new Map();
 async function requestJson(url, options = {}, behavior = {}) {
-  const response = await fetch(url, {
-    headers: { "Content-Type": "application/json", ...(options.headers || {}) },
-    ...options,
-  });
-  if (!response.ok) {
-    if (response.status === 401 && url !== "/api/admin/login" && !behavior.deferUnauthorizedUi) {
-      adminApp.hidden = true;
-      loginPanel.hidden = false;
-      loginError.textContent = "登录已过期，请重新登录；草稿和待上传文件仍保留";
-      loginError.hidden = false;
+  const method = String(options.method || "GET").toUpperCase();
+  const requestKey = method === "GET" || url === "/api/admin/products/bulk-preview" ? "" : `${method}:${url}:${String(options.body || "")}`;
+  if (requestKey && inFlightMutationRequests.has(requestKey)) return inFlightMutationRequests.get(requestKey);
+  const request = (async () => {
+    const response = await fetch(url, {
+      headers: { "Content-Type": "application/json", ...(options.headers || {}) },
+      ...options,
+    });
+    if (!response.ok) {
+      if (response.status === 401 && url !== "/api/admin/login" && !behavior.deferUnauthorizedUi) {
+        adminApp.hidden = true;
+        loginPanel.hidden = false;
+        loginError.textContent = "登录已过期，请重新登录；草稿和待上传文件仍保留";
+        loginError.hidden = false;
+      }
+      const error = new Error(await response.text());
+      error.status = response.status;
+      throw error;
     }
-    const error = new Error(await response.text());
-    error.status = response.status;
-    throw error;
+    return response.json();
+  })();
+  if (!requestKey) return request;
+  inFlightMutationRequests.set(requestKey, request);
+  try {
+    return await request;
+  } finally {
+    if (inFlightMutationRequests.get(requestKey) === request) inFlightMutationRequests.delete(requestKey);
   }
-  return response.json();
 }
 
 function tagsToInput(tags) {
@@ -117,8 +257,10 @@ function booleanSelectValue(id) {
 }
 
 function numberInputValue(id) {
-  const value = Number(document.getElementById(id)?.value || "");
-  return Number.isFinite(value) && value > 0 ? value : null;
+  const raw = String(document.getElementById(id)?.value ?? "").trim();
+  if (raw === "") return null;
+  const value = Number(raw);
+  return Number.isInteger(value) && value >= 0 ? value : Number.NaN;
 }
 
 function collectAdminFilters() {
@@ -193,7 +335,7 @@ function renderAdminProducts() {
         <span>选择</span>
       </label>
       <div>
-        <input class="admin-model-input" value="${escapeHtml(product.model)}">
+        <input class="admin-model-input" aria-label="${escapeHtml(product.model)} 型号" value="${escapeHtml(product.model)}">
         <div class="meta-row">
           ${product.visible ? "展示中" : "已隐藏"} · ${product.sold ? "已售" : "未售"} ·
           ${product.hasBodyImage ? "有机身图" : "无机身图"} ·
@@ -202,8 +344,8 @@ function renderAdminProducts() {
           ${product.reviewState === "missing" ? "来源缺失待复核" : "来源正常"}
         </div>
       </div>
-      <input class="admin-brand-input" value="${escapeHtml(product.brand)}">
-      <input class="admin-price-input" type="number" min="0" value="${product.displayPrice}">
+      <input class="admin-brand-input" aria-label="${escapeHtml(product.model)} 品牌" value="${escapeHtml(product.brand)}">
+      <input class="admin-price-input" aria-label="${escapeHtml(product.model)} 展示价格" type="number" min="0" value="${product.displayPrice}">
       <span class="status-text">来源价：${product.sourceDisplayPrice ?? 0}</span>
       <button class="secondary-button admin-reset-override" data-reset-field="price" type="button" ${product.priceOverridden ? "" : "disabled"}>价格跟随来源</button>
       <button class="admin-save-product" type="button">保存</button>
@@ -238,7 +380,7 @@ function renderAdminProducts() {
         <button class="admin-bind-sample-folder" type="button">绑定出片图</button>
       </div>
       <div class="admin-image-tools">
-        <input class="admin-image-file" type="file" accept="image/jpeg,image/png,image/webp">
+        <input class="admin-image-file" aria-label="${escapeHtml(product.model)} 上传商品图片" type="file" accept="image/jpeg,image/png,image/webp">
         <span class="admin-pending-file status-text">${escapeHtml(adminState.pendingImageFiles.get(productKey(product))?.name || "")}</span>
         <button class="admin-upload-image" type="button">上传图片</button>
         <button class="admin-load-images" type="button">查看图片</button>
@@ -316,17 +458,22 @@ adminProductList.addEventListener("input", (event) => {
   row.querySelector(".admin-save-product").textContent = Object.keys(changes).length ? "保存草稿" : "保存";
 });
 window.addEventListener("beforeunload", (event) => {
-  if (!adminState.drafts.size && !adminState.pendingImageFiles.size) return;
+  if (!adminState.drafts.size && !adminState.pendingImageFiles.size && !adminState.managementDrafts.size && !adminState.pendingGalleryFiles.size && !adminState.settingsDraft.size && !adminState.createFormDirty.size && !adminState.createSectionSelection.size) return;
   event.preventDefault();
   event.returnValue = "";
 });
 
 async function loadSettings() {
   const settings = await requestJson("/api/admin/settings");
-  document.getElementById("statementInput").value = settings.statementText || "";
-  document.getElementById("shopIntroInput").value = settings.shopIntroText || "";
-  document.getElementById("watermarkInput").value = settings.watermarkText || "星星CCD";
-  document.getElementById("inventoryUpdatedInput").value = settings.inventoryUpdatedAt || "";
+  const values = {
+    statementInput: settings.statementText || "",
+    shopIntroInput: settings.shopIntroText || "",
+    watermarkInput: settings.watermarkText || "星星CCD",
+    inventoryUpdatedInput: settings.inventoryUpdatedAt || "",
+  };
+  for (const [id, value] of Object.entries(values)) {
+    document.getElementById(id).value = adminState.settingsDraft.has(id) ? adminState.settingsDraft.get(id) : value;
+  }
   document.getElementById("customerPasswordAdminInput").placeholder = settings.hasCustomerPassword
     ? "已设置，留空则不修改"
     : "还未设置客户口令";
@@ -335,9 +482,9 @@ async function loadSettings() {
 function renderPartners(partners) {
   partnerList.innerHTML = partners.map((partner) => `
     <article class="partner-admin-row" data-partner-id="${escapeHtml(partner.partnerId)}">
-      <input class="partner-name" value="${escapeHtml(partner.name)}">
-      <input class="partner-note" value="${escapeHtml(partner.note)}">
-      <input class="partner-sort" type="number" min="0" value="${partner.sortOrder}">
+      <input class="partner-name" aria-label="${escapeHtml(partner.name)} 合作方名称" value="${escapeHtml(partner.name)}">
+      <input class="partner-note" aria-label="${escapeHtml(partner.name)} 合作方说明" value="${escapeHtml(partner.note)}">
+      <input class="partner-sort" aria-label="${escapeHtml(partner.name)} 排序" type="number" min="0" value="${partner.sortOrder}">
       <label class="check-field">
         <input class="partner-active" type="checkbox" ${partner.active ? "checked" : ""}>
         <span>启用</span>
@@ -346,6 +493,7 @@ function renderPartners(partners) {
       <button class="partner-delete" type="button">删除</button>
     </article>
   `).join("");
+  restoreManagementRows(partnerList, ".partner-admin-row");
 }
 
 async function loadPartners() {
@@ -355,10 +503,12 @@ async function loadPartners() {
 
 function renderCreateSectionPicker() {
   if (!createSectionPicker) return;
+  const checked = Array.from(createSectionPicker.querySelectorAll?.(".create-section-checkbox:checked") || [], (input) => input.value);
+  if (checked.length) adminState.createSectionSelection = new Set(checked);
   const sections = Array.isArray(adminState.sections) ? adminState.sections : [];
   createSectionPicker.innerHTML = sections.length ? sections.map((section) => `
     <label class="section-choice">
-      <input class="create-section-checkbox" type="checkbox" value="${escapeHtml(section.sectionId)}">
+      <input class="create-section-checkbox" type="checkbox" value="${escapeHtml(section.sectionId)}" ${adminState.createSectionSelection.has(section.sectionId) ? "checked" : ""}>
       <span>${escapeHtml(section.title)}${section.active ? "" : "（隐藏）"}</span>
     </label>
   `).join("") : `<p class="empty-admin-text">还没有可加入的专栏</p>`;
@@ -428,8 +578,8 @@ function renderSections(sections) {
       return `
         <div class="section-item-row" data-item-id="${escapeHtml(item.itemId)}">
           <span>${escapeHtml(productLabel)}</span>
-          <input class="section-item-note" value="${escapeHtml(item.recommendNote || "")}" placeholder="专区内推荐语">
-          <input class="section-item-sort" type="number" min="0" value="${item.sortOrder || 0}">
+          <input class="section-item-note" aria-label="${escapeHtml(productLabel)} 专栏推荐语" value="${escapeHtml(item.recommendNote || "")}" placeholder="专区内推荐语">
+          <input class="section-item-sort" aria-label="${escapeHtml(productLabel)} 专栏排序" type="number" min="0" value="${item.sortOrder || 0}">
           <button class="section-item-save" type="button">保存</button>
           <button class="section-item-delete" type="button">移除</button>
         </div>
@@ -439,9 +589,9 @@ function renderSections(sections) {
     return `
       <article class="section-admin-row" data-section-id="${escapeHtml(section.sectionId)}">
         <div class="section-admin-main">
-          <input class="section-title" value="${escapeHtml(section.title)}">
-          <input class="section-subtitle" value="${escapeHtml(section.subtitle || "")}" placeholder="专栏说明">
-          <input class="section-sort" type="number" min="0" value="${section.sortOrder || 0}">
+          <input class="section-title" aria-label="专栏名称" value="${escapeHtml(section.title)}">
+          <input class="section-subtitle" aria-label="${escapeHtml(section.title)} 说明" value="${escapeHtml(section.subtitle || "")}" placeholder="专栏说明">
+          <input class="section-sort" aria-label="${escapeHtml(section.title)} 排序" type="number" min="0" value="${section.sortOrder || 0}">
           <label class="check-field">
             <input class="section-active" type="checkbox" ${section.active ? "checked" : ""}>
             <span>首页展示</span>
@@ -463,6 +613,7 @@ function renderSections(sections) {
       </article>
     `;
   }).join("");
+  restoreManagementRows(sectionList, ".section-admin-row, .section-item-row");
 }
 
 async function loadSections() {
@@ -476,9 +627,9 @@ function renderPurchaseStepsAdmin(steps) {
   if (!purchaseStepList) return;
   purchaseStepList.innerHTML = steps.length ? steps.map((step) => `
     <article class="purchase-step-admin-row" data-step-id="${escapeHtml(step.stepId)}">
-      <input class="purchase-step-title" value="${escapeHtml(step.title)}" placeholder="步骤标题">
-      <input class="purchase-step-description" value="${escapeHtml(step.description || "")}" placeholder="步骤说明">
-      <input class="purchase-step-sort" type="number" min="0" value="${step.sortOrder || 0}">
+      <input class="purchase-step-title" aria-label="买前流程标题" value="${escapeHtml(step.title)}" placeholder="步骤标题">
+      <input class="purchase-step-description" aria-label="${escapeHtml(step.title)} 步骤说明" value="${escapeHtml(step.description || "")}" placeholder="步骤说明">
+      <input class="purchase-step-sort" aria-label="${escapeHtml(step.title)} 排序" type="number" min="0" value="${step.sortOrder || 0}">
       <label class="check-field">
         <input class="purchase-step-visible" type="checkbox" ${step.isVisible ? "checked" : ""}>
         <span>客户页展示</span>
@@ -487,6 +638,7 @@ function renderPurchaseStepsAdmin(steps) {
       <button class="purchase-step-delete" type="button">删除</button>
     </article>
   `).join("") : `<p class="empty-admin-text">还没有买前流程步骤</p>`;
+  restoreManagementRows(purchaseStepList, ".purchase-step-admin-row");
 }
 
 async function loadPurchaseStepsAdmin() {
@@ -502,8 +654,8 @@ function renderGalleryAlbums(albums) {
     const imageHtml = images.length ? images.map((image) => `
       <div class="gallery-image-row" data-image-id="${escapeHtml(image.imageId)}">
         <img src="${escapeHtml(imageUrl(image.imageUrl || image.imagePath))}" alt="">
-        <input class="gallery-image-caption" value="${escapeHtml(image.caption || "")}" placeholder="图片说明">
-        <input class="gallery-image-sort" type="number" min="0" value="${image.sortOrder || 0}">
+        <input class="gallery-image-caption" aria-label="${escapeHtml(album.title)} 图片说明" value="${escapeHtml(image.caption || "")}" placeholder="图片说明">
+        <input class="gallery-image-sort" aria-label="${escapeHtml(album.title)} 图片排序" type="number" min="0" value="${image.sortOrder || 0}">
         <label class="check-field">
           <input class="gallery-image-visible" type="checkbox" ${image.isVisible ? "checked" : ""}>
           <span>展示</span>
@@ -518,9 +670,9 @@ function renderGalleryAlbums(albums) {
     return `
       <article class="gallery-admin-row" data-album-id="${escapeHtml(album.albumId)}">
         <div class="gallery-admin-main">
-          <input class="gallery-title" value="${escapeHtml(album.title)}">
-          <input class="gallery-description" value="${escapeHtml(album.description || "")}" placeholder="相册说明">
-          <input class="gallery-sort" type="number" min="0" value="${album.sortOrder || 0}">
+          <input class="gallery-title" aria-label="相册名称" value="${escapeHtml(album.title)}">
+          <input class="gallery-description" aria-label="${escapeHtml(album.title)} 相册说明" value="${escapeHtml(album.description || "")}" placeholder="相册说明">
+          <input class="gallery-sort" aria-label="${escapeHtml(album.title)} 排序" type="number" min="0" value="${album.sortOrder || 0}">
           <label class="check-field">
             <input class="gallery-visible" type="checkbox" ${album.isVisible ? "checked" : ""}>
             <span>客户页展示</span>
@@ -529,7 +681,8 @@ function renderGalleryAlbums(albums) {
           <button class="gallery-delete" type="button">删除相册</button>
         </div>
         <div class="gallery-image-uploader">
-          <input class="gallery-image-file" type="file" accept="image/jpeg,image/png,image/webp">
+          <input class="gallery-image-file" aria-label="${escapeHtml(album.title)} 上传图片" type="file" accept="image/jpeg,image/png,image/webp">
+          <span class="gallery-pending-file status-text">${escapeHtml(adminState.pendingGalleryFiles.get(album.albumId)?.name || "")}</span>
           <input class="gallery-image-new-caption" placeholder="图片说明">
           <label class="check-field">
             <input class="gallery-image-new-visible" type="checkbox" checked>
@@ -541,6 +694,7 @@ function renderGalleryAlbums(albums) {
       </article>
     `;
   }).join("") : `<p class="empty-admin-text">还没有店铺橱窗相册</p>`;
+  restoreManagementRows(galleryAlbumList, ".gallery-admin-row, .gallery-image-row");
 }
 
 async function loadGalleryAlbums() {
@@ -650,6 +804,12 @@ function renderSampleMatchingProducts() {
       </div>
     </div>
   `).join("") : `<p class="empty-admin-text">当前筛选下没有商品</p>`;
+  const loadMore = document.getElementById("sampleMatchLoadMoreButton");
+  if (loadMore) loadMore.hidden = !adminState.sampleProductsHasMore;
+  const count = document.getElementById("sampleMatchProductCount");
+  if (count) count.textContent = adminState.sampleProductsTotal === null
+    ? `已加载 ${products.length} 项${adminState.sampleProductsHasMore ? "，还有更多" : ""}`
+    : `共 ${adminState.sampleProductsTotal} 项，已显示 ${products.length} 项`;
 }
 
 function renderSampleAssets() {
@@ -662,6 +822,8 @@ function renderSampleAssets() {
       <button class="secondary-button sample-copy-folder" type="button" data-folder-path="${escapeHtml(asset.folderPath)}">复制路径</button>
     </div>
   `).join("") : `<p class="empty-admin-text">还没有图库搜索结果</p>`;
+  const total = document.getElementById("sampleAssetCount");
+  if (total) total.textContent = `已显示 ${assets.length} / ${adminState.sampleAssetTotal} 项`;
 }
 
 function renderSampleMatchingGroups() {
@@ -674,23 +836,43 @@ function renderSampleMatchingGroups() {
       <button class="access-button sample-bind-group" type="button">确认这一组</button>
     </div>
   `).join("") : `<p class="empty-admin-text">当前没有可批量确认的候选组</p>`;
+  const loadMore = document.getElementById("sampleGroupLoadMoreButton");
+  if (loadMore) loadMore.hidden = !adminState.sampleGroupsHasMore;
+  const count = document.getElementById("sampleGroupCount");
+  if (count) count.textContent = adminState.sampleGroupsTotal === null
+    ? `已加载 ${groups.length} 组${adminState.sampleGroupsHasMore ? "，还有更多" : ""}`
+    : `共 ${adminState.sampleGroupsTotal} 组，已显示 ${groups.length} 组`;
 }
 
 async function loadSampleMatchingSummary() {
+  const requestId = ++adminState.sampleSummaryRequestId;
   const summary = await requestJson("/api/admin/sample-matching/summary");
+  if (requestId !== adminState.sampleSummaryRequestId) return;
   renderSampleMatchingSummary(summary);
 }
 
-async function loadSampleMatchingProducts() {
+async function loadSampleMatchingProducts({ append = false } = {}) {
+  const requestId = ++adminState.sampleProductsRequestId;
   const status = document.getElementById("sampleMatchStatusFilter")?.value || "missing";
-  const data = await requestJson(`/api/admin/sample-matching/products?status=${encodeURIComponent(status)}&limit=100`);
-  adminState.sampleMatchingProducts = Array.isArray(data.products) ? data.products : [];
+  const offset = append ? adminState.sampleMatchingProducts.length : 0;
+  const data = await requestJson(`/api/admin/sample-matching/products?status=${encodeURIComponent(status)}&limit=100&offset=${offset}`);
+  if (requestId !== adminState.sampleProductsRequestId) return;
+  const incoming = Array.isArray(data.products) ? data.products : [];
+  adminState.sampleMatchingProducts = append ? [...adminState.sampleMatchingProducts, ...incoming] : incoming;
+  adminState.sampleProductsHasMore = Boolean(data.hasMore);
+  adminState.sampleProductsTotal = Number.isFinite(data.total) ? Number(data.total) : null;
   renderSampleMatchingProducts();
 }
 
-async function loadSampleMatchingGroups() {
-  const data = await requestJson("/api/admin/sample-matching/groups?limit=100");
-  adminState.sampleMatchingGroups = Array.isArray(data.groups) ? data.groups : [];
+async function loadSampleMatchingGroups({ append = false } = {}) {
+  const requestId = ++adminState.sampleGroupsRequestId;
+  const offset = append ? adminState.sampleMatchingGroups.length : 0;
+  const data = await requestJson(`/api/admin/sample-matching/groups?limit=100&offset=${offset}`);
+  if (requestId !== adminState.sampleGroupsRequestId) return;
+  const incoming = Array.isArray(data.groups) ? data.groups : [];
+  adminState.sampleMatchingGroups = append ? [...adminState.sampleMatchingGroups, ...incoming] : incoming;
+  adminState.sampleGroupsHasMore = Boolean(data.hasMore);
+  adminState.sampleGroupsTotal = Number.isFinite(data.total) ? Number(data.total) : null;
   renderSampleMatchingGroups();
 }
 
@@ -698,19 +880,49 @@ async function loadSampleMatchingCenter() {
   await Promise.all([loadSampleMatchingSummary(), loadSampleMatchingProducts(), loadSampleMatchingGroups()]);
 }
 
-async function searchSampleAssets() {
+async function searchSampleAssets({ append = false } = {}) {
+  const requestId = ++adminState.sampleAssetsRequestId;
   const query = document.getElementById("sampleAssetSearchInput")?.value.trim() || "";
-  const data = await requestJson(`/api/admin/sample-matching/assets?query=${encodeURIComponent(query)}&limit=40`);
-  adminState.sampleAssets = Array.isArray(data.assets) ? data.assets : [];
+  const offset = append ? adminState.sampleAssets.length : 0;
+  const data = await requestJson(`/api/admin/sample-matching/assets?query=${encodeURIComponent(query)}&limit=40&offset=${offset}`);
+  if (requestId !== adminState.sampleAssetsRequestId) return;
+  const incoming = Array.isArray(data.assets) ? data.assets : [];
+  adminState.sampleAssets = append ? [...adminState.sampleAssets, ...incoming] : incoming;
+  adminState.sampleAssetTotal = Number(data.total || 0);
+  adminState.sampleAssetsHasMore = Boolean(data.hasMore);
   renderSampleAssets();
+  const loadMore = document.getElementById("sampleAssetLoadMoreButton");
+  if (loadMore) loadMore.hidden = !adminState.sampleAssetsHasMore;
 }
 
 async function loadAdminApp() {
   loginPanel.hidden = true;
   adminApp.hidden = false;
-  await Promise.all([loadSettings(), loadPartners(), loadProducts(), loadPurchaseStepsAdmin(), loadGalleryAlbums(), loadDiagnostics(), loadImportReports(), loadOperations(), loadSampleMatchingCenter()]);
-  await loadSections();
+  const modules = [
+    ["设置", loadSettings], ["合作方", loadPartners], ["商品", loadProducts],
+    ["买前流程", loadPurchaseStepsAdmin], ["图库", loadGalleryAlbums],
+    ["诊断", loadDiagnostics], ["导入记录", loadImportReports], ["操作记录", loadOperations],
+    ["样片匹配", loadSampleMatchingCenter], ["专栏", loadSections],
+  ];
+  const results = await Promise.allSettled(modules.map(([, load]) => load()));
+  const failed = results.flatMap((result, index) => result.status === "rejected" ? [modules[index][0]] : []);
+  const status = document.getElementById("adminStartupStatus");
+  const retryButton = document.getElementById("retryAdminStartupButton");
+  status.textContent = failed.length
+    ? `管理模块加载失败：${failed.join("、")}。登录已成功，可点击重试加载。`
+    : "";
+  status.hidden = failed.length === 0;
+  retryButton.hidden = failed.length === 0;
 }
+
+document.getElementById("retryAdminStartupButton")?.addEventListener("click", async (event) => {
+  event.currentTarget.disabled = true;
+  try {
+    await loadAdminApp();
+  } finally {
+    event.currentTarget.disabled = false;
+  }
+});
 
 let adminSearchTimer;
 adminProductSearchInput?.addEventListener("input", (event) => {
@@ -821,6 +1033,32 @@ async function reorderImages(row, imageId, direction) {
   await loadImages(row);
 }
 
+function adminDeleteConfirmationMessage(button) {
+  const product = button.closest(".admin-product-row");
+  const section = button.closest(".section-admin-row");
+  const item = button.closest(".section-item-row");
+  const album = button.closest(".gallery-admin-row");
+  const step = button.closest(".purchase-step-admin-row");
+  const partner = button.closest(".partner-admin-row");
+  const value = (row, selector) => row?.querySelector(selector)?.value?.trim() || "未命名";
+  if (button.classList.contains("admin-delete-product")) return `确定删除商品“${value(product, ".admin-model-input")}”吗？此操作会从展示库存中移除该商品。`;
+  if (button.classList.contains("section-delete")) return `确定删除专栏“${value(section, ".section-title")}”吗？专栏中的商品关联也会一起移除。`;
+  if (button.classList.contains("section-item-delete")) return `确定从专栏中移除“${item?.querySelector("span")?.textContent?.trim() || "该商品"}”吗？`;
+  if (button.classList.contains("gallery-delete")) return `确定删除相册“${value(album, ".gallery-title")}”及其中 ${album?.querySelectorAll(".gallery-image-row").length || 0} 张图片吗？`;
+  if (button.classList.contains("gallery-image-delete")) return `确定删除相册“${value(album, ".gallery-title")}”中的这张图片吗？`;
+  if (button.classList.contains("purchase-step-delete")) return `确定删除买前流程“${value(step, ".purchase-step-title")}”吗？`;
+  if (button.classList.contains("partner-delete")) return `确定删除合作方“${value(partner, ".partner-name")}”吗？`;
+  if (button.classList.contains("admin-delete-image")) return `确定删除商品“${value(product, ".admin-model-input")}”的一张图片吗？`;
+  return "确定执行删除吗？";
+}
+
+document.addEventListener("click", (event) => {
+  const button = event.target.closest?.(".admin-delete-product, .section-delete, .section-item-delete, .gallery-delete, .gallery-image-delete, .purchase-step-delete, .partner-delete, .admin-delete-image");
+  if (!button || window.confirm(adminDeleteConfirmationMessage(button))) return;
+  event.preventDefault();
+  event.stopImmediatePropagation();
+}, true);
+
 loginForm.addEventListener("submit", async (event) => {
   event.preventDefault();
   loginError.hidden = true;
@@ -829,15 +1067,19 @@ loginForm.addEventListener("submit", async (event) => {
       method: "POST",
       body: JSON.stringify({ password: document.getElementById("adminPasswordInput").value }),
     });
-    await loadAdminApp();
   } catch {
     loginError.textContent = "密码错误";
     loginError.hidden = false;
+    return;
   }
+  await loadAdminApp();
 });
 
 document.getElementById("settingsForm").addEventListener("submit", async (event) => {
   event.preventDefault();
+  document.getElementById("settingsStatus").textContent = "";
+  const submittedValues = Object.fromEntries(["statementInput", "shopIntroInput", "watermarkInput", "inventoryUpdatedInput"]
+    .map((id) => [id, document.getElementById(id).value]));
   const password = document.getElementById("customerPasswordAdminInput").value.trim();
   const payload = {
     statementText: document.getElementById("statementInput").value.trim(),
@@ -850,6 +1092,11 @@ document.getElementById("settingsForm").addEventListener("submit", async (event)
     method: "PATCH",
     body: JSON.stringify(payload),
   });
+  for (const [id, submittedValue] of Object.entries(submittedValues)) {
+    const currentValue = document.getElementById(id).value;
+    if (currentValue === submittedValue) adminState.settingsDraft.delete(id);
+    else adminState.settingsDraft.set(id, currentValue);
+  }
   document.getElementById("customerPasswordAdminInput").value = "";
   document.getElementById("settingsStatus").textContent = "已保存";
   await loadSettings();
@@ -866,7 +1113,7 @@ document.getElementById("partnerForm").addEventListener("submit", async (event) 
       active: document.getElementById("partnerActiveInput").checked,
     }),
   });
-  event.target.reset();
+  resetAdminCreateForm(event.target);
   document.getElementById("partnerActiveInput").checked = true;
   await loadPartners();
 });
@@ -882,7 +1129,7 @@ document.getElementById("sectionForm").addEventListener("submit", async (event) 
       active: document.getElementById("sectionActiveInput").checked,
     }),
   });
-  event.target.reset();
+  resetAdminCreateForm(event.target);
   document.getElementById("sectionActiveInput").checked = true;
   await loadSections();
 });
@@ -898,7 +1145,7 @@ document.getElementById("galleryForm")?.addEventListener("submit", async (event)
       isVisible: document.getElementById("galleryVisibleInput").checked,
     }),
   });
-  event.target.reset();
+  resetAdminCreateForm(event.target);
   document.getElementById("galleryVisibleInput").checked = true;
   await loadGalleryAlbums();
 });
@@ -914,7 +1161,7 @@ document.getElementById("purchaseStepForm")?.addEventListener("submit", async (e
       isVisible: document.getElementById("purchaseStepVisibleInput").checked,
     }),
   });
-  event.target.reset();
+  resetAdminCreateForm(event.target);
   document.getElementById("purchaseStepVisibleInput").checked = true;
   await loadPurchaseStepsAdmin();
 });
@@ -930,24 +1177,37 @@ document.getElementById("refreshDiagnosticsButton")?.addEventListener("click", a
 
 document.getElementById("refreshSampleMatchingButton")?.addEventListener("click", async () => {
   if (sampleMatchingStatus) sampleMatchingStatus.textContent = "正在刷新";
-  await loadSampleMatchingCenter();
-  if (sampleMatchingStatus) sampleMatchingStatus.textContent = "已刷新";
+  try {
+    await loadSampleMatchingCenter();
+    if (sampleMatchingStatus) sampleMatchingStatus.textContent = "已刷新";
+  } catch (error) {
+    if (sampleMatchingStatus) sampleMatchingStatus.textContent = "刷新失败，请检查页面错误提示";
+    throw error;
+  }
 });
 
 document.getElementById("rebuildSampleMatchingButton")?.addEventListener("click", async () => {
   if (sampleMatchingStatus) sampleMatchingStatus.textContent = "正在重建";
-  const result = await requestJson("/api/admin/sample-matching/rebuild", { method: "POST" });
-  renderSampleMatchingSummary(result.summary || {});
-  if (sampleMatchingStatus) {
-    const imported = result.importResult || {};
-    sampleMatchingStatus.textContent = `已重建：匹配 ${imported.matchedProductCount || 0} 台，写入 ${imported.insertedImageCount || 0} 张`;
+  try {
+    const result = await requestJson("/api/admin/sample-matching/rebuild", { method: "POST" });
+    renderSampleMatchingSummary(result.summary || {});
+    if (sampleMatchingStatus) {
+      const imported = result.importResult || {};
+      sampleMatchingStatus.textContent = `已重建：匹配 ${imported.matchedProductCount || 0} 台，写入 ${imported.insertedImageCount || 0} 张`;
+    }
+    await Promise.all([loadSampleMatchingProducts(), loadProducts(), loadDiagnostics()]);
+  } catch (error) {
+    if (sampleMatchingStatus) sampleMatchingStatus.textContent = "重建失败，请核对匹配列表后重试";
+    throw error;
   }
-  await Promise.all([loadSampleMatchingProducts(), loadProducts(), loadDiagnostics()]);
 });
 
 document.getElementById("sampleMatchStatusFilter")?.addEventListener("change", loadSampleMatchingProducts);
 
 document.getElementById("sampleAssetSearchButton")?.addEventListener("click", searchSampleAssets);
+document.getElementById("sampleMatchLoadMoreButton")?.addEventListener("click", () => loadSampleMatchingProducts({ append: true }));
+document.getElementById("sampleGroupLoadMoreButton")?.addEventListener("click", () => loadSampleMatchingGroups({ append: true }));
+document.getElementById("sampleAssetLoadMoreButton")?.addEventListener("click", () => searchSampleAssets({ append: true }));
 
 document.getElementById("sampleAssetSearchInput")?.addEventListener("keydown", (event) => {
   if (event.key !== "Enter") return;
@@ -959,11 +1219,19 @@ sampleAssetSearchResults?.addEventListener("click", async (event) => {
   if (!event.target.classList.contains("sample-copy-folder")) return;
   const folderPath = event.target.dataset.folderPath || "";
   if (!folderPath) return;
+  const showManualCopy = () => {
+    window.prompt("无法自动复制，请手动复制文件夹路径：", folderPath);
+    if (sampleMatchingStatus) sampleMatchingStatus.textContent = `请手动复制路径：${folderPath}`;
+  };
+  if (typeof navigator.clipboard?.writeText !== "function") {
+    showManualCopy();
+    return;
+  }
   try {
-    await navigator.clipboard?.writeText(folderPath);
+    await navigator.clipboard.writeText(folderPath);
     if (sampleMatchingStatus) sampleMatchingStatus.textContent = `已复制：${folderPath}`;
   } catch {
-    if (sampleMatchingStatus) sampleMatchingStatus.textContent = folderPath;
+    showManualCopy();
   }
 });
 
@@ -974,15 +1242,20 @@ sampleMatchProductList?.addEventListener("click", async (event) => {
   const folderPath = row?.querySelector(".sample-bind-folder-input")?.value.trim() || "";
   if (!productId || !folderPath) return;
   if (sampleMatchingStatus) sampleMatchingStatus.textContent = "正在绑定";
-  const result = await requestJson("/api/admin/sample-matching/bind", {
-    method: "POST",
-    body: JSON.stringify({ productId, folderPath }),
-  });
-  if (sampleMatchingStatus) {
-    const imported = result.importResult || {};
-    sampleMatchingStatus.textContent = `已绑定：${result.folderPath}，当前匹配 ${imported.matchedProductCount || 0} 台`;
+  try {
+    const result = await requestJson("/api/admin/sample-matching/bind", {
+      method: "POST",
+      body: JSON.stringify({ productId, folderPath }),
+    });
+    if (sampleMatchingStatus) {
+      const imported = result.importResult || {};
+      sampleMatchingStatus.textContent = `已绑定：${result.folderPath}，当前匹配 ${imported.matchedProductCount || 0} 台`;
+    }
+    await Promise.all([loadSampleMatchingCenter(), loadProducts(), loadDiagnostics()]);
+  } catch (error) {
+    if (sampleMatchingStatus) sampleMatchingStatus.textContent = "绑定失败，请核对商品匹配状态后重试";
+    throw error;
   }
-  await Promise.all([loadSampleMatchingCenter(), loadProducts(), loadDiagnostics()]);
 });
 
 sampleMatchGroupList?.addEventListener("click", async (event) => {
@@ -991,18 +1264,23 @@ sampleMatchGroupList?.addEventListener("click", async (event) => {
   const group = adminState.sampleMatchingGroups[Number(row?.dataset.groupIndex || -1)];
   if (!group || !Array.isArray(group.productIds) || !group.productIds.length) return;
   if (sampleMatchingStatus) sampleMatchingStatus.textContent = "正在批量确认";
-  const result = await requestJson("/api/admin/sample-matching/groups/bind", {
-    method: "POST",
-    body: JSON.stringify({
-      productIds: group.productIds,
-      folderPath: group.folderPath,
-    }),
-  });
-  if (sampleMatchingStatus) {
-    const imported = result.importResult || {};
-    sampleMatchingStatus.textContent = `已确认 ${result.boundProductCount || 0} 台，当前匹配 ${imported.matchedProductCount || 0} 台`;
+  try {
+    const result = await requestJson("/api/admin/sample-matching/groups/bind", {
+      method: "POST",
+      body: JSON.stringify({
+        productIds: group.productIds,
+        folderPath: group.folderPath,
+      }),
+    });
+    if (sampleMatchingStatus) {
+      const imported = result.importResult || {};
+      sampleMatchingStatus.textContent = `已确认 ${result.boundProductCount || 0} 台，当前匹配 ${imported.matchedProductCount || 0} 台`;
+    }
+    await Promise.all([loadSampleMatchingCenter(), loadProducts(), loadDiagnostics()]);
+  } catch (error) {
+    if (sampleMatchingStatus) sampleMatchingStatus.textContent = "批量确认失败，请核对匹配列表后重试";
+    throw error;
   }
-  await Promise.all([loadSampleMatchingCenter(), loadProducts(), loadDiagnostics()]);
 });
 
 document.getElementById("operationList")?.addEventListener("click", async (event) => {
@@ -1036,11 +1314,13 @@ sectionList.addEventListener("click", async (event) => {
         active: sectionRow.querySelector(".section-active").checked,
       }),
     });
+    clearManagementRowDraft(sectionRow);
     await loadSections();
   }
 
   if (event.target.classList.contains("section-delete")) {
     await requestJson(`/api/admin/sections/${encodeURIComponent(sectionId)}`, { method: "DELETE" });
+    clearManagementRowDraft(sectionRow, { clearChildren: true });
     await loadSections();
   }
 
@@ -1078,11 +1358,13 @@ sectionList.addEventListener("click", async (event) => {
         sortOrder: Number(itemRow.querySelector(".section-item-sort").value || 0),
       }),
     });
+    clearManagementRowDraft(itemRow);
     await loadSections();
   }
 
   if (event.target.classList.contains("section-item-delete")) {
     await requestJson(`/api/admin/sections/${encodeURIComponent(sectionId)}/items/${encodeURIComponent(itemId)}`, { method: "DELETE" });
+    clearManagementRowDraft(itemRow);
     await loadSections();
   }
 });
@@ -1102,24 +1384,40 @@ galleryAlbumList?.addEventListener("click", async (event) => {
         isVisible: albumRow.querySelector(".gallery-visible").checked,
       }),
     });
+    clearManagementRowDraft(albumRow);
     await loadGalleryAlbums();
   }
 
   if (event.target.classList.contains("gallery-delete")) {
     await requestJson(`/api/admin/gallery/albums/${encodeURIComponent(albumId)}`, { method: "DELETE" });
+    clearManagementRowDraft(albumRow, { clearPendingFile: true, clearChildren: true });
     await loadGalleryAlbums();
   }
 
   if (event.target.classList.contains("gallery-upload-image")) {
-    const file = albumRow.querySelector(".gallery-image-file").files[0];
+    if (adminState.galleryUploads.has(albumId)) return;
+    const file = adminState.pendingGalleryFiles.get(albumId) || albumRow.querySelector(".gallery-image-file").files[0];
     if (!file) return;
-    await uploadGalleryImage(
-      albumId,
-      file,
-      albumRow.querySelector(".gallery-image-new-caption").value.trim(),
-      albumRow.querySelector(".gallery-image-new-visible").checked,
-    );
-    await loadGalleryAlbums();
+    adminState.galleryUploads.add(albumId);
+    event.target.disabled = true;
+    try {
+      await uploadGalleryImage(
+        albumId,
+        file,
+        albumRow.querySelector(".gallery-image-new-caption").value.trim(),
+        albumRow.querySelector(".gallery-image-new-visible").checked,
+      );
+      if (adminState.pendingGalleryFiles.get(albumId) === file) adminState.pendingGalleryFiles.delete(albumId);
+      try {
+        await loadGalleryAlbums();
+      } catch {
+        const status = albumRow.querySelector(".gallery-pending-file");
+        if (status) status.textContent = "图片已上传，但相册列表刷新失败，请重新加载";
+      }
+    } finally {
+      adminState.galleryUploads.delete(albumId);
+      event.target.disabled = false;
+    }
   }
 
   const imageRow = event.target.closest(".gallery-image-row");
@@ -1135,6 +1433,7 @@ galleryAlbumList?.addEventListener("click", async (event) => {
         isVisible: imageRow.querySelector(".gallery-image-visible").checked,
       }),
     });
+    clearManagementRowDraft(imageRow);
     await loadGalleryAlbums();
   }
 
@@ -1148,6 +1447,7 @@ galleryAlbumList?.addEventListener("click", async (event) => {
 
   if (event.target.classList.contains("gallery-image-delete")) {
     await requestJson(`/api/admin/gallery/images/${encodeURIComponent(imageId)}`, { method: "DELETE" });
+    clearManagementRowDraft(imageRow);
     await loadGalleryAlbums();
   }
 });
@@ -1167,11 +1467,13 @@ purchaseStepList?.addEventListener("click", async (event) => {
         isVisible: row.querySelector(".purchase-step-visible").checked,
       }),
     });
+    clearManagementRowDraft(row);
     await loadPurchaseStepsAdmin();
   }
 
   if (event.target.classList.contains("purchase-step-delete")) {
     await requestJson(`/api/admin/purchase-steps/${encodeURIComponent(stepId)}`, { method: "DELETE" });
+    clearManagementRowDraft(row);
     await loadPurchaseStepsAdmin();
   }
 });
@@ -1190,10 +1492,12 @@ partnerList.addEventListener("click", async (event) => {
         active: row.querySelector(".partner-active").checked,
       }),
     });
+    clearManagementRowDraft(row);
     await loadPartners();
   }
   if (event.target.classList.contains("partner-delete")) {
     await requestJson(`/api/admin/partners/${encodeURIComponent(partnerId)}`, { method: "DELETE" });
+    clearManagementRowDraft(row);
     await loadPartners();
   }
 });
@@ -1223,18 +1527,6 @@ function selectedBulkPriceRange() {
   return BULK_PRICE_RANGES[value] || [null, null];
 }
 
-function maximumNullablePrice(left, right) {
-  if (left === null) return right;
-  if (right === null) return left;
-  return Math.max(left, right);
-}
-
-function minimumNullablePrice(left, right) {
-  if (left === null) return right;
-  if (right === null) return left;
-  return Math.min(left, right);
-}
-
 function intersectNullableCondition(left, right) {
   if (left === null) return right;
   if (right === null) return left;
@@ -1243,19 +1535,17 @@ function intersectNullableCondition(left, right) {
 
 function buildBulkRequest() {
   const scope = document.getElementById("bulkScopeInput")?.value || "filtered";
-  const filters = scope === "filtered" ? collectAdminFilters() : {
+  const adminFilters = scope === "filtered" ? collectAdminFilters() : {
     query: "", brands: [], priceMin: null, priceMax: null,
     visible: null, sold: null, hasBodyImage: null,
     hasSampleImage: null, manualPrice: null, reviewState: "", tags: [],
   };
+  const { priceMin: displayPriceMin, priceMax: displayPriceMax, ...filters } = adminFilters;
   const [bulkPriceMin, bulkPriceMax] = selectedBulkPriceRange();
-  if (scope === "filtered") {
-    filters.priceMin = maximumNullablePrice(filters.priceMin, bulkPriceMin);
-    filters.priceMax = minimumNullablePrice(filters.priceMax, bulkPriceMax);
-  } else {
-    filters.priceMin = bulkPriceMin;
-    filters.priceMax = bulkPriceMax;
-  }
+  filters.sourcePriceMin = bulkPriceMin;
+  filters.sourcePriceMax = bulkPriceMax;
+  filters.displayPriceMin = displayPriceMin;
+  filters.displayPriceMax = displayPriceMax;
   const bulkVisible = nullableBooleanValue("bulkVisibleInput");
   const bulkSold = nullableBooleanValue("bulkSoldInput");
   if (scope === "filtered") {
@@ -1287,14 +1577,18 @@ function validateBulkRequest(request) {
   }
   const hasNarrowingFilter = Boolean(
     request.filters.query || request.filters.brands.length ||
-    request.filters.priceMin !== null || request.filters.priceMax !== null ||
+    request.filters.sourcePriceMin !== null || request.filters.sourcePriceMax !== null ||
+    request.filters.displayPriceMin !== null || request.filters.displayPriceMax !== null ||
     request.filters.hasBodyImage !== null || request.filters.hasSampleImage !== null ||
     request.filters.manualPrice !== null || request.filters.reviewState || request.filters.tags.length
   );
   if (request.scope === "filtered" && !hasNarrowingFilter) {
     throw new Error("请先选择价格段或设置商品筛选；如需处理全部展示中未售商品，请明确选择全部库存");
   }
-  for (const value of [request.filters.priceMin, request.filters.priceMax]) {
+  for (const value of [
+    request.filters.sourcePriceMin, request.filters.sourcePriceMax,
+    request.filters.displayPriceMin, request.filters.displayPriceMax,
+  ]) {
     if (value !== null && (!Number.isInteger(value) || value < 0)) {
       throw new Error("价格范围必须填写 0 或正整数");
     }
@@ -1303,9 +1597,13 @@ function validateBulkRequest(request) {
   if (bulkPriceMin !== null && bulkPriceMax !== null && bulkPriceMin > bulkPriceMax) {
     throw new Error("最低价格不能高于最高价格");
   }
-  if (request.filters.priceMin !== null && request.filters.priceMax !== null &&
-      request.filters.priceMin > request.filters.priceMax) {
-    throw new Error("商品筛选价格范围与批量价格段没有交集，请调整其中一个范围");
+  if (request.filters.sourcePriceMin !== null && request.filters.sourcePriceMax !== null &&
+      request.filters.sourcePriceMin > request.filters.sourcePriceMax) {
+    throw new Error("原价范围无效");
+  }
+  if (request.filters.displayPriceMin !== null && request.filters.displayPriceMax !== null &&
+      request.filters.displayPriceMin > request.filters.displayPriceMax) {
+    throw new Error("当前展示价筛选范围无效");
   }
   if (request.operation === "price") {
     if (!Number.isInteger(request.amount) || request.amount < 0) {
@@ -1349,6 +1647,17 @@ function formatPriceRange(minimum, maximum) {
   return `${minimum}～${maximum} 元`;
 }
 
+function formatBulkPriceRanges(filters) {
+  const parts = [];
+  if (filters.sourcePriceMin !== null || filters.sourcePriceMax !== null) {
+    parts.push(`原价 ${formatPriceRange(filters.sourcePriceMin, filters.sourcePriceMax)}`);
+  }
+  if (filters.displayPriceMin !== null || filters.displayPriceMax !== null) {
+    parts.push(`当前展示价 ${formatPriceRange(filters.displayPriceMin, filters.displayPriceMax)}`);
+  }
+  return parts.length ? parts.join("；") : "原价不限，当前展示价不限";
+}
+
 function updateBulkScopeSummary() {
   const scope = document.getElementById("bulkScopeInput")?.value || "filtered";
   const scopeText = scope === "selected"
@@ -1359,7 +1668,7 @@ function updateBulkScopeSummary() {
   const target = document.getElementById("bulkScopeSummary");
   if (target) {
     const filters = buildBulkRequest().filters;
-    target.textContent = `${scopeText} · ${formatPriceRange(filters.priceMin, filters.priceMax)}`;
+    target.textContent = `${scopeText} · ${formatBulkPriceRanges(filters)}`;
   }
 }
 
@@ -1554,7 +1863,7 @@ openBulkConfirmButton?.addEventListener("click", () => {
   if (summary) {
     const ruleParts = [
       bulkScopeLabel(request),
-      `执行前当前展示价范围：${formatPriceRange(request.filters.priceMin, request.filters.priceMax)}`,
+      `价格筛选：${formatBulkPriceRanges(request.filters)}`,
       `状态：${bulkStatusLabel(request)}`,
       `动作：${bulkActionLabel(request)}`,
     ];
@@ -1596,6 +1905,15 @@ bulkConfirmDialog?.addEventListener("close", () => {
   }
 });
 
+bulkConfirmDialog?.addEventListener("cancel", (event) => {
+  if (!adminState.bulkBusy) return;
+  event.preventDefault();
+  if (bulkConfirmStatus) {
+    bulkConfirmStatus.textContent = "批量操作正在执行，请等待结果返回后再关闭。";
+    bulkConfirmStatus.hidden = false;
+  }
+});
+
 exportBulkPreviewButton?.addEventListener("click", () => {
   const previewId = adminState.lastBulkRequest?.previewId;
   if (!previewId) return;
@@ -1606,6 +1924,7 @@ applyBulkButton?.addEventListener("click", async () => {
   if (!adminState.lastBulkRequest || adminState.bulkBusy) return;
   adminState.bulkBusy = true;
   applyBulkButton.disabled = true;
+  if (cancelBulkConfirmButton) cancelBulkConfirmButton.disabled = true;
   const originalLabel = applyBulkButton.textContent;
   applyBulkButton.textContent = "正在执行…";
   try {
@@ -1659,6 +1978,7 @@ applyBulkButton?.addEventListener("click", async () => {
     }
   } finally {
     adminState.bulkBusy = false;
+    if (cancelBulkConfirmButton) cancelBulkConfirmButton.disabled = false;
     applyBulkButton.disabled = !adminState.lastBulkRequest;
     applyBulkButton.textContent = originalLabel;
   }
@@ -1681,7 +2001,8 @@ document.getElementById("createProductForm").addEventListener("submit", async (e
       sectionSortOrder: Number(document.getElementById("createSectionSortInput").value || 0),
     }),
   });
-  event.target.reset();
+  resetAdminCreateForm(event.target);
+  adminState.createSectionSelection.clear();
   renderCreateSectionPicker();
   await loadProducts();
   await loadSections();
@@ -1715,13 +2036,10 @@ adminProductList.addEventListener("click", async (event) => {
         method: "PATCH",
         body: JSON.stringify({ ...draft.changes, expectedVersion: draft.original.rowVersion }),
       });
-      const latestDraft = adminState.drafts.get(productId);
+      const baseline = updated.product || updated;
       adminState.drafts.delete(productId);
-      if (latestDraft && latestDraft !== draft) {
-        const baseline = updated.product || updated;
-        const changes = changedFields(baseline, readProductDraft(row));
-        if (Object.keys(changes).length) adminState.drafts.set(productId, { original: baseline, changes });
-      }
+      const changes = changedFields(baseline, readProductDraft(row));
+      if (Object.keys(changes).length) adminState.drafts.set(productId, { original: baseline, changes });
       const index = adminState.products.findIndex((product) => productKey(product) === productId);
       if (index >= 0) adminState.products[index] = { ...adminState.products[index], ...draft.changes, ...(updated.product || updated) };
       event.target.textContent = adminState.drafts.has(productId) ? "保存草稿" : "已保存";
@@ -1800,11 +2118,32 @@ adminProductList.addEventListener("click", async (event) => {
     await Promise.all([loadDiagnostics(), loadSampleMatchingCenter(), loadProducts()]);
   }
   if (event.target.classList.contains("admin-upload-image")) {
-    const file = adminState.pendingImageFiles.get(productId) || row.querySelector(".admin-image-file").files[0];
+    if (adminState.imageUploads.has(productId)) return;
+    const fileInput = row.querySelector(".admin-image-file");
+    const file = adminState.pendingImageFiles.get(productId) || fileInput.files[0];
     if (!file) return;
-    await uploadImage(productId, file);
-    adminState.pendingImageFiles.delete(productId);
-    await loadImages(row);
+    adminState.imageUploads.add(productId);
+    event.target.disabled = true;
+    try {
+      await uploadImage(productId, file);
+      if (adminState.pendingImageFiles.get(productId) === file) adminState.pendingImageFiles.delete(productId);
+      if (fileInput.files[0] === file) fileInput.value = "";
+      const remainingFile = adminState.pendingImageFiles.get(productId);
+      row.querySelector(".admin-pending-file").textContent = remainingFile?.name || "";
+      try {
+        await loadImages(row);
+      } catch {
+        row.querySelector(".admin-pending-file").textContent = remainingFile
+          ? `${remainingFile.name}（待上传）；图片已上传，列表刷新失败`
+          : "图片已上传，但列表刷新失败，请重新加载";
+      }
+    } catch (error) {
+      const remainingFile = adminState.pendingImageFiles.get(productId) || file;
+      row.querySelector(".admin-pending-file").textContent = `上传失败，文件已保留，可重试：${remainingFile.name}`;
+    } finally {
+      adminState.imageUploads.delete(productId);
+      event.target.disabled = false;
+    }
   }
   if (event.target.classList.contains("admin-load-images")) {
     await loadImages(row);

@@ -9,14 +9,17 @@
 - 客户页：`http://127.0.0.1:8899/`
 - 管理页：`http://127.0.0.1:8899/admin-xingxing`
 - 启动：`start_showcase_server.bat`
+- 管理员口令重置：`reset_showcase_admin_password.bat`；口令以隐藏输入方式录入，成功后会撤销旧管理员会话。
 - 导入：`import_showcase_excel.bat`
 - 完整备份：`backup_showcase_db.bat`
+
+本地管理登录和客户口令入口默认每个进程每 60 秒最多计数 20 次，成功登录会清除此来源的计数。该计数保存在当前进程内；若将服务改为多进程或部署到反向代理后，应在代理/边缘层另配共享限流，不要直接信任未经配置的转发 IP 请求头。
 
 AI 工作台及其数据库、端口、页面不属于这套系统。`cloudflare/` 是未完成的可选迁移实验，不是正式写入入口，不允许同时向本地库和 D1 写库存。
 
 ## 当前数据协议
 
-数据库 schema 版本为 8。商品使用稳定 `public_id` 对外，`product_id` 保留为来源键；历史链接由 `product-lookup` 兼容。所有商品修改递增 `row_version`。批量预览保存完整目标快照，确认和撤销均检查全部版本并在单事务中执行。
+数据库最新迁移版本为 11。商品使用稳定 `public_id` 对外，`product_id` 保留为来源键；历史链接由 `product-lookup` 兼容。所有商品修改递增 `row_version`。批量预览保存完整目标快照，确认和撤销均检查全部版本并在单事务中执行。
 
 Excel 导入默认为增量预览。全量导入必须显式声明 `--mode full --complete`；来源中消失的商品进入 `review_state=missing`，不会自动下架。后台人工价格、文案和显示状态作为覆盖值保存，后续导入不能静默覆盖。
 
@@ -67,8 +70,13 @@ python -m moments_inventory.cli showcase-server --showcase-config (Join-Path $ca
 - 正式执行前核对匹配、实际修改、不变和跳过数量，并导出完整 CSV 留档。
 - 修改筛选或金额后必须重新生成预览；过期预览不能执行。
 - 发布验证必须包含一次改价、一次撤销，以及一次版本冲突拒绝。
+- 公开和管理商品列表的 `offset` 上限为 10000；超过上限应返回 400，不执行商品分页查询。
 
 ## 验证入口
+
+CCD Python 运行依赖使用 `requirements/ccd-runtime.lock` 锁定直接及传递版本，构建后端 setuptools 固定在 `pyproject.toml`。创建环境时先运行 `python -m pip install -r requirements/ccd-runtime.lock`，再安装项目包。锁文件离线核对了 Python 3.11–3.13 的 Windows/Linux 环境标记；制品哈希和干净环境安装仍需在获准访问包源的构建机上补验。
+
+本地 wheel 验证记录：2026-10-09 在 Windows 上执行 `python -m pip wheel . --no-deps --no-build-isolation` 成功；检查 wheel 内有 110 个 `showcase_web/static/` 文件，且 `admin.html`、`index.html`、`product.html` 均存在。该检查证明静态页面随安装包分发，不代表在干净隔离环境完成了依赖安装。
 
 ```powershell
 $showcaseTests = Get-ChildItem -LiteralPath tests -Filter 'test_showcase_web*.py' | ForEach-Object { $_.FullName }

@@ -9,6 +9,7 @@ import os
 from pathlib import Path
 import re
 import shutil
+from decimal import Decimal, InvalidOperation
 
 from moments_inventory.xlsx_reader import read_xlsx_rows_from_bytes
 from moments_inventory.exporter import _write_workbook
@@ -36,6 +37,7 @@ SHOWCASE_HEADERS = [
     "视频路径",
     "出片图型号",
     "备注",
+    "来源商品键",
 ]
 PUBLIC_SOURCE_LABEL = "星星ccd货源"
 
@@ -52,6 +54,7 @@ _SOURCE_ALIASES: dict[str, tuple[str, ...]] = {
     "原文文案": ("原文文案", "文案原文"),
     "备注": ("备注",),
     "是否需要人工复核": ("是否需要人工复核", "是否待人工补充"),
+    "product_key": ("product_key", "来源商品键", "商品稳定ID"),
 }
 
 _IMAGE_EXTENSIONS = {".jpg", ".jpeg", ".png", ".webp", ".gif"}
@@ -72,12 +75,33 @@ def merge_showcase_workbook(source_xlsx: str | Path, manual_xlsx: str | Path) ->
     source_rows = _read_rows(source_path)
     manual_rows = _read_rows(manual_path) if manual_path.exists() else []
     existing_by_id = _manual_rows_by_product_id(manual_rows)
+    existing_by_key = _manual_rows_by_product_key(manual_rows)
+    legacy_rows = _manual_records(manual_rows)
+    used_manual_ids: set[str] = set()
 
     output_rows: list[list[str | int | None]] = [SHOWCASE_HEADERS]
+    seen_source_keys: set[str] = set()
     for source_row in _source_records(source_rows):
-        product_id = _build_product_id(source_row)
-        old = existing_by_id.get(product_id, {})
+        source_key = source_row.get("product_key", "").strip()
+        if source_key and source_key in seen_source_keys:
+            raise ValueError(f"来源商品键重复，无法安全合并：{source_key}")
+        if source_key:
+            seen_source_keys.add(source_key)
+        generated_product_id = _build_product_id(source_row)
+        old = existing_by_key.get(source_key) if source_key else None
+        if old is None:
+            old = existing_by_id.get(generated_product_id)
+        if old is None and source_key:
+            old = _match_legacy_manual_row(source_row, legacy_rows, used_manual_ids)
+        old = old or {}
+        product_id = old.get("商品ID") or generated_product_id
+        if product_id in used_manual_ids:
+            raise ValueError(f"同一条旧商品记录被多个来源商品认领：{product_id}")
+        if old:
+            used_manual_ids.add(product_id)
         cost_price = _parse_int(source_row["价格"])
+        manual_display_price = _parse_int(old.get("展示价"))
+        display_price = cost_price if manual_display_price is None else manual_display_price
         display_copy = old.get("展示文案") or source_row["原文文案"]
         sample_key = old.get("出片图型号") or normalize_showcase_model_key(source_row["型号"])
         output_rows.append(
@@ -90,7 +114,7 @@ def merge_showcase_workbook(source_xlsx: str | Path, manual_xlsx: str | Path) ->
                     source_row["原文文案"],
                 ),
                 cost_price,
-                _parse_int(old.get("展示价")) or cost_price,
+                display_price,
                 old.get("是否展示") or "是",
                 source_row["发布时间"],
                 source_row["备注名"],
@@ -100,6 +124,7 @@ def merge_showcase_workbook(source_xlsx: str | Path, manual_xlsx: str | Path) ->
                 source_row["视频路径"],
                 sample_key,
                 old.get("备注") or "",
+                source_key,
             ]
         )
 
@@ -244,7 +269,33 @@ def _manual_rows_by_product_id(rows: list[list[object]]) -> dict[str, dict[str, 
         product_id = _get_by_index(row, product_id_index)
         if not product_id:
             continue
+        if product_id in mapped:
+            raise ValueError(f"人工展示表中的商品ID重复：{product_id}")
         mapped[product_id] = {
+            header_name: _get_by_index(row, index)
+            for header_name, index in indexes.items()
+        }
+    return mapped
+
+
+def _manual_rows_by_product_key(rows: list[list[object]]) -> dict[str, dict[str, str]]:
+    if not rows:
+        return {}
+    header = [str(value or "").strip() for value in rows[0]]
+    indexes = {name: index for index, name in enumerate(header)}
+    key_index = indexes.get("来源商品键", indexes.get("product_key"))
+    product_id_index = indexes.get("商品ID")
+    if key_index is None or product_id_index is None:
+        return {}
+
+    mapped: dict[str, dict[str, str]] = {}
+    for row in rows[1:]:
+        key = _get_by_index(row, key_index)
+        if not key:
+            continue
+        if key in mapped:
+            raise ValueError(f"人工展示表中的来源商品键重复：{key}")
+        mapped[key] = {
             header_name: _get_by_index(row, index)
             for header_name, index in indexes.items()
         }
@@ -267,6 +318,9 @@ def _manual_records(rows: list[list[object]]) -> list[dict[str, str]]:
 
 
 def _build_product_id(source_row: dict[str, str]) -> str:
+    stable_key = source_row.get("product_key", "").strip()
+    if stable_key:
+        return f"stable:{stable_key}"
     parts = [
         source_row["备注名wxid"] or source_row["备注名"],
         source_row["发布时间"],
@@ -275,15 +329,49 @@ def _build_product_id(source_row: dict[str, str]) -> str:
     return "|".join(part for part in parts if part)
 
 
+def _match_legacy_manual_row(
+    source_row: dict[str, str],
+    manual_rows: list[dict[str, str]],
+    used_manual_ids: set[str],
+) -> dict[str, str] | None:
+    wxid = source_row.get("备注名wxid", "").strip()
+    serial = source_row.get("序列号", "").strip()
+    model_key = normalize_showcase_model_key(source_row.get("型号", ""))
+    if not wxid or not serial or not model_key:
+        return None
+
+    candidates = []
+    for row in manual_rows:
+        product_id = row.get("商品ID", "")
+        if product_id in used_manual_ids:
+            continue
+        identity_parts = product_id.split("|")
+        if len(identity_parts) != 3 or identity_parts[0] != wxid or identity_parts[2] != serial:
+            continue
+        if normalize_showcase_model_key(row.get("型号", "")) != model_key:
+            continue
+        candidates.append(row)
+    if len(candidates) > 1:
+        raise ValueError(f"旧商品身份存在歧义，请人工核对来源、型号与序列号：{wxid}|{serial}")
+    return candidates[0] if candidates else None
+
+
 def _derive_brand(model: str) -> str:
     return derive_showcase_brand(model)
 
 
 def _parse_int(value: object) -> int | None:
-    digits = re.sub(r"[^\d]", "", str(value or ""))
-    if not digits:
+    text = "" if value is None else str(value).strip()
+    match = re.fullmatch(r"[¥￥]?\s*(\d+(?:\.0+)?)(?:\s*(?:元|块|💰).*)?", text)
+    if not match:
         return None
-    return int(digits)
+    try:
+        amount = Decimal(match.group(1))
+    except InvalidOperation:
+        return None
+    if not amount.is_finite() or amount != amount.to_integral_value():
+        return None
+    return int(amount)
 
 
 def _get_by_index(row: list[object], index: int | None) -> str:

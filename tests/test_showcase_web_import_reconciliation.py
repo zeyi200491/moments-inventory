@@ -59,6 +59,26 @@ def test_same_fingerprint_reuses_result(tmp_path):
     assert len(repo.list_import_logs()) == 1
 
 
+def test_full_source_can_return_to_an_earlier_fingerprint(tmp_path):
+    repo = SQLiteShowcaseRepository(tmp_path / 'test.db')
+    repo.initialize()
+    path = workbook(tmp_path / 'a.xlsx', [('p1', 100, '是'), ('p2', 200, '是')])
+    first = import_showcase_workbook(path, repo, mode='full', complete=True, max_missing_fraction=1)
+    repeated = import_showcase_workbook(path, repo, mode='full', complete=True, max_missing_fraction=1)
+    assert repeated.import_id == first.import_id
+    workbook(path, [('p1', 300, '是')])
+    import_showcase_workbook(path, repo, mode='full', complete=True, max_missing_fraction=1)
+    assert repo.get_product('p2').source_available is False
+
+    workbook(path, [('p1', 100, '是'), ('p2', 200, '是')])
+    returned = import_showcase_workbook(path, repo, mode='full', complete=True, max_missing_fraction=1)
+
+    assert returned.import_id != first.import_id
+    assert repo.get_product('p2').source_available is True
+    assert repo.get_product('p2').review_state == ''
+    assert len(repo.list_import_logs()) == 3
+
+
 def test_full_import_requires_complete_nonempty_and_guarded_size(tmp_path):
     repo = SQLiteShowcaseRepository(tmp_path / 'test.db')
     repo.initialize()

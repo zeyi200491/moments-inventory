@@ -6,6 +6,7 @@ const state = {
   catalogRevision: "",
   loading: false,
   loadError: "",
+  loadNotice: "",
   sections: [],
   gallery: [],
   purchaseSteps: [],
@@ -74,20 +75,33 @@ function buildInquiryText(product) {
 }
 async function copyText(text) {
   if (navigator.clipboard && window.isSecureContext) {
-    await navigator.clipboard.writeText(text);
-    return true;
+    try {
+      await navigator.clipboard.writeText(text);
+      return { copied: true, manualFallback: false };
+    } catch {
+      // 权限拒绝时继续尝试传统复制和可手动选择的文本框。
+    }
   }
   const textarea = document.createElement("textarea");
   textarea.value = text;
   textarea.setAttribute("readonly", "readonly");
   textarea.className = "copy-fallback-textarea";
   document.body.appendChild(textarea);
+  let copied = false;
   try {
     textarea.select();
-    return document.execCommand("copy");
+    copied = document.execCommand("copy");
+  } catch {
+    copied = false;
   } finally {
     textarea.remove();
   }
+  if (copied) return { copied: true, manualFallback: false };
+  if (typeof window.prompt === "function") {
+    window.prompt("自动复制失败，请手动复制以下完整咨询文案：", text);
+    return { copied: false, manualFallback: true };
+  }
+  return { copied: false, manualFallback: false };
 }
 
 function renderTags(tags) {
@@ -215,15 +229,18 @@ function renderBrands() {
   const brandTarget = document.getElementById("brandFilterButtons");
   if (!brandTarget) return;
   const brands = Array.isArray(state.filters.brands) ? state.filters.brands : [];
-  for (const brand of [...state.brands]) {
-    if (!brands.includes(brand)) {
-      state.brands.delete(brand);
-    }
-  }
   brandTarget.innerHTML = brands.map((brand, index) => `
     <button class="quick-filter-button sticker-filter-button ${state.brands.has(brand) ? "active" : ""}" type="button" data-brand="${escapeHtml(brand)}">${filterButtonLabel(brand, index)}</button>
   `).join("");
   renderActiveFilters();
+}
+
+function reconcileSelectedBrands() {
+  if (!Array.isArray(state.filters.brands)) return;
+  const availableBrands = new Set(state.filters.brands.map(String));
+  for (const brand of [...state.brands]) {
+    if (!availableBrands.has(brand)) state.brands.delete(brand);
+  }
 }
 
 function buildProductQuery(offset = 0) {
@@ -312,6 +329,7 @@ async function loadProductPage({ reset = false, restoreToken = null } = {}) {
   state.productRequestController = controller;
   state.loading = true;
   state.loadError = "";
+  if (reset && restoreToken !== "revision-refresh") state.loadNotice = "";
   if (reset) syncFilterUrl();
   if (reset) {
     state.products = [];
@@ -331,8 +349,8 @@ async function loadProductPage({ reset = false, restoreToken = null } = {}) {
       return;
     }
     if (response.status === 409 && !reset) {
-      state.loadError = "库存刚刚更新，已为你刷新列表";
-      return loadProductPage({ reset: true });
+      state.loadNotice = "库存刚刚更新，已为你刷新列表";
+      return loadProductPage({ reset: true, restoreToken: "revision-refresh" });
     }
     if (!response.ok) throw new Error(`HTTP ${response.status}`);
     const data = await response.json();
@@ -366,6 +384,7 @@ async function loadFilters() {
   const response = await fetch("/api/public/filters");
   if (!response.ok) return;
   state.filters = await response.json();
+  reconcileSelectedBrands();
   renderBrands();
   renderQuickFilters();
 }
@@ -737,7 +756,10 @@ function renderList() {
     : `${products.length} / ${state.total} 台`;
   emptyState.hidden = state.loading || products.length !== 0 || Boolean(state.loadError);
   const errorPanel = document.getElementById("listError");
-  if (errorPanel) errorPanel.hidden = !state.loadError;
+  const errorMessage = document.getElementById("listErrorMessage");
+  const message = state.loadError || state.loadNotice;
+  if (errorMessage) errorMessage.textContent = message;
+  if (errorPanel) errorPanel.hidden = !message;
   if (loadMoreButton) {
     loadMoreButton.hidden = !state.hasMore && !state.loading;
     loadMoreButton.textContent = state.loading ? "\u52a0\u8f7d\u4e2d" : "\u663e\u793a\u66f4\u591a";
@@ -842,7 +864,7 @@ function renderDetail(product) {
           </div>
           <span>${group.length} 张</span>
         </div>
-        <div class="detail-images">${group.map((image, index) => `<button class="image-preview-trigger" type="button" data-gallery="${escapeHtml(title)}" data-index="${index}" data-images="${escapeHtml(group.map((item) => item.imagePath).join("|"))}"><img loading="lazy" src="${escapeHtml(imageUrl(image.imageUrl || image.imagePath))}" srcset="${escapeHtml(imageVariants(image.imageUrl || image.imagePath))}" sizes="(max-width: 600px) 50vw, 480px" alt=""></button>`).join("")}</div>
+        <div class="detail-images">${group.map((image, index) => `<button class="image-preview-trigger" type="button" aria-label="查看${escapeHtml(title)}图片，第${index + 1}张" data-gallery="${escapeHtml(title)}" data-index="${index}" data-images="${escapeHtml(group.map((item) => item.imagePath).join("|"))}"><img loading="lazy" src="${escapeHtml(imageUrl(image.imageUrl || image.imagePath))}" srcset="${escapeHtml(imageVariants(image.imageUrl || image.imagePath))}" sizes="(max-width: 600px) 50vw, 480px" alt=""></button>`).join("")}</div>
       </section>`
     : `<section class="empty-state">${escapeHtml(title)}暂未整理</section>`;
   target.innerHTML = `<article>
@@ -927,14 +949,14 @@ document.addEventListener("click", async (event) => {
     if (activeTimer) {
       window.clearTimeout(activeTimer);
     }
-    let copied = false;
+    let copyResult = { copied: false, manualFallback: false };
     try {
-      copied = await copyText(buildInquiryText(product));
-    } catch {
-      copied = false;
-    }
+      copyResult = await copyText(buildInquiryText(product));
+    } catch { copyResult = { copied: false, manualFallback: false }; }
     if (copyButton.dataset.copyToken !== copyToken) return;
-    const statusText = copied ? "已复制" : "请长按手动复制";
+    const statusText = copyResult.copied
+      ? "已复制"
+      : copyResult.manualFallback ? "已提供手动复制文案" : "复制失败，请检查浏览器权限";
     copyButton.textContent = statusText;
     copyButton.dataset.shortLabel = statusText;
     const restoreTimer = window.setTimeout(() => {

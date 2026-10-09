@@ -96,6 +96,22 @@ def test_admin_login_sets_session_cookie(tmp_path: Path) -> None:
     assert "showcase_admin_session" in response.cookies
 
 
+def test_admin_product_listing_rejects_deep_offset_before_repository_query(
+    authenticated_client: TestClient,
+    repo: SQLiteShowcaseRepository,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(
+        repo,
+        "search_admin_products",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(AssertionError("不应执行深分页查询")),
+    )
+    response = authenticated_client.get("/api/admin/products", params={"offset": 10_001})
+
+    assert response.status_code == 400
+    assert response.json()["detail"] == "offset 查询参数超出最大值 10000"
+
+
 def test_admin_can_update_single_product_price(
     authenticated_client: TestClient,
     repo: SQLiteShowcaseRepository,
@@ -108,6 +124,43 @@ def test_admin_can_update_single_product_price(
     product = repo.get_product("p1")
     assert product is not None
     assert product.display_price == 688
+
+
+def test_admin_single_product_update_rejects_cross_repository_stale_write(
+    authenticated_client: TestClient,
+    repo: SQLiteShowcaseRepository,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    repo.upsert_product(_product("p1", visible=True, display_price=558))
+    stale_version = repo.get_product("p1").row_version
+    competing_repo = SQLiteShowcaseRepository(tmp_path / "showcase.db")
+    original_compare_and_swap = repo.update_admin_product_if_version
+
+    def interleave_competing_write(
+        product: ShowcaseProduct,
+        expected_version: int,
+    ) -> bool:
+        competing = competing_repo.get_product("p1")
+        assert competing is not None
+        competing.display_price = 777
+        competing.display_copy = "另一个管理进程刚保存的文案"
+        competing_repo.upsert_product(competing)
+        return original_compare_and_swap(product, expected_version)
+
+    monkeypatch.setattr(repo, "update_admin_product_if_version", interleave_competing_write)
+
+    response = authenticated_client.patch(
+        "/api/admin/products/p1",
+        json={"displayPrice": 688, "expectedVersion": stale_version},
+    )
+
+    saved = repo.get_product("p1")
+    competing_repo.close()
+    assert response.status_code == 409
+    assert saved is not None
+    assert saved.display_price == 777
+    assert saved.display_copy == "另一个管理进程刚保存的文案"
 
 
 def test_admin_can_update_product_marketing_fields(
@@ -130,6 +183,28 @@ def test_admin_can_update_product_marketing_fields(
     assert product is not None
     assert product.short_selling_point == "小巧复古，适合新手"
     assert product.recommend_tags == "新手推荐,氛围感"
+
+
+def test_admin_settings_database_failure_rolls_back_all_fields(tmp_path: Path) -> None:
+    repo = SQLiteShowcaseRepository(tmp_path / "showcase.db")
+    repo.set_setting("admin_password_hash", hash_password("admin-pass"))
+    repo.set_setting("statement_text", "旧声明")
+    repo.set_setting("watermark_text", "旧水印")
+    with repo._get_connection() as conn:
+        conn.execute("""create trigger reject_watermark_update before insert on showcase_settings
+            when new.setting_key='watermark_text'
+            begin select raise(abort, 'test failure'); end""")
+    client = TestClient(create_showcase_app(repository=repo), raise_server_exceptions=False)
+    assert client.post("/api/admin/login", json={"password": "admin-pass"}).status_code == 200
+
+    response = client.patch(
+        "/api/admin/settings",
+        json={"statementText": "新声明", "watermarkText": "新水印"},
+    )
+
+    assert response.status_code == 500
+    assert repo.get_setting("statement_text") == "旧声明"
+    assert repo.get_setting("watermark_text") == "旧水印"
 
 
 def test_admin_can_manage_gallery_albums(authenticated_client: TestClient) -> None:
@@ -798,6 +873,81 @@ def test_admin_bulk_price_ranges_include_each_boundary(
     assert sorted(item["oldPrice"] for item in body["items"]) == expected_prices
 
 
+def test_admin_bulk_preview_distinguishes_source_and_display_price_filters(
+    authenticated_client: TestClient,
+    repo: SQLiteShowcaseRepository,
+) -> None:
+    repo.upsert_product(replace(
+        _product_with("source-low-display-high", model="来源低", brand="佳能", price=230),
+        source_display_price=180,
+    ))
+    repo.upsert_product(replace(
+        _product_with("source-high-display-low", model="来源高", brand="佳能", price=180),
+        source_display_price=230,
+    ))
+    repo.upsert_product(replace(
+        _product_with("zero-price", model="零价", brand="佳能", price=0),
+        source_display_price=0,
+    ))
+
+    source_response = authenticated_client.post(
+        "/api/admin/products/bulk-preview",
+        json={
+            "scope": "all", "operation": "price", "amount": 1,
+            "filters": {"sourcePriceMax": 200, "visible": True, "sold": False},
+        },
+    )
+    display_response = authenticated_client.post(
+        "/api/admin/products/bulk-preview",
+        json={
+            "scope": "all", "operation": "price", "amount": 1,
+            "filters": {"displayPriceMax": 200, "visible": True, "sold": False},
+        },
+    )
+    intersection_response = authenticated_client.post(
+        "/api/admin/products/bulk-preview",
+        json={
+            "scope": "all", "operation": "price", "amount": 1,
+            "filters": {
+                "sourcePriceMax": 200, "displayPriceMax": 200,
+                "visible": True, "sold": False,
+            },
+        },
+    )
+    zero_response = authenticated_client.post(
+        "/api/admin/products/bulk-preview",
+        json={
+            "scope": "all", "operation": "price", "amount": 1,
+            "filters": {"sourcePriceMax": 0, "displayPriceMax": 0, "visible": True, "sold": False},
+        },
+    )
+    invalid_range_response = authenticated_client.post(
+        "/api/admin/products/bulk-preview",
+        json={
+            "scope": "all", "operation": "price", "amount": 1,
+            "filters": {"sourcePriceMin": 201, "sourcePriceMax": 200},
+        },
+    )
+    invalid_display_range_response = authenticated_client.post(
+        "/api/admin/products/bulk-preview",
+        json={
+            "scope": "all", "operation": "price", "amount": 1,
+            "filters": {"displayPriceMin": 201, "displayPriceMax": 200},
+        },
+    )
+
+    assert source_response.status_code == 200, source_response.text
+    assert display_response.status_code == 200, display_response.text
+    assert intersection_response.status_code == 200, intersection_response.text
+    assert zero_response.status_code == 200, zero_response.text
+    assert invalid_range_response.status_code == 422
+    assert invalid_display_range_response.status_code == 422
+    assert {item["productId"] for item in source_response.json()["items"]} == {"source-low-display-high", "zero-price"}
+    assert {item["productId"] for item in display_response.json()["items"]} == {"source-high-display-low", "zero-price"}
+    assert {item["productId"] for item in intersection_response.json()["items"]} == {"zero-price"}
+    assert {item["productId"] for item in zero_response.json()["items"]} == {"zero-price"}
+
+
 def test_admin_bulk_preview_reports_changed_unchanged_and_skipped_statistics(
     authenticated_client: TestClient,
     repo: SQLiteShowcaseRepository,
@@ -1383,6 +1533,34 @@ def test_admin_sample_matching_center_reports_summary_and_searches_assets(
     assert [item["productId"] for item in missing.json()["products"]] == ["nikon"]
     assert assets.status_code == 200
     assert assets.json()["assets"][0]["folderPath"] == "佳能/Canon 佳能DIGITAL IXUS 860 IS"
+
+
+def test_admin_sample_matching_lists_support_offsets_and_report_remaining_pages(
+    tmp_path: Path,
+    repo: SQLiteShowcaseRepository,
+) -> None:
+    sample_root = tmp_path / "ccdcpt"
+    for brand, model in (("佳能", "IXUS 80"), ("尼康", "S01")):
+        model_dir = sample_root / brand / model
+        model_dir.mkdir(parents=True)
+        (model_dir / "01.jpg").write_bytes(f"{brand}-{model}".encode())
+    repo.upsert_product(_product_with("first", model="IXUS 80", brand="佳能", price=200))
+    repo.upsert_product(_product_with("second", model="S01", brand="尼康", price=300))
+    client = TestClient(create_showcase_app(repository=repo, sample_images_dir=sample_root))
+    assert client.post("/api/admin/login", json={"password": "admin-pass"}).status_code == 200
+
+    product_first = client.get("/api/admin/sample-matching/products", params={"status": "all", "limit": 1, "offset": 0}).json()
+    product_second = client.get("/api/admin/sample-matching/products", params={"status": "all", "limit": 1, "offset": 1}).json()
+    asset_second = client.get("/api/admin/sample-matching/assets", params={"limit": 1, "offset": 1}).json()
+
+    assert product_first["hasMore"] is True
+    assert product_first["total"] is None
+    assert product_second["hasMore"] is False
+    assert product_second["total"] == 2
+    assert product_first["products"][0]["productId"] != product_second["products"][0]["productId"]
+    assert asset_second["total"] == 2
+    assert asset_second["hasMore"] is False
+    assert client.get("/api/admin/sample-matching/products", params={"offset": -1}).status_code == 400
 
 
 def test_admin_sample_matching_bind_refreshes_product_sample_images(

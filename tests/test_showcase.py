@@ -6,6 +6,7 @@ from moments_inventory.exporter import _write_workbook
 from moments_inventory.showcase import build_showcase_site, decrypt_showcase_payload
 from moments_inventory.showcase import SHOWCASE_HEADERS, merge_showcase_workbook
 from moments_inventory.showcase import normalize_showcase_model_key
+from moments_inventory.showcase import _parse_int
 
 
 SOURCE_HEADERS = [
@@ -22,6 +23,17 @@ SOURCE_HEADERS = [
     "备注",
     "是否需要人工复核",
 ]
+
+
+def test_parse_int_preserves_integer_amounts_and_rejects_ambiguous_prices() -> None:
+    assert _parse_int(0) == 0
+    assert _parse_int(599) == 599
+    assert _parse_int("599.0") == 599
+    assert _parse_int("99💰三星A40 特价") == 99
+    assert _parse_int("599.5") is None
+    assert _parse_int("599-699") is None
+    assert _parse_int("-599") is None
+    assert _parse_int("价格待确认") is None
 
 
 def _rows(path: Path) -> list[list[object]]:
@@ -144,6 +156,107 @@ def test_merge_showcase_workbook_preserves_manual_overrides(tmp_path: Path) -> N
     assert rows[1][10] == "media/r1/image-1.jpg"
     assert rows[1][12] == "三星a40"
     assert rows[1][13] == "内部备注"
+
+
+def test_merge_showcase_workbook_preserves_zero_display_price_override(tmp_path: Path) -> None:
+    source = tmp_path / "全量当前库.xlsx"
+    manual = tmp_path / "客户展示库存.xlsx"
+    _write_workbook(
+        source,
+        [
+            SOURCE_HEADERS,
+            [
+                "三星a40", 99, "未售卖", "晨曦", "wxid_1",
+                "2026-07-15T20:25:55+08:00", "8820", "", "", "原文", "", "否",
+            ],
+        ],
+    )
+    _write_workbook(
+        manual,
+        [
+            SHOWCASE_HEADERS,
+            [
+                "wxid_1|2026-07-15T20:25:55+08:00|8820", "三星a40", "三星", 99, 0,
+                "是", "2026-07-15T20:25:55+08:00", "晨曦", "旧原文", "展示文案",
+                "", "", "三星a40", "",
+            ],
+        ],
+    )
+
+    merge_showcase_workbook(source, manual)
+
+    assert _rows(manual)[1][4] == 0
+
+
+def test_merge_showcase_workbook_keeps_legacy_id_and_overrides_after_repost(tmp_path: Path) -> None:
+    source = tmp_path / "全量当前库.xlsx"
+    manual = tmp_path / "客户展示库存.xlsx"
+    _write_workbook(
+        source,
+        [
+            [*SOURCE_HEADERS, "product_key"],
+            [
+                "三星a40", 129, "未售卖", "晨曦", "wxid_1",
+                "2026-10-08T20:25:55+08:00", "8820", "media/new.jpg", "", "129💰三星A40",
+                "", "否", "media:stable-8820",
+            ],
+        ],
+    )
+    _write_workbook(
+        manual,
+        [
+            SHOWCASE_HEADERS,
+            [
+                "wxid_1|2026-10-01T20:25:55+08:00|8820", "三星a40", "三星", 99, 999,
+                "否", "2026-10-01T20:25:55+08:00", "晨曦", "旧原文", "人工文案",
+                "media/old.jpg", "", "三星a40", "人工备注",
+            ],
+        ],
+    )
+
+    merge_showcase_workbook(source, manual)
+
+    rows = _rows(manual)
+    assert rows[1][0] == "wxid_1|2026-10-01T20:25:55+08:00|8820"
+    assert rows[1][4] == 999
+    assert rows[1][5] == "否"
+    assert rows[1][9] == "人工文案"
+    assert rows[1][SHOWCASE_HEADERS.index("来源商品键")] == "media:stable-8820"
+
+
+def test_merge_showcase_workbook_does_not_merge_same_model_with_different_serial(tmp_path: Path) -> None:
+    source = tmp_path / "全量当前库.xlsx"
+    manual = tmp_path / "客户展示库存.xlsx"
+    _write_workbook(
+        source,
+        [
+            [*SOURCE_HEADERS, "product_key"],
+            [
+                "三星a40", 129, "未售卖", "晨曦", "wxid_1",
+                "2026-10-08T20:25:55+08:00", "NEW-8820", "", "", "129💰三星A40",
+                "", "否", "media:new-8820",
+            ],
+        ],
+    )
+    _write_workbook(
+        manual,
+        [
+            SHOWCASE_HEADERS,
+            [
+                "wxid_1|2026-10-01T20:25:55+08:00|OLD-8820", "三星a40", "三星", 99, 999,
+                "否", "2026-10-01T20:25:55+08:00", "晨曦", "旧原文", "旧人工文案",
+                "", "", "三星a40", "旧人工备注",
+            ],
+        ],
+    )
+
+    merge_showcase_workbook(source, manual)
+
+    row = _rows(manual)[1]
+    assert row[0] == "stable:media:new-8820"
+    assert row[4] == 129
+    assert row[5] == "是"
+    assert row[9] == "129💰三星A40"
 
 
 def test_build_showcase_site_filters_hidden_products_and_copies_assets(tmp_path: Path) -> None:

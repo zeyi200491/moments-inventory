@@ -138,7 +138,7 @@ def test_bulk_executes_only_changed_items_and_records_human_readable_summary(
     assert applied.status_code == 200, applied.text
     assert applied.json()['updatedCount'] == 1
     operations = authenticated_client.get('/api/admin/operations').json()['operations']
-    assert operations[0]['summary'] == '全部库存 · 300元以内 · 固定为230元 · 修改 1 台'
+    assert operations[0]['summary'] == '全部库存 · 展示价 300 元以内 · 固定为230元 · 修改 1 台'
     assert 'scope=all' in operations[0]['filterText']
     assert 'priceMax=300' in operations[0]['filterText']
     assert 'visible=true' in operations[0]['filterText']
@@ -332,9 +332,9 @@ def test_bulk_undo_hide_requires_exact_snapshot_without_partial_updates(
 @pytest.mark.parametrize(
     ('price_min', 'price_max', 'expected'),
     [
-        (None, 200, '200元以内'),
-        (201, 300, '201～300 元'),
-        (801, None, '801元以上'),
+        (None, 200, '展示价 200 元以内'),
+        (201, 300, '展示价 201～300 元'),
+        (801, None, '展示价 801 元以上'),
         (None, None, '全部价格'),
     ],
 )

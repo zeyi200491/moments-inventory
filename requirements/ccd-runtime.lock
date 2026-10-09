@@ -1,0 +1,36 @@
+# CCD 运行时依赖精确版本锁。
+# 2026-10-09 从本机已安装发行包元数据离线整理；依赖闭包已按 Python 3.11-3.13、Windows/Linux 标记核对。
+# 构建后端 setuptools 固定在 pyproject.toml；此文件只锁运行时依赖。
+# 未包含制品哈希；尚未在干净环境联网安装验证。Windows 专属依赖保留平台标记。
+annotated-doc==0.0.4
+annotated-types==0.7.0
+anyio==4.13.0
+certifi==2026.2.25
+cffi==2.0.0
+click==8.3.1
+colorama==0.4.6; sys_platform == "win32"
+comtypes==1.4.16; sys_platform == "win32"
+cryptography==48.0.0
+et_xmlfile==2.0.0
+fastapi==0.135.2
+greenlet==3.5.1
+h11==0.16.0
+httpcore==1.0.9
+httpx==0.28.1
+idna==3.11
+openpyxl==3.1.5
+Pillow==12.2.0
+playwright==1.60.0
+pycparser==3.0
+pydantic==2.12.5
+pydantic_core==2.41.5
+pyee==13.0.1
+python-multipart==0.0.28
+pywin32==311; sys_platform == "win32"
+pywinauto==0.6.9; sys_platform == "win32"
+PyYAML==6.0.3
+six==1.17.0; sys_platform == "win32"
+starlette==1.0.0
+typing_extensions==4.15.0
+typing-inspection==0.4.2
+uvicorn==0.42.0

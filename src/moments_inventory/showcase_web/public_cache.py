@@ -25,13 +25,23 @@ class PublicResponseCacheMiddleware(BaseHTTPMiddleware):
     """缓存公开 GET 的最终 JSON；后台写入后立即清空，外部写入最长陈旧30秒。"""
 
     _EXCLUDED = {"/api/public/access-status", "/api/public/image-variant"}
+    _CACHEABLE_PATHS = {
+        "/api/public/filters",
+        "/api/public/gallery",
+        "/api/public/product-lookup",
+        "/api/public/products",
+        "/api/public/purchase-steps",
+        "/api/public/sections",
+        "/api/public/settings",
+    }
+    _LOCK_SHARDS = 64
 
     def __init__(self, app, repository, ttl_seconds: int = 30):
         super().__init__(app)
         self.repository = repository
         self.ttl_seconds = ttl_seconds
         self._cache: dict[tuple[str, str], _CachedResponse] = {}
-        self._build_locks: dict[tuple[str, str], asyncio.Lock] = {}
+        self._build_locks = [asyncio.Lock() for _ in range(self._LOCK_SHARDS)]
         self._lock = RLock()
         self._generation = 0
         self._state_checked_at = 0.0
@@ -51,7 +61,7 @@ class PublicResponseCacheMiddleware(BaseHTTPMiddleware):
         path = request.url.path
         is_public_read = (
             request.method == "GET"
-            and path.startswith("/api/public/")
+            and path in self._CACHEABLE_PATHS
             and path not in self._EXCLUDED
         )
         if not is_public_read:
@@ -78,7 +88,7 @@ class PublicResponseCacheMiddleware(BaseHTTPMiddleware):
                 headers = dict(cached.headers)
                 headers["x-showcase-cache"] = "HIT"
                 return Response(cached.body, status_code=cached.status_code, headers=headers)
-            build_lock = self._build_locks.setdefault(key, asyncio.Lock())
+            build_lock = self._build_locks[hash(key) % len(self._build_locks)]
             generation = self._generation
 
         # 相同冷键只允许一个请求构建，避免缓存过期瞬间同时压垮单进程。
@@ -104,7 +114,6 @@ class PublicResponseCacheMiddleware(BaseHTTPMiddleware):
             with self._lock:
                 if len(self._cache) >= 512:
                     self._cache.clear()
-                    self._build_locks.clear()
                 if self._generation == generation:
                     self._cache[key] = cached
             return Response(body, status_code=response.status_code, headers=headers)

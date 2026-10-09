@@ -21,7 +21,7 @@ python -m moments_inventory.cli showcase-db-import --showcase-config config/show
 
 默认增量只改出现的商品。全量只对同一 scope 判断缺失，缺失标记 `review_state=missing`，保留既有展示状态。减少超过 30% 会拒绝；复核数据确实完整后才显式调整 `--max-missing-fraction`（0～1）。空全量、缺表头、重复 ID、无效价格均拒绝。来源范围不可共用同一个商品 ID。
 
-人工覆盖优先于来源；再次导入相同文件、模式和 scope 会返回原成功批次。`--yes` 可直接校验并提交，适用于已明确确认的批处理。`import_showcase_excel.bat` 使用该模式保持原有正式导入操作。
+人工覆盖优先于来源；当前来源范围和模式下，连续重复提交相同文件会复用最新成功批次。若其间提交过其他来源快照，再提交旧文件会作为新的来源回归重新应用，恢复可用状态并记录新批次。`--yes` 可直接校验并提交，适用于已明确确认的批处理。`import_showcase_excel.bat` 使用该模式保持原有正式导入操作。
 
 ## 一致快照
 

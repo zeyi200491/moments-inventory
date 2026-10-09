@@ -9,23 +9,55 @@ from moments_inventory.showcase_web.repository import SQLiteShowcaseRepository
 from moments_inventory.showcase_web.models import ShowcaseProduct
 
 
-def test_cli_showcase_db_init_creates_database_and_admin_password(tmp_path: Path) -> None:
+def test_cli_showcase_db_init_creates_database_without_changing_admin_password(tmp_path: Path) -> None:
     database_path = tmp_path / "showcase.db"
+    repo = SQLiteShowcaseRepository(database_path)
+    repo.initialize()
+    original_hash = repo.get_setting("admin_password_hash")
 
     result = cli_module.main(
         [
             "showcase-db-init",
             "--database",
             str(database_path),
-            "--admin-password",
-            "admin-pass",
         ]
     )
 
-    repo = SQLiteShowcaseRepository(database_path)
     assert result == 0
     assert "showcase_products" in repo.list_table_names()
-    assert verify_password("admin-pass", repo.get_setting("admin_password_hash") or "")
+    assert repo.get_setting("admin_password_hash") == original_hash
+
+
+def test_cli_admin_password_reset_reads_hidden_password_and_revokes_sessions(monkeypatch, tmp_path: Path) -> None:
+    database_path = tmp_path / "showcase.db"
+    repo = SQLiteShowcaseRepository(database_path)
+    repo.initialize()
+    repo.save_admin_session("old-session", "2099-01-01T00:00:00+00:00")
+    answers = iter(("new-secret", "new-secret"))
+    monkeypatch.setattr(cli_module.getpass, "getpass", lambda prompt: next(answers))
+
+    result = cli_module.main(["showcase-admin-password-reset", "--database", str(database_path)])
+
+    assert result == 0
+    assert verify_password("new-secret", repo.get_setting("admin_password_hash") or "")
+    assert repo.get_admin_session_expires_at("old-session") is None
+
+
+def test_admin_password_and_session_revocation_roll_back_together(tmp_path: Path) -> None:
+    database_path = tmp_path / "showcase.db"
+    repo = SQLiteShowcaseRepository(database_path)
+    repo.initialize()
+    original_hash = repo.get_setting("admin_password_hash")
+    repo.save_admin_session("old-session", "2099-01-01T00:00:00+00:00")
+    with repo._get_connection() as conn:
+        conn.execute("CREATE TRIGGER reject_admin_session_revoke BEFORE DELETE ON showcase_admin_sessions BEGIN SELECT RAISE(ABORT, 'blocked'); END")
+
+    import pytest
+    with pytest.raises(Exception, match="blocked"):
+        repo.rotate_admin_password("new-hash")
+
+    assert repo.get_setting("admin_password_hash") == original_hash
+    assert repo.get_admin_session_expires_at("old-session") is not None
 
 
 def test_cli_showcase_db_import_calls_importer(monkeypatch, tmp_path: Path) -> None:
@@ -96,6 +128,8 @@ def test_cli_showcase_server_runs_uvicorn(monkeypatch, tmp_path: Path) -> None:
             "database_path": str(tmp_path / "showcase.db"),
             "storage_dir": str(tmp_path / "images"),
             "sample_images_dir": str(tmp_path / "ccdcpt"),
+            "admin_login_path": "/admin-xingxing",
+            "customer_access_cookie_days": 7,
         },
         "app": app_instance,
         "host": "127.0.0.1",

@@ -17,6 +17,8 @@
       <a class="back-link" href="/">查看客户页</a>
     </header>
 
+    <p id="adminActionError" class="access-error" role="alert" hidden></p>
+
     <section id="loginPanel" class="admin-panel">
       <h2>管理员登录</h2>
       <form id="loginForm" class="admin-form">
@@ -31,6 +33,10 @@
     </section>
 
     <section id="adminApp" hidden>
+      <section class="admin-panel" aria-live="polite">
+        <p id="adminStartupStatus" class="access-error" hidden></p>
+        <button id="retryAdminStartupButton" class="secondary-button" type="button" hidden>重试加载管理模块</button>
+      </section>
       <section class="admin-panel">
         <h2>访问与声明</h2>
         <form id="settingsForm" class="admin-form admin-grid">
@@ -202,11 +208,17 @@
           <button id="sampleAssetSearchButton" class="secondary-button" type="button">搜索图库</button>
         </div>
         <div id="sampleAssetSearchResults" class="admin-compact-list"></div>
+        <p id="sampleAssetCount" class="status-text"></p>
+        <button id="sampleAssetLoadMoreButton" class="secondary-button" type="button" hidden>加载更多图库</button>
         <div>
           <h3>批量候选确认</h3>
+          <p id="sampleGroupCount" class="status-text"></p>
           <div id="sampleMatchGroupList" class="admin-compact-list"></div>
+          <button id="sampleGroupLoadMoreButton" class="secondary-button" type="button" hidden>加载更多候选组</button>
         </div>
+        <p id="sampleMatchProductCount" class="status-text"></p>
         <div id="sampleMatchProductList" class="admin-compact-list"></div>
+        <button id="sampleMatchLoadMoreButton" class="secondary-button" type="button" hidden>加载更多商品</button>
       </section>
 
       <section class="admin-panel">
@@ -268,11 +280,11 @@
             <input id="adminBrandFilterInput" placeholder="佳能,索尼,富士">
           </label>
           <label class="field">
-            <span>价格最低</span>
+            <span>当前展示价最低</span>
             <input id="adminMinPriceInput" type="number" min="0">
           </label>
           <label class="field">
-            <span>价格最高</span>
+            <span>当前展示价最高</span>
             <input id="adminMaxPriceInput" type="number" min="0">
           </label>
           <label class="field">
@@ -355,7 +367,7 @@
               </select>
             </label>
             <label id="bulkPriceRangeField" class="field">
-              <span>价格范围</span>
+              <span>原价范围（批量筛选）</span>
               <select id="bulkPriceRangeInput">
                 <option value="all">全部价格</option>
                 <option value="up_to_200">200 元以内</option>
@@ -420,7 +432,7 @@
             <div id="bulkConfirmWarnings" class="bulk-warning-list"></div>
             <p id="bulkConfirmStatus" class="access-error" role="alert" tabindex="-1" hidden></p>
             <div class="bulk-confirm-actions">
-              <button class="secondary-button" type="submit" value="cancel">返回检查</button>
+              <button id="cancelBulkConfirmButton" class="secondary-button" type="submit" value="cancel">返回检查</button>
               <button id="applyBulkButton" class="access-button" type="button">确认执行</button>
             </div>
           </form>
@@ -431,6 +443,6 @@
     </section>
   </main>
   <script src="/static/shared/product-utils.js?v=20260921"></script>
-  <script src="/static/admin.js?v=20260925-bulk-price-workflow"></script>
+  <script src="/static/admin.js?v=20261009-admin-ux-round5"></script>
 </body>
 </html>

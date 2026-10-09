@@ -44,8 +44,14 @@ def _manual_records(rows):
         if record['是否展示'] not in ('是', '否'):
             raise ValueError(f'第 {number} 行是否展示必须为是或否')
         seen.add(product_id)
+        source_product_key = record.get('来源商品键', record.get('product_key', '')).strip()
+        if len(source_product_key) > 256 or any(ord(character) < 32 for character in source_product_key):
+            raise ValueError(f'第 {number} 行来源商品键无效')
         copy = record['展示文案'] or record['原文文案']
-        records.append(dict(product_id=product_id, model=record['型号'], brand=normalize_showcase_brand(record['品牌'], record['型号'], record['原文文案'], copy), cost_price=_parse_int(record['成本价']), source_display_price=_parse_int(record['展示价']), source_display_copy=copy, source_visible=record['是否展示'] == '是', published_at=record['发布时间'], raw_copy=record['原文文案'], cover_image_path=record['机身图路径']))
+        image_paths = list(dict.fromkeys(
+            path.strip() for path in record['机身图路径'].splitlines() if path.strip()
+        ))
+        records.append(dict(product_id=product_id, source_product_key=source_product_key, model=record['型号'], brand=normalize_showcase_brand(record['品牌'], record['型号'], record['原文文案'], copy), cost_price=_parse_int(record['成本价']), source_display_price=_parse_int(record['展示价']), source_display_copy=copy, source_visible=record['是否展示'] == '是', published_at=record['发布时间'], raw_copy=record['原文文案'], cover_image_path=image_paths[0] if image_paths else '', body_image_paths=image_paths))
     return records
 
 

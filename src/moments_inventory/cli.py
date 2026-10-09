@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import argparse
 from dataclasses import asdict
+import getpass
 import json
 import os
 from pathlib import Path
@@ -138,11 +139,11 @@ def build_parser() -> argparse.ArgumentParser:
         help="initialize SQLite database for CCD showcase",
     )
     showcase_db_init_parser.add_argument("--database")
-    showcase_db_init_parser.add_argument(
-        "--admin-password",
-        default=None,
-        help="set or reset admin password",
+    showcase_admin_password_parser = subparsers.add_parser(
+        "showcase-admin-password-reset",
+        help="interactively reset CCD showcase admin password",
     )
+    showcase_admin_password_parser.add_argument("--database")
 
     showcase_db_import_parser = subparsers.add_parser(
         "showcase-db-import",
@@ -187,7 +188,7 @@ def build_parser() -> argparse.ArgumentParser:
     showcase_restore_parser.add_argument("--snapshot", required=True)
     showcase_restore_parser.add_argument("--destination", required=True)
     for showcase_parser in (
-        showcase_db_init_parser, showcase_db_import_parser, showcase_server_parser,
+        showcase_db_init_parser, showcase_admin_password_parser, showcase_db_import_parser, showcase_server_parser,
         showcase_sample_images_import_parser, showcase_backup_parser,
     ):
         showcase_parser.add_argument("--showcase-config", help="展示系统配置文件路径")
@@ -308,11 +309,9 @@ def _import_knowledge(
     repository.save_knowledge_chunks(chunks)
 
 
-def _initialize_showcase_database(database_path: str, admin_password: str | None) -> None:
+def _initialize_showcase_database(database_path: str) -> None:
     repository = SQLiteShowcaseRepository(database_path)
     repository.initialize()
-    if admin_password:
-        repository.set_setting("admin_password_hash", hash_password(admin_password))
 
 
 def _backup_showcase_database(
@@ -382,7 +381,19 @@ def main(argv: list[str] | None = None) -> int:
         return 0
 
     if args.command == "showcase-db-init":
-        _initialize_showcase_database(args.database, args.admin_password)
+        _initialize_showcase_database(args.database)
+        return 0
+
+    if args.command == "showcase-admin-password-reset":
+        repository = SQLiteShowcaseRepository(args.database)
+        repository.initialize()
+        password = getpass.getpass("请输入新的管理员口令：")
+        confirmation = getpass.getpass("请再次输入管理员口令：")
+        if not password:
+            raise ValueError("管理员口令不能为空")
+        if password != confirmation:
+            raise ValueError("两次输入的管理员口令不一致")
+        repository.rotate_admin_password(hash_password(password))
         return 0
 
     if args.command == "showcase-db-import":
@@ -412,6 +423,8 @@ def main(argv: list[str] | None = None) -> int:
                 database_path=args.database,
                 storage_dir=args.storage_dir,
                 sample_images_dir=args.sample_images_dir,
+                admin_login_path=args.admin_login_path,
+                customer_access_cookie_days=args.customer_access_cookie_days,
             ),
             host=args.host,
             port=args.port,

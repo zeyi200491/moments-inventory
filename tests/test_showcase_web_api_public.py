@@ -1,10 +1,13 @@
 from __future__ import annotations
 
+import asyncio
 from pathlib import Path
 from urllib.parse import quote
 import time
 
 from fastapi.testclient import TestClient
+from starlette.requests import Request
+from starlette.responses import Response
 
 from moments_inventory.showcase_web.app import create_showcase_app
 from moments_inventory.showcase_web.auth import hash_password
@@ -16,6 +19,7 @@ from moments_inventory.showcase_web.models import (
     ShowcaseSectionItem,
 )
 from moments_inventory.showcase_web.repository import SQLiteShowcaseRepository
+from moments_inventory.showcase_web.public_cache import PublicResponseCacheMiddleware
 
 
 def _product(
@@ -83,6 +87,17 @@ def test_public_offset_page_rejects_changed_catalog_revision(tmp_path: Path) -> 
     )
 
     assert stale.status_code == 409
+
+
+def test_public_products_rejects_offset_above_maximum(tmp_path: Path) -> None:
+    repo = SQLiteShowcaseRepository(tmp_path / "showcase.db")
+    repo.initialize()
+    client = TestClient(create_showcase_app(repository=repo))
+
+    response = client.get("/api/public/products", params={"offset": 10_001})
+
+    assert response.status_code == 400
+    assert "offset" in response.json()["detail"]
 
 
 def test_customer_password_also_protects_original_media(tmp_path: Path) -> None:
@@ -449,6 +464,24 @@ def test_public_products_require_customer_password_when_configured(tmp_path: Pat
     assert products.json()["products"][0]["productId"] == "p1"
 
 
+def test_rotating_customer_password_revokes_existing_sessions(tmp_path: Path) -> None:
+    repo = SQLiteShowcaseRepository(tmp_path / "showcase.db")
+    repo.initialize()
+    repo.set_setting("admin_password_hash", hash_password("admin-pass"))
+    repo.set_setting("customer_password_hash", hash_password("old-pass"))
+    admin = TestClient(create_showcase_app(repository=repo))
+    public = TestClient(create_showcase_app(repository=repo))
+    assert admin.post("/api/admin/login", json={"password": "admin-pass"}).status_code == 200
+    assert public.post("/api/public/access", json={"password": "old-pass"}).status_code == 200
+
+    rotated = admin.patch("/api/admin/settings", json={"customerPassword": "new-pass"})
+
+    assert rotated.status_code == 200
+    assert public.get("/api/public/products").status_code == 401
+    assert public.post("/api/public/access", json={"password": "old-pass"}).status_code == 401
+    assert public.post("/api/public/access", json={"password": "new-pass"}).status_code == 200
+
+
 def test_public_filters_require_customer_password_when_configured(tmp_path: Path) -> None:
     repo = SQLiteShowcaseRepository(tmp_path / "showcase.db")
     repo.initialize()
@@ -479,6 +512,23 @@ def test_public_access_status_reports_customer_access_state(tmp_path: Path) -> N
     assert locked.json() == {"requiresPassword": True, "authorized": False}
     assert unlocked.status_code == 200
     assert unlocked.json() == {"requiresPassword": True, "authorized": True}
+
+
+def test_showcase_config_controls_admin_route_and_customer_cookie_lifetime(tmp_path: Path) -> None:
+    repo = SQLiteShowcaseRepository(tmp_path / "showcase.db")
+    repo.initialize()
+    repo.set_setting("customer_password_hash", hash_password("week-pass"))
+    app = create_showcase_app(repository=repo, admin_login_path="/manager", customer_access_cookie_days=3)
+    client = TestClient(app)
+
+    access = client.post("/api/public/access", json={"password": "week-pass"})
+    custom_admin = client.get("/manager")
+    default_admin = client.get("/admin-xingxing")
+
+    assert access.status_code == 200
+    assert "max-age=259200" in access.headers["set-cookie"].lower()
+    assert custom_admin.status_code == 200
+    assert default_admin.status_code == 404
 
 
 def test_public_product_detail_requires_customer_password_when_configured(
@@ -527,3 +577,25 @@ def test_public_response_cache_hits_and_catalog_change_invalidates(tmp_path: Pat
 
     assert refreshed.headers["x-showcase-cache"] == "MISS"
     assert refreshed.json()["total"] == 2
+
+
+def test_public_cache_does_not_allocate_locks_for_404_paths(tmp_path: Path) -> None:
+    repo = SQLiteShowcaseRepository(tmp_path / "showcase.db")
+    middleware = PublicResponseCacheMiddleware(lambda scope, receive, send: None, repo)
+
+    async def exercise() -> None:
+        async def call_next(_request: Request) -> Response:
+            return Response(status_code=404)
+
+        for index in range(1000):
+            request = Request({
+                "type": "http", "method": "GET", "path": f"/api/public/missing-{index}",
+                "query_string": b"", "headers": [], "scheme": "http",
+                "server": ("test", 80), "client": ("127.0.0.1", 1), "http_version": "1.1",
+            })
+            assert (await middleware.dispatch(request, call_next)).status_code == 404
+
+    asyncio.run(exercise())
+
+    assert len(middleware._build_locks) == 64
+    assert middleware._cache == {}

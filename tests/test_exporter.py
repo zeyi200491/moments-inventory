@@ -114,6 +114,7 @@ def test_export_records_creates_only_current_workbook() -> None:
         assert current_rows[1][0] == "ixus 95"
         assert current_path.name == exporter.DEFAULT_WORKBOOK_FILENAME
         assert current_rows[0] == tuple(exporter.HEADERS)
+        assert current_rows[1][current_rows[0].index("product_key")] == records[0].product_key
     finally:
         shutil.rmtree(temp_root, ignore_errors=True)
 

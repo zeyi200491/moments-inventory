@@ -9,14 +9,14 @@ import os
 import secrets
 import uuid
 
-from fastapi import APIRouter, Cookie, Depends, File, Form, HTTPException, UploadFile
+from fastapi import APIRouter, Cookie, Depends, File, Form, HTTPException, Request, UploadFile
 from fastapi import Response
 from fastapi.responses import StreamingResponse
 from pydantic import BaseModel, Field, field_validator, model_validator
 from PIL import Image, UnidentifiedImageError
 from moments_inventory.showcase_web import bulk_service
 
-from moments_inventory.showcase_web.auth import hash_password, verify_password
+from moments_inventory.showcase_web.auth import LoginAttemptLimiter, hash_password, verify_password
 from moments_inventory.showcase_web.models import (
     ShowcaseGalleryAlbum,
     ShowcaseGalleryImage,
@@ -46,6 +46,8 @@ from moments_inventory.showcase_web.sample_images import (
     list_sample_matching_groups,
     list_sample_matching_products,
 )
+
+MAX_PRODUCT_LIST_OFFSET = 10_000
 
 
 _MAX_UPLOAD_BYTES = 10 * 1024 * 1024
@@ -423,6 +425,10 @@ class AdminBulkProductFilters(BaseModel):
     brands: list[str] = Field(default_factory=list, max_length=80)
     priceMin: int | None = Field(default=None, ge=0)
     priceMax: int | None = Field(default=None, ge=0)
+    sourcePriceMin: int | None = Field(default=None, ge=0)
+    sourcePriceMax: int | None = Field(default=None, ge=0)
+    displayPriceMin: int | None = Field(default=None, ge=0)
+    displayPriceMax: int | None = Field(default=None, ge=0)
     visible: bool | None = None
     sold: bool | None = None
     hasBodyImage: bool | None = None
@@ -442,6 +448,10 @@ class AdminBulkProductFilters(BaseModel):
             any(brand.strip() for brand in self.brands),
             self.priceMin is not None,
             self.priceMax is not None,
+            self.sourcePriceMin is not None,
+            self.sourcePriceMax is not None,
+            self.displayPriceMin is not None,
+            self.displayPriceMax is not None,
             self.hasBodyImage is not None,
             self.hasSampleImage is not None,
             self.manualPrice is not None,
@@ -454,8 +464,16 @@ class AdminBulkProductFilters(BaseModel):
 
     @model_validator(mode="after")
     def validate_price_range(self) -> Self:
-        if self.priceMin is not None and self.priceMax is not None and self.priceMin > self.priceMax:
-            raise ValueError("最低价不能高于最高价")
+        for minimum, maximum, label in (
+            (self.sourcePriceMin, self.sourcePriceMax, "原价"),
+            (
+                self.displayPriceMin if self.displayPriceMin is not None else self.priceMin,
+                self.displayPriceMax if self.displayPriceMax is not None else self.priceMax,
+                "展示价",
+            ),
+        ):
+            if minimum is not None and maximum is not None and minimum > maximum:
+                raise ValueError(f"最低{label}不能高于最高{label}")
         return self
 
 
@@ -638,6 +656,8 @@ class AdminSampleMatchingAssetResponse(BaseModel):
 
 class AdminSampleMatchingAssetsResponse(BaseModel):
     assets: list[AdminSampleMatchingAssetResponse] = Field(default_factory=list)
+    total: int = 0
+    hasMore: bool = False
 
 
 class AdminSampleMatchingProductResponse(BaseModel):
@@ -666,6 +686,8 @@ class AdminSampleMatchingProductResponse(BaseModel):
 
 class AdminSampleMatchingProductsResponse(BaseModel):
     products: list[AdminSampleMatchingProductResponse] = Field(default_factory=list)
+    total: int | None = None
+    hasMore: bool = False
 
 
 class AdminSampleMatchingBindRequest(BaseModel):
@@ -701,6 +723,8 @@ class AdminSampleMatchingGroupResponse(BaseModel):
 
 class AdminSampleMatchingGroupsResponse(BaseModel):
     groups: list[AdminSampleMatchingGroupResponse] = Field(default_factory=list)
+    total: int | None = None
+    hasMore: bool = False
 
 
 class AdminSampleMatchingGroupBindRequest(BaseModel):
@@ -909,8 +933,11 @@ class AdminSectionsResponse(BaseModel):
 
 def create_public_router(
     repository: SQLiteShowcaseRepository,
+    customer_access_cookie_days: int = 7,
+    login_limiter: LoginAttemptLimiter | None = None,
 ) -> APIRouter:
     router = APIRouter(prefix="/api/public")
+    limiter = login_limiter or LoginAttemptLimiter()
 
     def get_repository() -> SQLiteShowcaseRepository:
         return repository
@@ -927,22 +954,37 @@ def create_public_router(
 
     @router.post("/access", response_model=CustomerAccessResponse)
     def customer_access(
+        http_request: Request,
         request: CustomerAccessRequest,
         response: Response,
         repo: SQLiteShowcaseRepository = Depends(get_repository),
     ) -> CustomerAccessResponse:
+        client = http_request.client.host if http_request.client else "unknown-client"
+        allowed, retry_after = limiter.check("customer", client)
+        if not allowed:
+            raise HTTPException(
+                status_code=429,
+                detail="too many login attempts; retry later",
+                headers={"Retry-After": str(retry_after)},
+            )
         password_hash = repo.get_setting("customer_password_hash")
         if not password_hash or not verify_password(request.password, password_hash):
             raise HTTPException(status_code=401, detail="invalid password")
         session_id = secrets.token_urlsafe(32)
-        expires_at = datetime.now(timezone.utc) + timedelta(days=7)
-        repo.save_customer_session(session_id, expires_at.isoformat())
+        expires_at = datetime.now(timezone.utc) + timedelta(days=customer_access_cookie_days)
+        if not repo.save_customer_session_if_password_hash_matches(
+            session_id,
+            expires_at.isoformat(),
+            password_hash,
+        ):
+            raise HTTPException(status_code=401, detail="customer password changed") from None
+        limiter.clear("customer", client)
         response.set_cookie(
             "showcase_customer_access",
             session_id,
             httponly=True,
             samesite="lax",
-            max_age=7 * 24 * 60 * 60,
+            max_age=customer_access_cookie_days * 24 * 60 * 60,
         )
         return CustomerAccessResponse(ok=True)
 
@@ -976,6 +1018,8 @@ def create_public_router(
         expectedRevision: str = "",
         repo: SQLiteShowcaseRepository = Depends(get_repository),
     ) -> PublicProductsResponse:
+        if offset > MAX_PRODUCT_LIST_OFFSET:
+            raise HTTPException(status_code=400, detail="offset 查询参数超出最大值 10000")
         result = repo.search_products(
             ShowcaseProductSearch(
                 query=query.strip(),
@@ -1252,8 +1296,10 @@ def create_admin_router(
     *,
     storage_dir: str | Path = "storage/showcase_images",
     sample_images_dir: str | Path = "output/ccdcpt",
+    login_limiter: LoginAttemptLimiter | None = None,
 ) -> APIRouter:
     router = APIRouter(prefix="/api/admin")
+    limiter = login_limiter or LoginAttemptLimiter()
     storage_path = Path(storage_dir)
     sample_images_path = Path(sample_images_dir)
 
@@ -1278,16 +1324,26 @@ def create_admin_router(
 
     @router.post("/login", response_model=AdminLoginResponse)
     def admin_login(
+        http_request: Request,
         request: AdminLoginRequest,
         response: Response,
         repo: SQLiteShowcaseRepository = Depends(get_repository),
     ) -> AdminLoginResponse:
+        client = http_request.client.host if http_request.client else "unknown-client"
+        allowed, retry_after = limiter.check("admin", client)
+        if not allowed:
+            raise HTTPException(
+                status_code=429,
+                detail="too many login attempts; retry later",
+                headers={"Retry-After": str(retry_after)},
+            )
         password_hash = repo.get_setting("admin_password_hash")
         if not password_hash or not verify_password(request.password, password_hash):
             raise HTTPException(status_code=401, detail="invalid password")
         session_id = secrets.token_urlsafe(32)
         expires_at = datetime.now(timezone.utc) + timedelta(hours=12)
         repo.save_admin_session(session_id, expires_at.isoformat())
+        limiter.clear("admin", client)
         response.set_cookie(
             "showcase_admin_session",
             session_id,
@@ -1323,6 +1379,8 @@ def create_admin_router(
         offset: int = 0,
         repo: SQLiteShowcaseRepository = Depends(get_repository),
     ) -> AdminProductsResponse:
+        if offset > MAX_PRODUCT_LIST_OFFSET:
+            raise HTTPException(status_code=400, detail="offset 查询参数超出最大值 10000")
         search = ShowcaseAdminProductSearch(
             query=query.strip(),
             model=model.strip(),
@@ -1557,21 +1615,23 @@ def create_admin_router(
     def list_admin_sample_matching_products(
         status: str = "needs_attention",
         limit: int = 100,
+        offset: int = 0,
         repo: SQLiteShowcaseRepository = Depends(get_repository),
     ) -> AdminSampleMatchingProductsResponse:
         allowed_statuses = {"all", "needs_attention", "matched", "missing", "low_confidence", "auto_matched"}
         normalized_status = status if status in allowed_statuses else "needs_attention"
         normalized_limit = min(max(limit, 1), 500)
+        if offset < 0 or offset > 5000:
+            raise HTTPException(status_code=400, detail="offset 查询参数超出范围")
+        candidates = list_sample_matching_products(
+            sample_images_path, repo, status=normalized_status, limit=offset + normalized_limit + 1
+        )
+        products = [AdminSampleMatchingProductResponse.from_item(item) for item in candidates[offset : offset + normalized_limit]]
+        has_more = len(candidates) > offset + normalized_limit
         return AdminSampleMatchingProductsResponse(
-            products=[
-                AdminSampleMatchingProductResponse.from_item(item)
-                for item in list_sample_matching_products(
-                    sample_images_path,
-                    repo,
-                    status=normalized_status,
-                    limit=normalized_limit,
-                )
-            ]
+            products=products,
+            total=None if has_more else offset + len(products),
+            hasMore=has_more,
         )
 
     @router.get(
@@ -1581,18 +1641,19 @@ def create_admin_router(
     )
     def list_admin_sample_matching_groups(
         limit: int = 100,
+        offset: int = 0,
         repo: SQLiteShowcaseRepository = Depends(get_repository),
     ) -> AdminSampleMatchingGroupsResponse:
         normalized_limit = min(max(limit, 1), 500)
+        if offset < 0 or offset > 5000:
+            raise HTTPException(status_code=400, detail="offset 查询参数超出范围")
+        candidates = list_sample_matching_groups(sample_images_path, repo, limit=offset + normalized_limit + 1)
+        groups = [AdminSampleMatchingGroupResponse.from_group(group) for group in candidates[offset : offset + normalized_limit]]
+        has_more = len(candidates) > offset + normalized_limit
         return AdminSampleMatchingGroupsResponse(
-            groups=[
-                AdminSampleMatchingGroupResponse.from_group(group)
-                for group in list_sample_matching_groups(
-                    sample_images_path,
-                    repo,
-                    limit=normalized_limit,
-                )
-            ]
+            groups=groups,
+            total=None if has_more else offset + len(groups),
+            hasMore=has_more,
         )
 
     @router.get(
@@ -1603,9 +1664,12 @@ def create_admin_router(
     def list_admin_sample_matching_assets(
         query: str = "",
         limit: int = 50,
+        offset: int = 0,
     ) -> AdminSampleMatchingAssetsResponse:
         normalized_query = query.casefold().strip()
         normalized_limit = min(max(limit, 1), 200)
+        if offset < 0 or offset > 100_000:
+            raise HTTPException(status_code=400, detail="offset 查询参数超出范围")
         assets = list_sample_image_assets(sample_images_path)
         if normalized_query:
             assets = [
@@ -1619,8 +1683,10 @@ def create_admin_router(
         return AdminSampleMatchingAssetsResponse(
             assets=[
                 AdminSampleMatchingAssetResponse.from_asset(asset)
-                for asset in assets[:normalized_limit]
-            ]
+                for asset in assets[offset : offset + normalized_limit]
+            ],
+            total=len(assets),
+            hasMore=offset + normalized_limit < len(assets),
         )
 
     @router.post(
@@ -1914,7 +1980,8 @@ def create_admin_router(
                         else ""
                     ),
                 )
-            repo.upsert_product(updated)
+            if not repo.update_admin_product_if_version(updated, product.row_version):
+                raise HTTPException(409, "商品已被其他管理操作修改，请刷新后重新保存")
             summary = repo.get_admin_product_summary(product.product_id)
             if summary is None:
                 raise HTTPException(status_code=404, detail="product not found")
@@ -2310,16 +2377,21 @@ def create_admin_router(
         request: AdminSettingsPatchRequest,
         repo: SQLiteShowcaseRepository = Depends(get_repository),
     ) -> AdminLoginResponse:
+        updates = {}
         if request.statementText is not None:
-            repo.set_setting("statement_text", request.statementText)
+            updates["statement_text"] = request.statementText
         if request.shopIntroText is not None:
-            repo.set_setting("shop_intro_text", request.shopIntroText)
+            updates["shop_intro_text"] = request.shopIntroText
         if request.watermarkText is not None:
-            repo.set_setting("watermark_text", request.watermarkText)
+            updates["watermark_text"] = request.watermarkText
         if request.customerPassword is not None:
-            repo.set_setting("customer_password_hash", hash_password(request.customerPassword))
+            updates["customer_password_hash"] = hash_password(request.customerPassword)
         if request.inventoryUpdatedAt is not None:
-            repo.set_setting("inventory_updated_at", request.inventoryUpdatedAt)
+            updates["inventory_updated_at"] = request.inventoryUpdatedAt
+        repo.update_settings_atomically(
+            updates,
+            rotate_customer_password=request.customerPassword is not None,
+        )
         return AdminLoginResponse(ok=True)
 
     @router.get(
@@ -2642,8 +2714,8 @@ def _admin_search_from_bulk_filters(filters: AdminBulkProductFilters) -> Showcas
         query=filters.query.strip(),
         model=filters.model.strip(),
         brands=tuple(brand.strip() for brand in brands if brand.strip()),
-        price_min=filters.priceMin,
-        price_max=filters.priceMax,
+        price_min=filters.displayPriceMin if filters.displayPriceMin is not None else filters.priceMin,
+        price_max=filters.displayPriceMax if filters.displayPriceMax is not None else filters.priceMax,
         visible=filters.visible,
         sold=filters.sold,
         has_body_image=filters.hasBodyImage,
@@ -2663,7 +2735,8 @@ def _bulk_preview_response(
     repo: SQLiteShowcaseRepository,
     request: AdminBulkOperationRequest,
 ) -> AdminBulkPreviewResponse:
-    search = _admin_search_from_bulk_filters(request.filters)
+    filters = request.filters
+    search = _admin_search_from_bulk_filters(filters)
     product_ids = None
     if request.scope == "selected":
         product_references = [*request.productIds, *request.publicIds]
@@ -2671,6 +2744,8 @@ def _bulk_preview_response(
     summaries = repo.list_admin_products_for_bulk(
         replace(search, visible=None, sold=None),
         product_ids=product_ids,
+        source_price_min=filters.sourcePriceMin,
+        source_price_max=filters.sourcePriceMax,
     )
     items: list[AdminBulkPreviewItemResponse] = []
     changed_count = 0
@@ -2764,13 +2839,26 @@ def _bulk_new_price(old_price: int, request: AdminBulkOperationRequest) -> int:
 
 
 def _bulk_price_range_text(filters: AdminBulkProductFilters) -> str:
-    if filters.priceMin is not None and filters.priceMax is not None:
-        return f"{filters.priceMin}～{filters.priceMax} 元"
-    if filters.priceMin is not None:
-        return f"{filters.priceMin}元以上"
-    if filters.priceMax is not None:
-        return f"{filters.priceMax}元以内"
-    return "全部价格"
+    source_min = filters.sourcePriceMin
+    source_max = filters.sourcePriceMax
+    display_min = filters.displayPriceMin if filters.displayPriceMin is not None else filters.priceMin
+    display_max = filters.displayPriceMax if filters.displayPriceMax is not None else filters.priceMax
+    ranges = []
+    if source_min is not None or source_max is not None:
+        if source_min is not None and source_max is not None:
+            ranges.append(f"原价 {source_min}～{source_max} 元")
+        elif source_min is not None:
+            ranges.append(f"原价 {source_min} 元以上")
+        else:
+            ranges.append(f"原价 {source_max} 元以内")
+    if display_min is not None or display_max is not None:
+        if display_min is not None and display_max is not None:
+            ranges.append(f"展示价 {display_min}～{display_max} 元")
+        elif display_min is not None:
+            ranges.append(f"展示价 {display_min} 元以上")
+        else:
+            ranges.append(f"展示价 {display_max} 元以内")
+    return " · ".join(ranges) or "全部价格"
 
 
 def _bulk_operation_summary(request: AdminBulkOperationRequest, changed_count: int) -> str:

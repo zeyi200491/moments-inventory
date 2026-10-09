@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from pathlib import Path
 from contextlib import asynccontextmanager
+from datetime import datetime, timezone
 import time
 
 from fastapi import FastAPI, HTTPException, Cookie, Request
@@ -9,6 +10,7 @@ from fastapi.responses import FileResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
 
 from moments_inventory.showcase_web.api import create_admin_router, create_public_router, _has_valid_customer_session
+from moments_inventory.showcase_web.auth import LoginAttemptLimiter
 from moments_inventory.showcase_web.repository import SQLiteShowcaseRepository
 from moments_inventory.showcase_web.image_service import ImageVariantService
 from moments_inventory.showcase_web.public_cache import PublicResponseCacheMiddleware
@@ -21,9 +23,13 @@ def create_showcase_app(
     database_path: str | Path = "data/showcase.db",
     storage_dir: str | Path = "storage/showcase_images",
     sample_images_dir: str | Path = "output/ccdcpt",
+    admin_login_path: str = "/admin-xingxing",
+    customer_access_cookie_days: int = 7,
+    login_limiter: LoginAttemptLimiter | None = None,
 ) -> FastAPI:
     repo = repository or SQLiteShowcaseRepository(database_path)
     repo.initialize()
+    limiter = login_limiter or LoginAttemptLimiter()
     @asynccontextmanager
     async def lifespan(app):
         yield
@@ -44,19 +50,29 @@ def create_showcase_app(
                 media_access_state["checked_at"] = now
             password_hash = media_access_state["password_hash"]
             session_id = request.cookies.get("showcase_customer_access")
-            if password_hash and not _has_valid_customer_session(repo, session_id):
+            admin_session = request.cookies.get("showcase_admin_session")
+            admin_expires_at = repo.get_admin_session_expires_at(admin_session) if admin_session else None
+            try:
+                expiration = datetime.fromisoformat(admin_expires_at) if admin_expires_at else None
+                if expiration is not None and expiration.tzinfo is None:
+                    expiration = expiration.replace(tzinfo=timezone.utc)
+                is_admin = expiration is not None and expiration > datetime.now(timezone.utc)
+            except (TypeError, ValueError):
+                is_admin = False
+            if password_hash and not is_admin and not _has_valid_customer_session(repo, session_id):
                 return JSONResponse({"detail": "customer password required"}, status_code=401)
         response = await call_next(request)
         if request.url.path.startswith(("/storage/showcase_images/", "/sample-images/")):
-            response.headers["Cache-Control"] = "private, max-age=3600"
+            response.headers["Cache-Control"] = "private, no-store" if request.cookies.get("showcase_admin_session") else "private, max-age=3600"
         return response
 
-    app.include_router(create_public_router(repo))
+    app.include_router(create_public_router(repo, customer_access_cookie_days, limiter))
     app.include_router(
         create_admin_router(
             repo,
             storage_dir=storage_dir,
             sample_images_dir=sample_images_dir,
+            login_limiter=limiter,
         )
     )
 
@@ -93,7 +109,7 @@ def create_showcase_app(
     def product_detail() -> FileResponse:
         return FileResponse(static_dir / "product.html")
 
-    @app.get("/admin-xingxing")
+    @app.get(admin_login_path)
     def admin() -> FileResponse:
         return FileResponse(static_dir / "admin.html")
 

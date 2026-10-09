@@ -87,6 +87,27 @@ def test_import_sample_images_replaces_old_sample_images_only(tmp_path: Path) ->
     assert images[1].image_path == "sample-images/索尼/索尼DSC-T10/01.jpg"
 
 
+def test_sample_image_hidden_override_survives_adding_another_image(tmp_path: Path) -> None:
+    sample_root = tmp_path / "ccdcpt"
+    model_dir = sample_root / "佳能" / "ixus 80"
+    model_dir.mkdir(parents=True)
+    (model_dir / "01.jpg").write_bytes(b"sample-1")
+    repo = SQLiteShowcaseRepository(tmp_path / "showcase.db")
+    repo.upsert_product(_product("p1", "佳能", "佳能ixus80"))
+
+    import_sample_images(sample_root, repo)
+    hidden = repo.list_product_images("p1")[0]
+    assert repo.delete_product_image("p1", hidden.image_id)
+    (model_dir / "02.jpg").write_bytes(b"sample-2")
+
+    import_sample_images(sample_root, repo)
+
+    images = repo.list_product_images("p1")
+    assert [image.image_path for image in images] == [
+        "sample-images/佳能/ixus 80/02.jpg",
+    ]
+
+
 def test_import_sample_images_uses_manual_product_folder_binding(tmp_path: Path) -> None:
     sample_root = tmp_path / "ccdcpt"
     model_dir = sample_root / "佳能" / "ixus 80"

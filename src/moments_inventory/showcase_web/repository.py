@@ -419,9 +419,10 @@ class SQLiteShowcaseRepository:
                       recommend_tags, public_id, row_version,
                       source_scope, source_available, source_display_price, source_display_copy,
                       source_visible, last_seen_at, price_override, copy_override,
-                      visibility_override, override_origin, review_state, last_verified_at
+                      visibility_override, override_origin, review_state, last_verified_at,
+                      source_product_key
                     )
-                    values (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    values (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                     on conflict(product_id) do update set
                       model = excluded.model,
                       brand = excluded.brand,
@@ -457,6 +458,45 @@ class SQLiteShowcaseRepository:
                 saved = conn.execute("select public_id, row_version from showcase_products where product_id=?", (product.product_id,)).fetchone()
                 product.public_id, product.row_version = str(saved[0]), int(saved[1])
 
+    def update_admin_product_if_version(
+        self,
+        product: ShowcaseProduct,
+        expected_version: int,
+    ) -> bool:
+        """用数据库版本号原子保存管理端字段，防止其他进程的更新被覆盖。"""
+        with self._lock:
+            with self._get_connection() as conn:
+                cursor = conn.execute(
+                    """
+                    update showcase_products
+                    set model=?, brand=?, display_price=?, visible=?, sold=?, display_copy=?,
+                        updated_at=?, short_selling_point=?, recommend_tags=?,
+                        price_override=?, copy_override=?, visibility_override=?,
+                        override_origin=?, row_version=row_version+1
+                    where product_id=? and row_version=?
+                    """,
+                    (
+                        product.model,
+                        product.brand,
+                        product.display_price,
+                        int(product.visible),
+                        int(product.sold),
+                        product.display_copy,
+                        product.updated_at,
+                        product.short_selling_point,
+                        product.recommend_tags,
+                        product.price_override,
+                        product.copy_override,
+                        int(product.visibility_override)
+                        if product.visibility_override is not None
+                        else None,
+                        product.override_origin,
+                        product.product_id,
+                        expected_version,
+                    ),
+                )
+                return cursor.rowcount == 1
+
     def bulk_upsert_products_with_body_images(
         self,
         products: list[ShowcaseProduct],
@@ -485,9 +525,10 @@ class SQLiteShowcaseRepository:
                       recommend_tags, public_id, row_version,
                       source_scope, source_available, source_display_price, source_display_copy,
                       source_visible, last_seen_at, price_override, copy_override,
-                      visibility_override, override_origin, review_state, last_verified_at
+                      visibility_override, override_origin, review_state, last_verified_at,
+                      source_product_key
                     )
-                    values (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    values (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                     on conflict(product_id) do update set
                       model = excluded.model,
                       brand = excluded.brand,
@@ -593,8 +634,13 @@ class SQLiteShowcaseRepository:
             raise ValueError("样片绑定超出目标商品范围")
         if not set(product_groups.values()).issubset(groups):
             raise ValueError("样片绑定引用了未提供的图库")
-        # 图库内容进入标识，局部刷新不会改变仍关联旧图库的其他商品。
-        group_keys = {key: hashlib.sha256(json.dumps([key, list(dict.fromkeys(paths))], ensure_ascii=False).encode()).hexdigest() for key, paths in groups.items()}
+        # 图库组按目录和内容快照区分，局部刷新不能改动仍使用旧快照的商品。
+        group_keys = {
+            key: hashlib.sha256(
+                json.dumps([key, list(dict.fromkeys(paths))], ensure_ascii=False).encode("utf-8")
+            ).hexdigest()
+            for key, paths in groups.items()
+        }
         with self._lock:
             with self._get_connection() as conn:
                 existing = {str(row[0]) for row in conn.execute("select product_id from showcase_products")}
@@ -603,15 +649,64 @@ class SQLiteShowcaseRepository:
                 affected = existing if targets is None else targets & existing
                 if not affected:
                     return
+                old_group_by_product = {
+                    str(row[0]): str(row[1])
+                    for row in conn.execute(
+                        "select product_id,group_key from showcase_product_sample_groups"
+                    ).fetchall()
+                    if str(row[0]) in affected
+                }
                 for folder, paths in groups.items():
                     group_key = group_keys[folder]
                     conn.execute("insert or ignore into showcase_sample_groups values (?)", (group_key,))
-                    # 一张图库的图片只保存一份，商品通过一条关系关联。
-                    conn.execute("delete from showcase_sample_group_images where group_key=?", (group_key,))
-                    conn.executemany("insert into showcase_sample_group_images values (?,?,?,?)", [
-                        (hashlib.sha256((group_key+"\0"+path).encode()).hexdigest(),group_key,path,order+10)
-                        for order,path in enumerate(dict.fromkeys(paths))
-                    ])
+                    unique_paths = list(dict.fromkeys(paths))
+                    if unique_paths:
+                        conn.execute(
+                            "delete from showcase_sample_group_images where group_key=? and image_path not in ("
+                            + ",".join("?" for _ in unique_paths) + ")",
+                            (group_key, *unique_paths),
+                        )
+                    conn.executemany(
+                        """insert into showcase_sample_group_images(image_id,group_key,image_path,sort_order)
+                        values (?,?,?,?) on conflict(image_id) do update set
+                          group_key=excluded.group_key,image_path=excluded.image_path,
+                          sort_order=excluded.sort_order""",
+                        [
+                            (
+                                hashlib.sha256((group_key + "\0" + path).encode("utf-8")).hexdigest(),
+                                group_key,
+                                path,
+                                order + 10,
+                            )
+                            for order, path in enumerate(unique_paths)
+                        ],
+                    )
+                # 旧版图库组 ID 包含整份图片清单，迁移仍存在图片的隐藏及排序设置。
+                for product_id, old_group_key in old_group_by_product.items():
+                    folder = product_groups.get(product_id)
+                    if folder not in groups:
+                        continue
+                    current_paths = set(groups[folder])
+                    overrides = conn.execute(
+                        """select images.image_path,overrides.hidden,overrides.sort_order
+                        from showcase_sample_image_overrides overrides
+                        join showcase_sample_group_images images on images.image_id=overrides.image_id
+                        where overrides.product_id=? and images.group_key=?""",
+                        (product_id, old_group_key),
+                    ).fetchall()
+                    new_group_key = group_keys[folder]
+                    for image_path, hidden, sort_order in overrides:
+                        if str(image_path) not in current_paths:
+                            continue
+                        new_image_id = hashlib.sha256(
+                            (new_group_key + "\0" + str(image_path)).encode("utf-8")
+                        ).hexdigest()
+                        conn.execute(
+                            """insert into showcase_sample_image_overrides(product_id,image_id,hidden,sort_order)
+                            values (?,?,?,?) on conflict(product_id,image_id) do update set
+                              hidden=excluded.hidden,sort_order=excluded.sort_order""",
+                            (product_id, new_image_id, hidden, sort_order),
+                        )
                 conn.executemany("delete from showcase_product_sample_groups where product_id=?", [(key,) for key in affected])
                 conn.executemany("delete from showcase_product_images where product_id=? and image_type='sample' and source='auto_match'", [(key,) for key in affected])
                 conn.executemany("insert into showcase_product_sample_groups values (?,?)", [(key,group_keys[folder]) for key,folder in product_groups.items()])
@@ -726,9 +821,17 @@ class SQLiteShowcaseRepository:
         search: ShowcaseAdminProductSearch | None = None,
         *,
         product_ids: list[str] | None = None,
+        source_price_min: int | None = None,
+        source_price_max: int | None = None,
     ) -> list[ShowcaseAdminProductSummary]:
         search = search or ShowcaseAdminProductSearch(limit=100000)
         where, params = _build_admin_product_filters(replace(search, limit=100000, offset=0))
+        if source_price_min is not None:
+            where.append("p.source_display_price >= ?")
+            params.append(source_price_min)
+        if source_price_max is not None:
+            where.append("p.source_display_price <= ?")
+            params.append(source_price_max)
         normalized_ids = [product_id for product_id in dict.fromkeys(product_ids or []) if product_id]
         with self._read_connection() as conn:
             if not normalized_ids:
@@ -1587,6 +1690,76 @@ class SQLiteShowcaseRepository:
                     (session_id, expires_at),
                 )
 
+    def save_customer_session_if_password_hash_matches(
+        self,
+        session_id: str,
+        expires_at: str,
+        expected_password_hash: str,
+    ) -> bool:
+        """只允许使用仍然有效的访问口令创建客户会话，封闭轮换竞态。"""
+        with self._lock:
+            conn = self._get_connection()
+            conn.execute("BEGIN IMMEDIATE")
+            try:
+                row = conn.execute(
+                    "select setting_value from showcase_settings where setting_key='customer_password_hash'"
+                ).fetchone()
+                if row is None or str(row[0]) != expected_password_hash:
+                    conn.rollback()
+                    return False
+                conn.execute(
+                    "insert into showcase_customer_sessions (session_id, expires_at) values (?, ?)",
+                    (session_id, expires_at),
+                )
+                conn.commit()
+                return True
+            except Exception:
+                conn.rollback()
+                raise
+
+    def rotate_customer_password(self, password_hash: str) -> None:
+        """原子更新访问口令并撤销所有已有客户会话。"""
+        self.update_settings_atomically({"customer_password_hash": password_hash}, True)
+
+    def rotate_admin_password(self, password_hash: str) -> None:
+        """原子更新管理口令并撤销所有已有管理员会话。"""
+        with self._lock:
+            conn = self._get_connection()
+            conn.execute("BEGIN IMMEDIATE")
+            try:
+                conn.execute(
+                    """insert into showcase_settings(setting_key,setting_value) values ('admin_password_hash',?)
+                    on conflict(setting_key) do update set setting_value=excluded.setting_value""",
+                    (password_hash,),
+                )
+                conn.execute("delete from showcase_admin_sessions")
+                conn.commit()
+            except Exception:
+                conn.rollback()
+                raise
+
+    def update_settings_atomically(
+        self,
+        values: dict[str, str],
+        rotate_customer_password: bool = False,
+    ) -> None:
+        """在同一 SQLite 事务中更新设置，避免返回错误但只保存部分字段。"""
+        with self._lock:
+            conn = self._get_connection()
+            conn.execute("BEGIN IMMEDIATE")
+            try:
+                conn.executemany(
+                    """insert into showcase_settings(setting_key,setting_value) values (?,?)
+                    on conflict(setting_key) do update set setting_value=excluded.setting_value""",
+                    list(values.items()),
+                )
+                if rotate_customer_password:
+                    conn.execute("delete from showcase_customer_sessions")
+                conn.commit()
+            except Exception:
+                conn.rollback()
+                raise
+
     def get_customer_session_expires_at(self, session_id: str) -> str | None:
         with self._read_connection() as conn:
             row = conn.execute(
@@ -1932,6 +2105,7 @@ def _product_to_row(product: ShowcaseProduct) -> tuple[object, ...]:
         product.override_origin,
         product.review_state,
         product.last_verified_at,
+        "",
     )
 
 

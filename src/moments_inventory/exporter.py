@@ -48,10 +48,10 @@ HEADERS = [
     "原文文案",
     "备注",
     "是否需要人工复核",
+    "product_key",
 ]
 REVIEW_HEADERS = [
     *HEADERS,
-    "product_key",
     "lifecycle_status",
     "risk_flags",
     "price_history",
@@ -379,6 +379,7 @@ def _to_base_row(
         redact_price_text(record.content_text),
         record.note,
         "是" if record.needs_manual else "否",
+        record.product_key or "",
     ]
 
 
@@ -395,7 +396,6 @@ def _to_review_rows(
         rows.append(
             [
                 *_to_base_row(record, media_paths),
-                record.product_key,
                 record.lifecycle_status,
                 _join_review_values(record.risk_flags),
                 _join_review_values(record.price_history),

@@ -1,4 +1,7 @@
 from uuid import UUID
+import sqlite3
+
+import pytest
 
 from moments_inventory.showcase_web.repository import SQLiteShowcaseRepository
 from moments_inventory.showcase_web.models import ShowcaseProduct, ShowcaseProductImage
@@ -119,6 +122,19 @@ def test_old_database_migrates_without_seeding_and_classifies_known_images(tmp_p
     repo.close()
     repo = SQLiteShowcaseRepository(path)
     assert repo.get_product("old").public_id == first.public_id
+
+
+def test_stable_product_key_migration_is_optional_and_unique_per_scope(tmp_path):
+    repo = SQLiteShowcaseRepository(tmp_path / "identity.db")
+    repo.upsert_product(product("p1"))
+    with repo._get_connection() as conn:
+        columns = {row[1] for row in conn.execute("pragma table_info(showcase_products)")}
+        conn.execute("update showcase_products set source_product_key='media:key-1' where product_id='p1'")
+        if "source_product_key" in columns:
+            with pytest.raises(sqlite3.IntegrityError):
+                conn.execute("insert into showcase_products (product_id,model,brand,cost_price,display_price,visible,sold,published_at,raw_copy,display_copy,cover_image_path,created_at,updated_at,last_seen_import_id,source_scope,source_product_key) values ('p2','m','b',1,1,1,0,'','','','','','','','default','media:key-1')")
+    assert "source_product_key" in columns
+    assert repo.list_product_ids() == {"p1"}  # 迁移本身不擅自回填或删除旧记录。
 
 
 def test_public_ids_work_for_image_and_product_changes():

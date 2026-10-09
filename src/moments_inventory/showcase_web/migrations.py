@@ -397,4 +397,19 @@ def migrate(conn: sqlite3.Connection) -> bool:
             "on showcase_admin_operation_items(operation_id)"
         )
         conn.execute("insert into showcase_schema_migrations(version) values (9)")
+    if 10 not in applied:
+        _ensure_column(conn, "showcase_products", "source_product_key", "text not null default ''")
+        conn.execute(
+            "create unique index if not exists idx_showcase_products_source_key "
+            "on showcase_products(source_scope,source_product_key) where source_product_key<>''"
+        )
+        conn.execute("insert into showcase_schema_migrations(version) values (10)")
+    if 11 not in applied:
+        # 仅复用当前最新快照；旧来源回归时必须能记录新的成功批次。
+        conn.execute("drop index if exists idx_showcase_import_fingerprint")
+        conn.execute(
+            "create index if not exists idx_showcase_import_fingerprint "
+            "on showcase_import_logs(scope,mode,status,committed_at)"
+        )
+        conn.execute("insert into showcase_schema_migrations(version) values (11)")
     return fresh
