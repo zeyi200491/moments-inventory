@@ -33,6 +33,7 @@ config/ai_kefu.yaml
 config/models.txt
 config/data/
 config/output*/
+output/
 data/
 storage/
 media/
