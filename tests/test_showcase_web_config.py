@@ -36,13 +36,19 @@ def test_missing_config_is_not_silently_ignored(tmp_path):
         load_showcase_settings(tmp_path / 'missing.yaml')
 
 
-def test_default_config_does_not_depend_on_working_directory(tmp_path, monkeypatch):
-    from moments_inventory.showcase_web.config import DEFAULT_CONFIG_PATH, load_showcase_settings
+def test_implicit_local_config_does_not_depend_on_working_directory(tmp_path, monkeypatch):
+    from moments_inventory.showcase_web import config as showcase_config
+    from moments_inventory.showcase_web.config import load_showcase_settings
+
+    local_config = tmp_path / 'config' / 'showcase.local.yaml'
+    local_config.parent.mkdir()
+    local_config.write_text('database: ../local-data/showcase.db\n', encoding='utf-8')
+    monkeypatch.setattr(showcase_config, 'LOCAL_CONFIG_PATH', local_config)
     expected = load_showcase_settings()
     monkeypatch.chdir(tmp_path)
     actual = load_showcase_settings()
     assert actual == expected
-    assert actual.database == str((DEFAULT_CONFIG_PATH.parent / '../data/showcase.db').resolve())
+    assert actual.database == str((local_config.parent / '../local-data/showcase.db').resolve())
 
 
 def test_local_config_is_preferred_for_implicit_load(tmp_path, monkeypatch):
