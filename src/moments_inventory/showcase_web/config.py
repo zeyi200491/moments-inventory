@@ -7,6 +7,7 @@ import yaml
 
 
 DEFAULT_CONFIG_PATH = Path(__file__).resolve().parents[3] / 'config' / 'showcase.yaml'
+LOCAL_CONFIG_PATH = DEFAULT_CONFIG_PATH.with_name('showcase.local.yaml')
 
 
 @dataclass(frozen=True)
@@ -24,7 +25,9 @@ class ShowcaseSettings:
 
 def load_showcase_settings(config_path: str | Path | None = None, **overrides: object) -> ShowcaseSettings:
     """集中读取展示系统配置，显式参数优先，路径以配置所在目录为基准。"""
-    path = Path(config_path or DEFAULT_CONFIG_PATH).resolve()
+    if config_path is None:
+        config_path = LOCAL_CONFIG_PATH if LOCAL_CONFIG_PATH.is_file() else DEFAULT_CONFIG_PATH
+    path = Path(config_path).resolve()
     with path.open(encoding='utf-8-sig') as stream:
         data = yaml.safe_load(stream)
     if data is None:

@@ -1,4 +1,4 @@
-sample_images_dir: E:/Ai jjfajgsw/AIkefu/output/ccdcpt
+sample_images_dir: ../output/ccdcpt
 database: ../data/showcase.db
 storage_dir: ../storage/showcase_images
 manual_xlsx: ../manual/客户展示库存.xlsx

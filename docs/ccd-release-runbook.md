@@ -4,7 +4,7 @@
 
 正式系统只使用本工作树的 FastAPI、SQLite 与原生前端：
 
-- 配置：`config/showcase.yaml`
+- 本机配置：若存在则使用 `config/showcase.local.yaml`，否则使用仓库示例 `config/showcase.yaml`；首次配置见 `docs/ccd-local-configuration.md`。
 - 数据库：`data/showcase.db`
 - 客户页：`http://127.0.0.1:8899/`
 - 管理页：`http://127.0.0.1:8899/admin-xingxing`
@@ -45,7 +45,7 @@ python -m moments_inventory.cli showcase-server --showcase-config (Join-Path $ca
 
 候选命令不得使用正式 `config/showcase.yaml`，也不得监听 8899。
 
-迁移脚本幂等，应用启动只执行尚未记录的版本。不要把工作树中的空 `output/ccdcpt` 当成正式样片库；实际路径以配置为准。
+迁移脚本幂等，应用启动只执行尚未记录的版本。不要把工作树中的空 `output/ccdcpt` 当成正式样片库；实际路径以本机配置为准。
 
 备份命令因媒体引用不存在而停止时，必须先修复正式媒体路径，再重新生成带完整 `manifest.json` 的快照；不得跳过媒体校验或用占位文件作为正式备份。
 

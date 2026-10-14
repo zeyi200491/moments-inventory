@@ -7,7 +7,7 @@
 命令行方式：
 
 ```powershell
-python -m moments_inventory.cli showcase-admin-password-reset --showcase-config config/showcase.yaml
+python -m moments_inventory.cli showcase-admin-password-reset --showcase-config config/showcase.local.yaml
 ```
 
-重置命令和服务启动都使用 `config/showcase.yaml` 指定的数据库。不要把口令作为命令行参数传入。
+重置命令和服务启动都使用同一个本机配置。首次配置请按 `docs/ccd-local-configuration.md` 操作。不要把口令作为命令行参数传入。

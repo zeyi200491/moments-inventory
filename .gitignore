@@ -30,6 +30,7 @@ rtk.cmd
 third_party/rtk/
 config/config.yaml
 config/ai_kefu.yaml
+config/showcase.local.yaml
 config/models.txt
 config/data/
 config/output*/
