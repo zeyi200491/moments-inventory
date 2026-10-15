@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import inspect
 import pytest
 
 from moments_inventory.exporter import _write_workbook
@@ -54,7 +55,10 @@ def test_create_review_batch_stages_rows_without_changing_products_or_import_log
     assert batch['source_fingerprint']
     assert repo.list_product_ids() == before_products
     assert repo.list_import_logs() == before_logs
-    assert _row(repo, batch['batch_id'], 2)['decision'] is None
+    staged = _row(repo, batch['batch_id'], 2)
+    assert staged['decision'] is None
+    assert 'snapshot_json' not in staged
+    assert batch['idempotency_key'] == ''
 
 
 def test_exact_source_key_and_confirmed_alias_are_suggestions_only(tmp_path):
@@ -108,6 +112,27 @@ def test_same_model_is_only_a_candidate_and_missing_source_key_can_be_manually_l
     assert saved['decision'] == 'link'
     assert saved['product_id'] == 'old-1'
     assert saved['target_row_version'] == repo.get_product('old-1').row_version
+
+
+def test_model_candidates_are_limited_to_the_current_source_scope(tmp_path):
+    repo = SQLiteShowcaseRepository(tmp_path / 'showcase.db')
+    _seed_product(repo, 'same-scope', source_key='key-a', scope='source-a')
+    _seed_product(repo, 'other-scope', source_key='key-b', scope='source-b')
+    payload = _workbook_bytes(tmp_path, [{'商品ID': 'new-product', '型号': 'ixus80', '品牌': '佳能', '成本价': 10, '展示价': 20, '是否展示': '是'}])
+
+    batch = create_import_review_batch(repo, payload, source_scope='source-a')
+    staged = _row(repo, batch['batch_id'], 2)
+
+    assert [item['product_id'] for item in staged['candidates']] == ['same-scope']
+
+
+def test_upload_batches_do_not_accept_commit_idempotency_key(tmp_path):
+    repo = SQLiteShowcaseRepository(tmp_path / 'showcase.db')
+    payload = _workbook_bytes(tmp_path, [{'商品ID': 'new-product', '型号': 'ixus80', '品牌': '佳能', '成本价': 10, '展示价': 20, '是否展示': '是'}])
+
+    assert 'idempotency_key' not in inspect.signature(create_import_review_batch).parameters
+    with pytest.raises(TypeError):
+        create_import_review_batch(repo, payload, source_scope='source-a', idempotency_key='client-key')
 
 
 def test_duplicate_source_keys_keep_both_rows_and_mark_conflict(tmp_path):
@@ -199,6 +224,35 @@ def test_full_batch_persists_missing_product_details(tmp_path):
         'source_product_key': 'old-key',
         'row_version': 0,
     }]
+
+
+def test_full_source_presence_includes_same_scope_product_id_without_auto_link(tmp_path):
+    repo = SQLiteShowcaseRepository(tmp_path / 'showcase.db')
+    _seed_product(repo, 'present-by-id', source_key='old-key')
+    payload = _workbook_bytes(tmp_path, [{'商品ID': 'present-by-id', '型号': 'ixus80', '品牌': '佳能', '成本价': 10, '展示价': 20, '是否展示': '是'}])
+
+    batch = create_import_review_batch(repo, payload, source_scope='source-a', mode='full', complete=True)
+    staged = _row(repo, batch['batch_id'], 2)
+
+    assert batch['missing_count'] == 0
+    assert batch['result']['missing_items'] == []
+    assert staged['recommendation'] is None
+    assert staged['decision'] is None
+
+
+def test_full_product_id_from_other_scope_is_error_and_does_not_count_present(tmp_path):
+    repo = SQLiteShowcaseRepository(tmp_path / 'showcase.db')
+    _seed_product(repo, 'current-product', source_key='current-key', scope='source-a')
+    _seed_product(repo, 'foreign-product', source_key='foreign-key', scope='source-b')
+    payload = _workbook_bytes(tmp_path, [{'商品ID': 'foreign-product', '型号': 'ixus80', '品牌': '佳能', '成本价': 10, '展示价': 20, '是否展示': '是'}])
+
+    batch = create_import_review_batch(repo, payload, source_scope='source-a', mode='full', complete=True)
+    staged = _row(repo, batch['batch_id'], 2)
+
+    assert batch['missing_count'] == 1
+    assert batch['result']['missing_items'][0]['product_id'] == 'current-product'
+    assert any('其他来源范围' in error for error in staged['errors'])
+    assert staged['recommendation'] is None
 
 
 def test_missing_threshold_must_be_between_zero_and_one(tmp_path):

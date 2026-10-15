@@ -2093,7 +2093,7 @@ class SQLiteShowcaseRepository:
             )
             rows = [dict(zip((item[0] for item in cursor.description), row)) for row in cursor.fetchall()]
         for row in rows:
-            snapshot = json.loads(str(row["snapshot_json"]))
+            snapshot = json.loads(str(row.pop("snapshot_json")))
             row["snapshot"] = snapshot.get("record", snapshot.get("raw", {}))
             row["errors"] = snapshot.get("errors", [])
             row["recommendation"] = snapshot.get("recommendation")

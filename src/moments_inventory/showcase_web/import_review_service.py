@@ -19,7 +19,6 @@ def create_import_review_batch(
     source_path: str = "",
     source_label: str = "",
     max_missing_fraction: float = 0.3,
-    idempotency_key: str = "",
 ) -> dict[str, object]:
     """解析并持久化人工复核批次；不更改商品库存和正式导入日志。"""
     if mode not in ("incremental", "full") or not source_scope.strip():
@@ -62,6 +61,23 @@ def create_import_review_batch(
         (str(product["source_scope"]), str(product["source_product_key"])): product
         for product in products if str(product["source_product_key"] or "")
     }
+    source_key_owners: dict[str, set[str]] = {}
+    for product in products:
+        source_key = str(product["source_product_key"] or "")
+        if source_key:
+            source_key_owners.setdefault(source_key, set()).add(str(product["source_scope"]))
+    for source_key, owners in aliases.items():
+        source_key_owners.setdefault(source_key, set()).update(scope for scope, _ in owners)
+    candidates_by_identity: dict[tuple[str, str, str], list[dict[str, object]]] = {}
+    for product in products:
+        identity = (
+            str(product["source_scope"]),
+            str(product["brand"]),
+            normalize_showcase_model_key(str(product["model"])),
+        )
+        candidates_by_identity.setdefault(identity, []).append(product)
+    for candidates in candidates_by_identity.values():
+        candidates.sort(key=lambda product: str(product["product_id"]))
 
     key_rows: dict[str, list[dict]] = {}
     for item in parsed:
@@ -74,7 +90,7 @@ def create_import_review_batch(
 
     selected_targets: dict[str, list[dict]] = {}
     staged_rows = []
-    resolved_targets: set[str] = set()
+    source_present_ids: set[str] = set()
     for item in parsed:
         record = item["snapshot"] if "product_id" in item["snapshot"] else None
         errors = item["errors"]
@@ -83,11 +99,8 @@ def create_import_review_batch(
         if record:
             source_key = item["source_key"]
             if source_key:
-                other_scope = next((product for (scope, key), product in by_source_key.items()
-                                    if key == source_key and scope != source_scope), None)
-                other_alias = next((product_id for scope, product_id in aliases.get(source_key, ())
-                                    if scope != source_scope), None)
-                if other_scope is not None or other_alias is not None:
+                other_scope = any(scope != source_scope for scope in source_key_owners.get(source_key, ()))
+                if other_scope:
                     errors.append("来源商品键已属于其他来源范围")
                 else:
                     exact = by_source_key.get((source_scope, source_key))
@@ -100,18 +113,21 @@ def create_import_review_batch(
                         else:
                             recommendation = _product_summary(target, "source_key" if exact else "alias")
                             selected_targets.setdefault(str(target["product_id"]), []).append(item)
-                            resolved_targets.add(str(target["product_id"]))
+                            source_present_ids.add(str(target["product_id"]))
             source_product_id = str(record.get("product_id", ""))
             existing_id = products_by_id.get(source_product_id)
             if existing_id and existing_id["source_scope"] != source_scope:
                 errors.append("商品ID已属于其他来源范围")
+            elif existing_id:
+                # 稳定键缺失时，工作簿商品 ID 仍能证明商品在 full 来源快照中。
+                # 这只影响缺失摘要，不形成身份建议或人工决定。
+                source_present_ids.add(source_product_id)
             model_key = normalize_showcase_model_key(str(record.get("model", "")))
             brand = str(record.get("brand", ""))
-            for product in products:
-                if product["brand"] == brand and normalize_showcase_model_key(str(product["model"])) == model_key:
-                    candidates.append(_product_summary(product, "model"))
-                    if len(candidates) == 5:
-                        break
+            candidates = [
+                _product_summary(product, "model")
+                for product in candidates_by_identity.get((source_scope, brand, model_key), ())[:5]
+            ]
         staged_rows.append({
             "review_row_id": uuid4().hex,
             "batch_id": batch_id,
@@ -159,7 +175,7 @@ def create_import_review_batch(
 
     missing_items = []
     if mode == "full":
-        missing_ids = scoped_product_ids - resolved_targets
+        missing_ids = scoped_product_ids - source_present_ids
         missing_by_id = {str(product["product_id"]): product for product in products}
         missing_items = [
             {
@@ -185,7 +201,8 @@ def create_import_review_batch(
         "source_fingerprint": fingerprint,
         "parsed_row_count": len(staged_rows),
         "missing_count": missing_count,
-        "idempotency_key": idempotency_key,
+        # 幂等键属于最终提交请求；上传暂存批次固定留空。
+        "idempotency_key": "",
         "result_json": json.dumps({"warnings": warnings, "missing_items": missing_items}, ensure_ascii=False),
         "status": "pending",
         "created_at": now,
