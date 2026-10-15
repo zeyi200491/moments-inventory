@@ -171,6 +171,7 @@ def test_import_review_migration_adds_constrained_tables_and_is_repeatable(tmp_p
         row[1] for row in conn.execute("pragma table_info(showcase_import_review_rows)")
     }
     assert "row_number" in row_columns
+    assert "target_row_version" in row_columns
 
     conn.execute(
         """insert into showcase_import_review_batches
@@ -181,9 +182,13 @@ def test_import_review_migration_adds_constrained_tables_and_is_repeatable(tmp_p
     repo.upsert_product(product("p1"))
     conn.execute(
         """insert into showcase_import_review_rows
-        (review_row_id, batch_id, row_number, source_key, status, decision, product_id, snapshot_json, created_at)
-        values ('row-1','batch-1',1,'item-1','pending','link','p1','{}','now')"""
+        (review_row_id, batch_id, row_number, source_key, status, decision,
+         product_id, target_row_version, snapshot_json, created_at)
+        values ('row-1','batch-1',1,'item-1','pending','link','p1',7,'{}','now')"""
     )
+    assert conn.execute(
+        "select target_row_version from showcase_import_review_rows where review_row_id='row-1'"
+    ).fetchone()[0] == 7
     with pytest.raises(sqlite3.IntegrityError):
         conn.execute(
             """insert into showcase_import_review_rows
@@ -217,6 +222,13 @@ def test_import_review_migration_adds_constrained_tables_and_is_repeatable(tmp_p
             """insert into showcase_import_review_rows
             (review_row_id, batch_id, row_number, source_key, status, decision, snapshot_json, created_at)
             values ('row-3','batch-1',3,'item-3','pending','merge','{}','now')"""
+        )
+    with pytest.raises(sqlite3.IntegrityError):
+        conn.execute(
+            """insert into showcase_import_review_rows
+            (review_row_id, batch_id, row_number, source_key, status, decision,
+             product_id, snapshot_json, created_at)
+            values ('row-4','batch-1',4,'item-4','pending','link','p1','{}','now')"""
         )
 
     before = {

@@ -49,6 +49,7 @@ class ShowcaseImportReviewRow:
     created_at: str
     decision: ShowcaseImportReviewDecision | None = None
     product_id: str | None = None
+    target_row_version: int | None = None
     updated_at: str = ""
 
 

@@ -447,10 +447,13 @@ def migrate(conn: sqlite3.Connection) -> bool:
               decision text
                 check(decision is null or decision in ('link','create','skip')),
               product_id text,
+              target_row_version integer
+                check(target_row_version is null or target_row_version >= 0),
               snapshot_json text not null,
               created_at text not null,
               updated_at text not null default '',
               check(decision is null or decision <> 'link' or product_id is not null),
+              check(decision is null or decision <> 'link' or target_row_version is not null),
               unique(batch_id,row_number),
               foreign key(batch_id) references showcase_import_review_batches(batch_id)
                 on delete cascade,
