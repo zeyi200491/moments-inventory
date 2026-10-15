@@ -10,10 +10,12 @@ from xml.etree.ElementTree import ParseError
 import pytest
 from fastapi.testclient import TestClient
 
+from moments_inventory.showcase_web import api as showcase_api
 from moments_inventory.showcase_web.app import create_showcase_app
 from moments_inventory.showcase_web.auth import hash_password
 from moments_inventory.showcase_web.models import ShowcaseProduct, ShowcaseSection
 from moments_inventory.showcase_web.repository import SQLiteShowcaseRepository
+from moments_inventory.showcase_web.sample_images import SampleImageAsset, SampleMatchingGroup, SampleMatchingProduct
 from PIL import Image
 
 
@@ -1670,6 +1672,53 @@ def test_admin_sample_matching_lists_support_offsets_and_report_remaining_pages(
     assert asset_second["total"] == 2
     assert asset_second["hasMore"] is False
     assert client.get("/api/admin/sample-matching/products", params={"offset": -1}).status_code == 400
+
+
+def test_admin_sample_matching_pages_cover_more_than_the_old_fixed_caps(
+    repo: SQLiteShowcaseRepository,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    products = [
+        SampleMatchingProduct(f"product-{index}", f"型号{index}", "佳能", "missing", 0, "无候选", "", 0)
+        for index in range(101)
+    ]
+    groups = [
+        SampleMatchingGroup("佳能", f"型号{index}", "auto_matched", 100, "精确匹配", f"佳能/型号{index}", 1, [f"product-{index}"])
+        for index in range(101)
+    ]
+    assets = [
+        SampleImageAsset("佳能", f"型号{index}", f"佳能/型号{index}", f"canon_model_{index}", [f"佳能/型号{index}/01.jpg"])
+        for index in range(41)
+    ]
+    monkeypatch.setattr(showcase_api, "list_sample_matching_products", lambda _root, _repo, *, status, limit: products[:limit])
+    monkeypatch.setattr(showcase_api, "list_sample_matching_groups", lambda _root, _repo, *, limit: groups[:limit])
+    monkeypatch.setattr(showcase_api, "list_sample_image_assets", lambda _root: assets)
+    client = TestClient(create_showcase_app(repository=repo))
+    assert client.post("/api/admin/login", json={"password": "admin-pass"}).status_code == 200
+
+    product_first = client.get("/api/admin/sample-matching/products", params={"status": "all", "limit": 100, "offset": 0}).json()
+    product_last = client.get("/api/admin/sample-matching/products", params={"status": "all", "limit": 100, "offset": 100}).json()
+    group_first = client.get("/api/admin/sample-matching/groups", params={"limit": 100, "offset": 0}).json()
+    group_last = client.get("/api/admin/sample-matching/groups", params={"limit": 100, "offset": 100}).json()
+    asset_first = client.get("/api/admin/sample-matching/assets", params={"limit": 40, "offset": 0}).json()
+    asset_last = client.get("/api/admin/sample-matching/assets", params={"limit": 40, "offset": 40}).json()
+
+    assert len(product_first["products"]) == 100
+    assert product_first["hasMore"] is True
+    assert product_first["total"] is None
+    assert [item["productId"] for item in product_last["products"]] == ["product-100"]
+    assert product_last["hasMore"] is False
+    assert product_last["total"] == 101
+    assert len(group_first["groups"]) == 100
+    assert group_first["hasMore"] is True
+    assert [item["model"] for item in group_last["groups"]] == ["型号100"]
+    assert group_last["hasMore"] is False
+    assert group_last["total"] == 101
+    assert len(asset_first["assets"]) == 40
+    assert asset_first["hasMore"] is True
+    assert [item["modelFolder"] for item in asset_last["assets"]] == ["型号40"]
+    assert asset_last["hasMore"] is False
+    assert asset_last["total"] == 41
 
 
 def test_admin_sample_matching_bind_refreshes_product_sample_images(
