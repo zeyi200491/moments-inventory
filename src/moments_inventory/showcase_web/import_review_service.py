@@ -467,6 +467,7 @@ def commit_import_review_batch(repository, batch_id: str, idempotency_key: str) 
                         where showcase_product_images.product_id=excluded.product_id
                         and showcase_product_images.source in ('inventory_import','legacy_unknown')""",
                         [(f"{product_id}|body|{i}", product_id, path, i, int(i == 0)) for i, path in enumerate(paths)])
+                    repository._repair_cover(conn, product_id)
                 if previous and source_key and aliases.get((scope, source_key)) == product_id:
                     # 当前键已保存在 showcase_products.source_product_key 中，无需重复留作 alias。
                     conn.execute("delete from showcase_source_identity_aliases where source_scope=? and source_key=? and product_id=?",

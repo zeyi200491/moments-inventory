@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from contextlib import contextmanager
 import inspect
+import json
 import pytest
 
 from moments_inventory.exporter import _write_workbook
@@ -364,8 +365,8 @@ def test_link_commit_preserves_identity_overrides_and_relationships_then_adds_al
     repo = SQLiteShowcaseRepository(tmp_path / 'showcase.db')
     _seed_product(repo)
     with repo._get_connection() as conn:
-        conn.execute("update showcase_products set price_override=333,copy_override='manual',visibility_override=1,sold=1 where product_id='old-1'")
-        conn.execute("insert into showcase_product_images values ('gallery-body','old-1','gallery.jpg','body',8,0,'gallery')")
+        conn.execute("update showcase_products set price_override=333,copy_override='manual',visibility_override=1,sold=1,cover_image_path='gallery.jpg' where product_id='old-1'")
+        conn.execute("insert into showcase_product_images values ('gallery-body','old-1','gallery.jpg','body',8,1,'manual')")
         conn.execute("insert into showcase_sections values ('section-1','title','subtitle',1,0,'now','now')")
         conn.execute("insert into showcase_section_items values ('section-item','section-1','old-1',0,'note','now','now')")
     payload = _workbook_bytes(tmp_path, [
@@ -382,6 +383,8 @@ def test_link_commit_preserves_identity_overrides_and_relationships_then_adds_al
         alias = conn.execute("select product_id from showcase_source_identity_aliases where source_scope='source-a' and source_key='key-1'").fetchone()
         current_key = conn.execute("select source_product_key from showcase_products where product_id='old-1'").fetchone()[0]
         images = conn.execute("select image_id,image_path,source from showcase_product_images where product_id='old-1' order by image_id").fetchall()
+        covers = conn.execute("select image_id,image_path from showcase_product_images where product_id='old-1' and is_cover=1").fetchall()
+        cover_path = conn.execute("select cover_image_path from showcase_products where product_id='old-1'").fetchone()[0]
         section_link = conn.execute("select product_id from showcase_section_items where item_id='section-item'").fetchone()
 
     assert result['updated_count'] == 1 and result['inserted_count'] == 0
@@ -390,13 +393,46 @@ def test_link_commit_preserves_identity_overrides_and_relationships_then_adds_al
     assert product.sold is True and product.display_price == 333 and product.display_copy == 'manual'
     assert current_key == 'new-alias'
     assert alias == ('old-1',)
-    assert ('gallery-body', 'gallery.jpg', 'gallery') in images
+    assert ('gallery-body', 'gallery.jpg', 'manual') in images
     assert ('old-1|body|0', 'new-body.jpg', 'inventory_import') in images
+    assert covers == [('old-1|body|0', 'new-body.jpg')]
+    assert cover_path == covers[0][1]
     assert section_link == ('old-1',)
 
     next_batch = create_import_review_batch(repo, payload, source_scope='source-a')
     assert _row(repo, next_batch['batch_id'], 2)['recommendation']['product_id'] == 'old-1'
     assert _row(repo, next_batch['batch_id'], 2)['recommendation']['reason'] == 'source_key'
+
+
+def test_imported_body_images_keep_existing_cover_when_source_cover_is_empty(tmp_path):
+    repo = SQLiteShowcaseRepository(tmp_path / 'showcase.db')
+    _seed_product(repo)
+    with repo._get_connection() as conn:
+        conn.execute("update showcase_products set cover_image_path='manual-cover.jpg' where product_id='old-1'")
+        conn.execute("insert into showcase_product_images values ('manual-cover','old-1','manual-cover.jpg','body',0,1,'manual')")
+    payload = _workbook_bytes(tmp_path, [
+        {'商品ID': 'workbook-id', '型号': 'ixus80', '品牌': '佳能', '成本价': 12, '展示价': 88,
+         '是否展示': '是', '来源商品键': 'new-alias', '机身图路径': 'new-body.jpg'},
+    ])
+    batch = create_import_review_batch(repo, payload, source_scope='source-a')
+    staged = _row(repo, batch['batch_id'], 2)
+    with repo._get_connection() as conn:
+        raw_snapshot = conn.execute("select snapshot_json from showcase_import_review_rows where review_row_id=?", (staged['review_row_id'],)).fetchone()[0]
+        snapshot = json.loads(raw_snapshot)
+        snapshot['record']['cover_image_path'] = ''
+        conn.execute("update showcase_import_review_rows set snapshot_json=? where review_row_id=?",
+                     (json.dumps(snapshot, ensure_ascii=False), staged['review_row_id']))
+    save_import_review_decision(repo, batch['batch_id'], staged['review_row_id'], decision='link', product_id='old-1')
+
+    commit_import_review_batch(repo, batch['batch_id'], 'keep-manual-cover')
+
+    with repo._get_connection() as conn:
+        covers = conn.execute("select image_id,image_path from showcase_product_images where product_id='old-1' and is_cover=1").fetchall()
+        cover_path = conn.execute("select cover_image_path from showcase_products where product_id='old-1'").fetchone()[0]
+        imported = conn.execute("select image_id from showcase_product_images where product_id='old-1' and image_path='new-body.jpg'").fetchone()
+    assert covers == [('manual-cover', 'manual-cover.jpg')]
+    assert cover_path == covers[0][1]
+    assert imported == ('old-1|body|0',)
 
 
 def test_duplicate_source_key_requires_skipping_conflicting_row(tmp_path):
