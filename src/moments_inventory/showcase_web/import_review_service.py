@@ -384,8 +384,26 @@ def commit_import_review_batch(repository, batch_id: str, idempotency_key: str) 
 
             missing_ids = []
             if batch["mode"] == "full":
-                represented = {str(row["product_id"] if row["decision"] == "link" else record.get("product_id", ""))
-                               for row, record in decoded if row["decision"] != "skip"}
+                represented: set[str] = set()
+                exact_by_key = {
+                    str(product.get("source_product_key") or ""): product_id
+                    for product_id, product in current_scope.items()
+                    if product.get("source_product_key")
+                }
+                for row, record in decoded:
+                    source_key = str(row["source_key"] or record.get("source_product_key") or "")
+                    if source_key:
+                        exact_id = exact_by_key.get(source_key)
+                        alias_id = aliases.get((scope, source_key))
+                        if exact_id:
+                            represented.add(exact_id)
+                        if alias_id in current_scope:
+                            represented.add(alias_id)
+                    record_id = str(record.get("product_id") or "")
+                    if record_id in current_scope:
+                        represented.add(record_id)
+                    if row["decision"] == "link" and row["product_id"] in current_scope:
+                        represented.add(str(row["product_id"]))
                 missing_ids = sorted(set(current_scope) - represented)
                 for product_id in missing_ids:
                     if int(current_scope[product_id]["row_version"]) != scope_snapshot[product_id]:
@@ -418,6 +436,17 @@ def commit_import_review_batch(repository, batch_id: str, idempotency_key: str) 
                 values["visible"] = bool(values["visibility_override"] if values["visibility_override"] is not None else values["source_visible"]) and not values["sold"]
                 columns = tuple(values)
                 if previous:
+                    old_source_key = str(previous.get("source_product_key") or "")
+                    if old_source_key and source_key and old_source_key != source_key:
+                        old_alias_owner = aliases.get((scope, old_source_key))
+                        if any(owner != scope for owner in key_owners.get(old_source_key, set())):
+                            raise ImportReviewConflictError(f"旧来源商品键已属于其他来源范围：{old_source_key}")
+                        if old_alias_owner and old_alias_owner != product_id:
+                            raise ImportReviewConflictError(f"旧来源商品键已别名到其他商品：{old_source_key}")
+                        if not old_alias_owner:
+                            conn.execute("insert into showcase_source_identity_aliases values (?,?,?,?,?)",
+                                         (uuid4().hex, scope, old_source_key, product_id, now))
+                            aliases[(scope, old_source_key)] = product_id
                     updates = [name for name in columns if name not in ("product_id", "row_version")]
                     conn.execute("UPDATE showcase_products SET " + ",".join(f"{name}=?" for name in updates) + ",row_version=row_version+1 WHERE product_id=? AND row_version=?",
                                  [values[name] for name in updates] + [product_id, int(row["target_row_version"])])
@@ -438,14 +467,11 @@ def commit_import_review_batch(repository, batch_id: str, idempotency_key: str) 
                         where showcase_product_images.product_id=excluded.product_id
                         and showcase_product_images.source in ('inventory_import','legacy_unknown')""",
                         [(f"{product_id}|body|{i}", product_id, path, i, int(i == 0)) for i, path in enumerate(paths)])
-                if previous and source_key and source_key != str(previous.get("source_product_key") or ""):
-                    owner = aliases.get((scope, source_key))
-                    if owner and owner != product_id:
-                        raise ImportReviewConflictError(f"来源别名已属于其他商品：{source_key}")
-                    if not owner:
-                        conn.execute("insert into showcase_source_identity_aliases values (?,?,?,?,?)",
-                                     (uuid4().hex, scope, source_key, product_id, now))
-                        aliases[(scope, source_key)] = product_id
+                if previous and source_key and aliases.get((scope, source_key)) == product_id:
+                    # 当前键已保存在 showcase_products.source_product_key 中，无需重复留作 alias。
+                    conn.execute("delete from showcase_source_identity_aliases where source_scope=? and source_key=? and product_id=?",
+                                 (scope, source_key, product_id))
+                    aliases.pop((scope, source_key), None)
 
             for product_id in missing_ids:
                 conn.execute("update showcase_products set source_available=0,review_state='missing',updated_at=?,row_version=row_version+1 where product_id=? and row_version=?",

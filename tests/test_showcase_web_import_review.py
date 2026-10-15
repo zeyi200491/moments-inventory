@@ -379,7 +379,8 @@ def test_link_commit_preserves_identity_overrides_and_relationships_then_adds_al
     result = commit_import_review_batch(repo, batch['batch_id'], 'link-key')
     product = repo.get_product('old-1')
     with repo._get_connection() as conn:
-        alias = conn.execute("select product_id from showcase_source_identity_aliases where source_scope='source-a' and source_key='new-alias'").fetchone()
+        alias = conn.execute("select product_id from showcase_source_identity_aliases where source_scope='source-a' and source_key='key-1'").fetchone()
+        current_key = conn.execute("select source_product_key from showcase_products where product_id='old-1'").fetchone()[0]
         images = conn.execute("select image_id,image_path,source from showcase_product_images where product_id='old-1' order by image_id").fetchall()
         section_link = conn.execute("select product_id from showcase_section_items where item_id='section-item'").fetchone()
 
@@ -387,6 +388,7 @@ def test_link_commit_preserves_identity_overrides_and_relationships_then_adds_al
     assert product.product_id == 'old-1' and product.public_id == 'old-1'
     assert product.price_override == 333 and product.copy_override == 'manual'
     assert product.sold is True and product.display_price == 333 and product.display_copy == 'manual'
+    assert current_key == 'new-alias'
     assert alias == ('old-1',)
     assert ('gallery-body', 'gallery.jpg', 'gallery') in images
     assert ('old-1|body|0', 'new-body.jpg', 'inventory_import') in images
@@ -394,6 +396,7 @@ def test_link_commit_preserves_identity_overrides_and_relationships_then_adds_al
 
     next_batch = create_import_review_batch(repo, payload, source_scope='source-a')
     assert _row(repo, next_batch['batch_id'], 2)['recommendation']['product_id'] == 'old-1'
+    assert _row(repo, next_batch['batch_id'], 2)['recommendation']['reason'] == 'source_key'
 
 
 def test_duplicate_source_key_requires_skipping_conflicting_row(tmp_path):
@@ -532,7 +535,7 @@ def test_commit_rechecks_duplicate_target_claims_inside_transaction(tmp_path):
     assert repo.list_import_logs() == []
 
 
-def test_full_commit_skip_keeps_skipped_product_visible_and_counts_it_missing(tmp_path):
+def test_full_commit_skip_keeps_same_scope_product_id_present_without_writing_it(tmp_path):
     repo = SQLiteShowcaseRepository(tmp_path / 'showcase.db')
     _seed_product(repo, 'skipped-item', source_key='old-key')
     payload = _workbook_bytes(tmp_path, [
@@ -547,10 +550,127 @@ def test_full_commit_skip_keeps_skipped_product_visible_and_counts_it_missing(tm
     result = commit_import_review_batch(repo, batch['batch_id'], 'full-skip')
     skipped = repo.get_product('skipped-item')
 
-    assert result['missing_count'] == 1
-    assert skipped.source_available is False
-    assert skipped.review_state == 'missing'
+    assert result['missing_count'] == 0
+    assert skipped.source_available is True
+    assert skipped.review_state == ''
     assert skipped.visible is True
+
+
+def test_full_commit_skip_of_exact_recommendation_does_not_mark_product_missing(tmp_path):
+    repo = SQLiteShowcaseRepository(tmp_path / 'showcase.db')
+    _seed_product(repo, 'identified-item', source_key='stable-a')
+    payload = _workbook_bytes(tmp_path, [
+        {'商品ID': 'different-workbook-id', '型号': 'ixus80', '品牌': '佳能', '成本价': 10,
+         '展示价': 20, '是否展示': '是', '来源商品键': 'stable-a'},
+        {'商品ID': 'new-item', '型号': 'powershot', '品牌': '佳能', '成本价': 11,
+         '展示价': 21, '是否展示': '是', '来源商品键': 'new-key'},
+    ])
+    batch = create_import_review_batch(repo, payload, source_scope='source-a', mode='full', complete=True)
+    rows = list_import_review_rows(repo, batch['batch_id'])
+    assert rows[0]['recommendation']['product_id'] == 'identified-item'
+    before = repo.get_product('identified-item')
+    save_import_review_decision(repo, batch['batch_id'], rows[0]['review_row_id'], decision='skip')
+    save_import_review_decision(repo, batch['batch_id'], rows[1]['review_row_id'], decision='create')
+
+    result = commit_import_review_batch(repo, batch['batch_id'], 'skip-exact')
+
+    assert result['missing_count'] == 0
+    assert repo.get_product('identified-item') == before
+    assert repo.list_product_ids() == {'identified-item', 'new-item'}
+
+
+def test_review_batches_preserve_identity_alias_across_a_to_b_to_a(tmp_path):
+    repo = SQLiteShowcaseRepository(tmp_path / 'showcase.db')
+
+    first = create_import_review_batch(repo, _workbook_bytes(tmp_path, [
+        {'商品ID': 'product-p', '型号': 'ixus80', '品牌': '佳能', '成本价': 10,
+         '展示价': 20, '是否展示': '是', '来源商品键': 'identity-a'},
+    ]), source_scope='source-a')
+    first_row = _row(repo, first['batch_id'], 2)
+    save_import_review_decision(repo, first['batch_id'], first_row['review_row_id'], decision='create')
+    commit_import_review_batch(repo, first['batch_id'], 'a-first')
+
+    second = create_import_review_batch(repo, _workbook_bytes(tmp_path, [
+        {'商品ID': 'workbook-b', '型号': 'ixus80-new', '品牌': '佳能', '成本价': 11,
+         '展示价': 21, '是否展示': '是', '来源商品键': 'identity-b'},
+    ]), source_scope='source-a')
+    second_row = _row(repo, second['batch_id'], 2)
+    save_import_review_decision(repo, second['batch_id'], second_row['review_row_id'], decision='link', product_id='product-p')
+    commit_import_review_batch(repo, second['batch_id'], 'b-link')
+
+    third = create_import_review_batch(repo, _workbook_bytes(tmp_path, [
+        {'商品ID': 'workbook-a-again', '型号': 'ixus80', '品牌': '佳能', '成本价': 12,
+         '展示价': 22, '是否展示': '是', '来源商品键': 'identity-a'},
+    ]), source_scope='source-a')
+    third_row = _row(repo, third['batch_id'], 2)
+
+    assert third_row['recommendation']['product_id'] == 'product-p'
+    assert third_row['recommendation']['reason'] == 'alias'
+    save_import_review_decision(repo, third['batch_id'], third_row['review_row_id'], decision='link', product_id='product-p')
+    assert commit_import_review_batch(repo, third['batch_id'], 'a-again')['updated_count'] == 1
+
+
+def test_full_commit_link_target_counts_as_present_even_when_workbook_id_differs(tmp_path):
+    repo = SQLiteShowcaseRepository(tmp_path / 'showcase.db')
+    _seed_product(repo, 'linked-item', source_key='old-key')
+    payload = _workbook_bytes(tmp_path, [
+        {'商品ID': 'workbook-id', '型号': 'ixus80', '品牌': '佳能', '成本价': 10, '展示价': 20, '是否展示': '是'},
+        {'商品ID': 'new-item', '型号': 'powershot', '品牌': '佳能', '成本价': 11, '展示价': 21, '是否展示': '是'},
+    ])
+    batch = create_import_review_batch(repo, payload, source_scope='source-a', mode='full', complete=True)
+    rows = list_import_review_rows(repo, batch['batch_id'])
+    save_import_review_decision(repo, batch['batch_id'], rows[0]['review_row_id'], decision='link', product_id='linked-item')
+    save_import_review_decision(repo, batch['batch_id'], rows[1]['review_row_id'], decision='create')
+
+    result = commit_import_review_batch(repo, batch['batch_id'], 'full-link-target')
+
+    assert result['missing_count'] == 0
+    assert repo.get_product('linked-item').source_available is True
+
+
+def test_full_commit_unknown_skip_does_not_auto_bind_model_candidate(tmp_path):
+    repo = SQLiteShowcaseRepository(tmp_path / 'showcase.db')
+    _seed_product(repo, 'unidentified-item', source_key='old-key')
+    payload = _workbook_bytes(tmp_path, [
+        {'商品ID': 'unknown-id', '型号': 'ixus80', '品牌': '佳能', '成本价': 10, '展示价': 20, '是否展示': '是'},
+        {'商品ID': 'new-item', '型号': 'powershot', '品牌': '佳能', '成本价': 11, '展示价': 21, '是否展示': '是'},
+    ])
+    batch = create_import_review_batch(repo, payload, source_scope='source-a', mode='full', complete=True)
+    rows = list_import_review_rows(repo, batch['batch_id'])
+    assert rows[0]['recommendation'] is None
+    assert rows[0]['candidates'][0]['product_id'] == 'unidentified-item'
+    save_import_review_decision(repo, batch['batch_id'], rows[0]['review_row_id'], decision='skip')
+    save_import_review_decision(repo, batch['batch_id'], rows[1]['review_row_id'], decision='create')
+
+    result = commit_import_review_batch(repo, batch['batch_id'], 'full-unknown-skip')
+
+    assert result['missing_count'] == 1
+    assert repo.get_product('unidentified-item').review_state == 'missing'
+
+
+def test_changed_identity_key_conflicting_with_old_alias_rolls_back_link(tmp_path):
+    repo = SQLiteShowcaseRepository(tmp_path / 'showcase.db')
+    _seed_product(repo, 'product-p', source_key='identity-a')
+    _seed_product(repo, 'other-product', source_key='other-key', model='powershot')
+    with repo._get_connection() as conn:
+        conn.execute("insert into showcase_source_identity_aliases values ('conflict-alias','source-a','identity-a','other-product','now')")
+    payload = _workbook_bytes(tmp_path, [
+        {'商品ID': 'workbook-b', '型号': 'ixus80-new', '品牌': '佳能', '成本价': 11,
+         '展示价': 21, '是否展示': '是', '来源商品键': 'identity-b'},
+    ])
+    batch = create_import_review_batch(repo, payload, source_scope='source-a')
+    row = _row(repo, batch['batch_id'], 2)
+    save_import_review_decision(repo, batch['batch_id'], row['review_row_id'], decision='link', product_id='product-p')
+    before = repo.get_product('product-p')
+    before_revision = repo.get_setting('catalog_revision')
+
+    with pytest.raises(ValueError, match='别名到其他商品'):
+        commit_import_review_batch(repo, batch['batch_id'], 'old-alias-conflict')
+
+    assert repo.get_product('product-p') == before
+    assert repo.get_setting('catalog_revision') == before_revision
+    assert repo.list_import_logs() == []
+    assert get_import_review_batch(repo, batch['batch_id'])['status'] == 'pending'
 
 
 def test_same_idempotency_key_is_allowed_for_different_batches(tmp_path):
