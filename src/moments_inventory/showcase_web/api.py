@@ -9,6 +9,7 @@ import os
 import secrets
 import uuid
 from zipfile import BadZipFile
+from xml.etree.ElementTree import ParseError
 
 from fastapi import APIRouter, Cookie, Depends, File, Form, HTTPException, Request, UploadFile
 from fastapi import Response
@@ -1425,12 +1426,20 @@ def create_admin_router(
         repo: SQLiteShowcaseRepository = Depends(get_repository),
     ) -> AdminImportReviewBatchDetailResponse:
         try:
-            content = await file.read()
+            content = bytearray()
+            while True:
+                chunk_size = min(1024 * 1024, _MAX_UPLOAD_BYTES + 1 - len(content))
+                chunk = await file.read(chunk_size)
+                if not chunk:
+                    break
+                content.extend(chunk)
+                if len(content) > _MAX_UPLOAD_BYTES:
+                    raise HTTPException(status_code=413, detail="复核工作簿不能超过10MB")
             filename = Path(file.filename or "").name or "upload.xlsx"
             try:
                 batch = import_review_service.create_import_review_batch(
                     repo,
-                    content,
+                    bytes(content),
                     source_scope=sourceScope,
                     mode=mode,
                     complete=complete,
@@ -1438,7 +1447,7 @@ def create_admin_router(
                     source_label=filename,
                     max_missing_fraction=maxMissingFraction,
                 )
-            except (ValueError, BadZipFile) as error:
+            except (ValueError, BadZipFile, KeyError, ParseError) as error:
                 raise HTTPException(status_code=400, detail=str(error)) from None
             rows = import_review_service.list_import_review_rows(repo, str(batch["batch_id"]))
             return AdminImportReviewBatchDetailResponse(**batch, rows=rows)

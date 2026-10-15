@@ -4,6 +4,7 @@ import csv
 from dataclasses import replace
 from pathlib import Path
 from io import BytesIO, StringIO
+from zipfile import ZipFile
 
 import pytest
 from fastapi.testclient import TestClient
@@ -1751,6 +1752,43 @@ def test_invalid_import_review_upload_returns_400_without_creating_batch(
         "/api/admin/import-review/batches",
         data={"sourceScope": "source-a", "mode": "incremental", "complete": "false"},
         files={"file": ("invalid.xlsx", b"not an xlsx", "application/octet-stream")},
+    )
+
+    after = repo._get_connection().execute("select count(*) from showcase_import_review_batches").fetchone()[0]
+    assert response.status_code == 400
+    assert after == before
+
+
+def test_import_review_upload_rejects_workbook_over_10_mib(
+    authenticated_client: TestClient,
+    repo: SQLiteShowcaseRepository,
+) -> None:
+    before = repo._get_connection().execute("select count(*) from showcase_import_review_batches").fetchone()[0]
+
+    response = authenticated_client.post(
+        "/api/admin/import-review/batches",
+        data={"sourceScope": "source-a", "mode": "incremental", "complete": "false"},
+        files={"file": ("large.xlsx", b"x" * (10 * 1024 * 1024 + 1), "application/octet-stream")},
+    )
+
+    after = repo._get_connection().execute("select count(*) from showcase_import_review_batches").fetchone()[0]
+    assert response.status_code == 413
+    assert after == before
+
+
+def test_import_review_upload_maps_invalid_workbook_xml_to_400(
+    authenticated_client: TestClient,
+    repo: SQLiteShowcaseRepository,
+) -> None:
+    invalid_workbook = BytesIO()
+    with ZipFile(invalid_workbook, "w") as archive:
+        archive.writestr("xl/workbook.xml", b"<workbook><sheets>")
+    before = repo._get_connection().execute("select count(*) from showcase_import_review_batches").fetchone()[0]
+
+    response = authenticated_client.post(
+        "/api/admin/import-review/batches",
+        data={"sourceScope": "source-a", "mode": "incremental", "complete": "false"},
+        files={"file": ("invalid-workbook.xlsx", invalid_workbook.getvalue(), "application/octet-stream")},
     )
 
     after = repo._get_connection().execute("select count(*) from showcase_import_review_batches").fetchone()[0]
