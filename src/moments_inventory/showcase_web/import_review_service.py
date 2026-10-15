@@ -31,7 +31,7 @@ def create_import_review_batch(
     row_errors = [
         f"第 {item['row_number']} 行：{error}"
         for item in parsed
-        for error in item["errors"]
+        for error in item["validation_errors"]
     ]
     if row_errors:
         raise ValueError("工作簿行校验失败：" + "；".join(row_errors))

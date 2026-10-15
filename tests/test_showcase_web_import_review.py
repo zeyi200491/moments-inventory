@@ -110,6 +110,21 @@ def test_duplicate_source_keys_keep_both_rows_and_mark_conflict(tmp_path):
     assert all(item['decision'] is None for item in rows)
 
 
+def test_duplicate_product_ids_keep_rows_for_manual_resolution(tmp_path):
+    repo = SQLiteShowcaseRepository(tmp_path / 'showcase.db')
+    payload = _workbook_bytes(tmp_path, [
+        {'商品ID': 'same-id', '型号': 'ixus80', '品牌': '佳能', '成本价': 10, '展示价': 20, '是否展示': '是'},
+        {'商品ID': 'same-id', '型号': 'ixus80', '品牌': '佳能', '成本价': 11, '展示价': 21, '是否展示': '是'},
+    ])
+
+    batch = create_import_review_batch(repo, payload, source_scope='source-a')
+    rows = list_import_review_rows(repo, batch['batch_id'])
+
+    assert [item['row_number'] for item in rows] == [2, 3]
+    assert all('商品ID重复' in ' '.join(item['errors']) for item in rows)
+    assert all(item['decision'] is None and item['product_id'] is None for item in rows)
+
+
 def test_invalid_row_rejects_batch_with_real_excel_row_number(tmp_path):
     repo = SQLiteShowcaseRepository(tmp_path / 'showcase.db')
     path = tmp_path / 'review.xlsx'
@@ -125,6 +140,19 @@ def test_invalid_row_rejects_batch_with_real_excel_row_number(tmp_path):
     with repo._get_connection() as conn:
         assert conn.execute('select count(*) from showcase_import_review_batches').fetchone()[0] == 0
         assert conn.execute('select count(*) from showcase_import_review_rows').fetchone()[0] == 0
+
+
+def test_invalid_source_key_format_rejects_batch(tmp_path):
+    repo = SQLiteShowcaseRepository(tmp_path / 'showcase.db')
+    payload = _workbook_bytes(tmp_path, [{
+        '商品ID': 'bad-key', '型号': 'ixus80', '品牌': '佳能', '成本价': 10,
+        '展示价': 20, '是否展示': '是', '来源商品键': 'k' * 257,
+    }])
+
+    with pytest.raises(ValueError, match='第 2 行'):
+        create_import_review_batch(repo, payload, source_scope='source-a')
+    with repo._get_connection() as conn:
+        assert conn.execute('select count(*) from showcase_import_review_batches').fetchone()[0] == 0
 
 
 def test_full_batch_requires_complete_and_nonempty_scope(tmp_path):

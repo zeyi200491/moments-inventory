@@ -50,9 +50,9 @@ def parse_review_workbook(content: bytes) -> list[dict]:
             record = None
             record_errors = [str(exc).replace('第 2 行', f'第 {number} 行')]
         source_key = raw.get('来源商品键', raw.get('product_key', '')).strip()
-        errors = list(record_errors)
+        validation_errors = list(record_errors)
         if len(source_key) > 256 or any(ord(character) < 32 for character in source_key):
-            errors.append(f'第 {number} 行来源商品键无效')
+            validation_errors.append(f'第 {number} 行来源商品键无效')
         product_id = raw.get('商品ID', '').strip()
         if product_id:
             ids.setdefault(product_id, []).append(len(parsed))
@@ -60,7 +60,8 @@ def parse_review_workbook(content: bytes) -> list[dict]:
             'row_number': number,
             'source_key': source_key,
             'snapshot': record if record is not None else {'raw': raw},
-            'errors': errors,
+            'validation_errors': validation_errors,
+            'errors': [],
         })
     # 复核批次保留重复目标行并显式报错；正式 CLI 导入仍由 _manual_records 原样拒绝。
     for product_id, indexes in ids.items():
