@@ -356,12 +356,13 @@ async function loadProductPage({ reset = false, restoreToken = null } = {}) {
   if (reset && restoreToken !== "revision-refresh") state.loadNotice = "";
   if (reset) syncFilterUrl();
   if (reset) {
+    state.productRegistry.clear();
     state.products = [];
     state.total = 0;
     state.hasMore = false;
     state.catalogRevision = "";
   }
-  renderList();
+  renderList({ replaceProducts: reset });
   const offset = reset ? 0 : state.products.length;
   try {
     const response = await fetch(`/api/public/products?${buildProductQuery(offset)}`, {
@@ -386,11 +387,12 @@ async function loadProductPage({ reset = false, restoreToken = null } = {}) {
     state.total = Number(data.total || 0);
     state.catalogRevision = String(data.catalogRevision || "");
     state.hasMore = Boolean(data.hasMore) && (reset ? products.length > 0 : added.length > 0);
+    renderList({ replaceProducts: reset, appendProducts: reset ? [] : added });
     return true;
   } catch (error) {
     if (error.name !== "AbortError" && requestId === state.productRequestId) {
       state.loadError = "库存加载失败，请重试";
-      renderList();
+      renderList({ replaceProducts: false });
     }
     return false;
   } finally {
@@ -399,7 +401,7 @@ async function loadProductPage({ reset = false, restoreToken = null } = {}) {
       if (state.productRequestController === controller) {
         state.productRequestController = null;
       }
-      renderList();
+      renderList({ replaceProducts: false });
     }
   }
 }
@@ -762,19 +764,18 @@ function renderStatement() {
   renderPartners("statementPartners");
 }
 
-function renderList() {
+function renderList({ replaceProducts = true, appendProducts = [] } = {}) {
   const productGrid = document.getElementById("productGrid");
   const emptyState = document.getElementById("emptyState");
   const resultCount = document.getElementById("resultCount");
   const loadMoreButton = document.getElementById("loadMoreButton");
   if (!productGrid || !emptyState || !resultCount) return;
   const products = state.products;
-  const visibleProducts = products;
-  resultCount.textContent = visibleProducts.length === products.length
-    ? `${products.length} 台`
-    : `${visibleProducts.length} / ${products.length} 台`;
-  productGrid.innerHTML = visibleProducts.map(renderProductCard).join("");
-  emptyState.hidden = products.length !== 0;
+  if (replaceProducts) {
+    productGrid.innerHTML = products.map(renderProductCard).join("");
+  } else if (appendProducts.length) {
+    productGrid.insertAdjacentHTML("beforeend", appendProducts.map(renderProductCard).join(""));
+  }
   resultCount.textContent = products.length === state.total
     ? `${state.total} 台`
     : `${products.length} / ${state.total} 台`;
