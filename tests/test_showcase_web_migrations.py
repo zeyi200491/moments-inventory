@@ -179,6 +179,11 @@ def test_import_review_migration_adds_constrained_tables_and_is_repeatable(tmp_p
          missing_count, idempotency_key, result_json, status, created_at)
         values ('batch-1','scope-a','full',1,'input.xlsx',3,1,'idem-1','{"ok":true}','pending','now')"""
     )
+    conn.execute(
+        """insert into showcase_import_review_batches
+        (batch_id, source_scope, mode, idempotency_key, status, created_at)
+        values ('batch-2','scope-a','full','idem-1','pending','now')"""
+    )
     repo.upsert_product(product("p1"))
     conn.execute(
         """insert into showcase_import_review_rows
@@ -223,14 +228,6 @@ def test_import_review_migration_adds_constrained_tables_and_is_repeatable(tmp_p
             (review_row_id, batch_id, row_number, source_key, status, decision, snapshot_json, created_at)
             values ('row-3','batch-1',3,'item-3','pending','merge','{}','now')"""
         )
-    with pytest.raises(sqlite3.IntegrityError):
-        conn.execute(
-            """insert into showcase_import_review_rows
-            (review_row_id, batch_id, row_number, source_key, status, decision,
-             product_id, snapshot_json, created_at)
-            values ('row-4','batch-1',4,'item-4','pending','link','p1','{}','now')"""
-        )
-
     before = {
         table: conn.execute(f"select * from {table} order by 1").fetchall()
         for table in (
@@ -250,6 +247,12 @@ def test_import_review_migration_adds_constrained_tables_and_is_repeatable(tmp_p
     assert conn.execute(
         "select version from showcase_schema_migrations order by version desc limit 1"
     ).fetchone()[0] == 12
+
+    conn.execute("delete from showcase_products where product_id='p1'")
+    deleted_target = conn.execute(
+        "select product_id,target_row_version from showcase_import_review_rows where review_row_id='row-1'"
+    ).fetchone()
+    assert tuple(deleted_target) == (None, None)
 
 
 def test_public_ids_work_for_image_and_product_changes():

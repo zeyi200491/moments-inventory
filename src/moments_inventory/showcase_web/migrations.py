@@ -13,6 +13,7 @@ def migrate(conn: sqlite3.Connection) -> bool:
     """事务内迁移；返回是否为首次创建数据库，默认内容仅在首次创建时播种。"""
     fresh = conn.execute("select 1 from sqlite_master where name='showcase_products'").fetchone() is None
     conn.execute("create table if not exists showcase_schema_migrations (version integer primary key, applied_at text not null default (datetime('now')))")
+    # 沿用现有迁移架构：版本读取与写入未跨连接串行化，并发首次迁移需由调用方协调。
     applied = {row[0] for row in conn.execute("select version from showcase_schema_migrations")}
     if 1 not in applied:
         conn.execute(
@@ -433,10 +434,6 @@ def migrate(conn: sqlite3.Connection) -> bool:
             )"""
         )
         conn.execute(
-            "create unique index if not exists idx_showcase_import_review_batches_idempotency "
-            "on showcase_import_review_batches(idempotency_key) where idempotency_key<>''"
-        )
-        conn.execute(
             """create table if not exists showcase_import_review_rows (
               review_row_id text primary key,
               batch_id text not null,
@@ -452,8 +449,6 @@ def migrate(conn: sqlite3.Connection) -> bool:
               snapshot_json text not null,
               created_at text not null,
               updated_at text not null default '',
-              check(decision is null or decision <> 'link' or product_id is not null),
-              check(decision is null or decision <> 'link' or target_row_version is not null),
               unique(batch_id,row_number),
               foreign key(batch_id) references showcase_import_review_batches(batch_id)
                 on delete cascade,
@@ -464,6 +459,16 @@ def migrate(conn: sqlite3.Connection) -> bool:
         conn.execute(
             "create index if not exists idx_showcase_import_review_rows_batch_status "
             "on showcase_import_review_rows(batch_id,status,review_row_id)"
+        )
+        conn.execute(
+            """create trigger if not exists showcase_import_review_rows_clear_target_version
+            after update of product_id on showcase_import_review_rows
+            when new.product_id is null and new.target_row_version is not null
+            begin
+              update showcase_import_review_rows
+              set target_row_version=null
+              where review_row_id=new.review_row_id;
+            end"""
         )
         conn.execute(
             """create table if not exists showcase_source_identity_aliases (
