@@ -1196,7 +1196,7 @@ async function loadAdminApp() {
     ["设置", loadSettings], ["合作方", loadPartners], ["商品", loadProducts],
     ["买前流程", loadPurchaseStepsAdmin], ["图库", loadGalleryAlbums],
     ["诊断", loadDiagnostics], ["导入记录", loadImportReports], ["操作记录", loadOperations],
-    ["样片匹配", loadSampleMatchingCenter], ["专栏", loadSections],
+    ["样片匹配", loadSampleMatchingCenter], ["专栏", loadSections], ["身份复核", loadImportReviewBatches],
   ];
   const results = await Promise.allSettled(modules.map(([, load]) => load()));
   const failed = results.flatMap((result, index) => result.status === "rejected" ? [modules[index][0]] : []);

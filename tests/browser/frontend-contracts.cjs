@@ -396,6 +396,19 @@ test('登录成功但管理模块加载失败时不误报密码错误，并允�
   assert.equal(typeof c.nodes.get('retryAdminStartupButton').listeners.click, 'function');
 });
 
+test('登录成功后自动恢复导入身份复核 pending 队列', async () => {
+  const c = pageContext('admin.js');
+  const requests = [];
+  c.fetch = async (url) => {
+    requests.push(url);
+    if (url === '/api/admin/login') return { ok: true, json: async () => ({ ok: true }) };
+    if (url === '/api/admin/import-review/batches') return { ok: true, json: async () => [] };
+    return { ok: false, status: 500, text: async () => '模块不可用' };
+  };
+  await c.nodes.get('loginForm').listeners.submit({ preventDefault() {} });
+  assert.equal(requests.filter((url) => url === '/api/admin/import-review/batches').length, 1);
+});
+
 test('批量价格段转换为包含边界且默认排除隐藏和已售商品', () => {
   const c = pageContext('admin.js');
   c.nodes.get('bulkScopeInput').value = 'filtered';
