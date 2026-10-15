@@ -77,6 +77,21 @@ def test_exact_source_key_and_confirmed_alias_are_suggestions_only(tmp_path):
     assert exact['product_id'] is alias['product_id'] is None
 
 
+def test_alias_to_product_in_another_scope_is_conflict_not_recommendation(tmp_path):
+    repo = SQLiteShowcaseRepository(tmp_path / 'showcase.db')
+    _seed_product(repo, 'foreign-product', source_key='different-key', scope='source-b')
+    with repo._get_connection() as conn:
+        conn.execute("insert into showcase_source_identity_aliases values ('bad-alias','source-a','alias-key','foreign-product','now')")
+    payload = _workbook_bytes(tmp_path, [{'商品ID': 'row-a', '型号': 'ixus80', '品牌': '佳能', '成本价': 10, '展示价': 20, '是否展示': '是', '来源商品键': 'alias-key'}])
+
+    batch = create_import_review_batch(repo, payload, source_scope='source-a')
+    staged = _row(repo, batch['batch_id'], 2)
+
+    assert staged['recommendation'] is None
+    assert any('其他来源范围' in error for error in staged['errors'])
+    assert staged['decision'] is None
+
+
 def test_same_model_is_only_a_candidate_and_missing_source_key_can_be_manually_linked(tmp_path):
     repo = SQLiteShowcaseRepository(tmp_path / 'showcase.db')
     _seed_product(repo)
@@ -167,6 +182,23 @@ def test_full_batch_requires_complete_and_nonempty_scope(tmp_path):
         create_import_review_batch(repo, empty_payload, source_scope='source-a', mode='full', complete=True)
     with repo._get_connection() as conn:
         assert conn.execute('select count(*) from showcase_import_review_batches').fetchone()[0] == 0
+
+
+def test_full_batch_persists_missing_product_details(tmp_path):
+    repo = SQLiteShowcaseRepository(tmp_path / 'showcase.db')
+    _seed_product(repo, 'missing-product', source_key='old-key')
+    payload = _workbook_bytes(tmp_path, [{'商品ID': 'new-product', '型号': 'powershot', '品牌': '佳能', '成本价': 10, '展示价': 20, '是否展示': '是', '来源商品键': 'new-key'}])
+
+    batch = create_import_review_batch(repo, payload, source_scope='source-a', mode='full', complete=True)
+
+    assert batch['missing_count'] == 1
+    assert batch['result']['missing_items'] == [{
+        'product_id': 'missing-product',
+        'model': 'ixus80',
+        'brand': '佳能',
+        'source_product_key': 'old-key',
+        'row_version': 0,
+    }]
 
 
 def test_missing_threshold_must_be_between_zero_and_one(tmp_path):

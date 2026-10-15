@@ -95,9 +95,12 @@ def create_import_review_batch(
                                      if scope == source_scope), None)
                     target = exact or (products_by_id.get(alias_id) if alias_id else None)
                     if target:
-                        recommendation = _product_summary(target, "source_key" if exact else "alias")
-                        selected_targets.setdefault(str(target["product_id"]), []).append(item)
-                        resolved_targets.add(str(target["product_id"]))
+                        if target["source_scope"] != source_scope:
+                            errors.append("来源身份 alias 指向其他来源范围的商品")
+                        else:
+                            recommendation = _product_summary(target, "source_key" if exact else "alias")
+                            selected_targets.setdefault(str(target["product_id"]), []).append(item)
+                            resolved_targets.add(str(target["product_id"]))
             source_product_id = str(record.get("product_id", ""))
             existing_id = products_by_id.get(source_product_id)
             if existing_id and existing_id["source_scope"] != source_scope:
@@ -154,7 +157,21 @@ def create_import_review_batch(
             "candidates": candidates,
         }, ensure_ascii=False, separators=(",", ":"))
 
-    missing_count = len(scoped_product_ids - resolved_targets) if mode == "full" else 0
+    missing_items = []
+    if mode == "full":
+        missing_ids = scoped_product_ids - resolved_targets
+        missing_by_id = {str(product["product_id"]): product for product in products}
+        missing_items = [
+            {
+                "product_id": product_id,
+                "model": missing_by_id[product_id]["model"],
+                "brand": missing_by_id[product_id]["brand"],
+                "source_product_key": missing_by_id[product_id]["source_product_key"],
+                "row_version": int(missing_by_id[product_id]["row_version"]),
+            }
+            for product_id in sorted(missing_ids)
+        ]
+    missing_count = len(missing_items)
     warnings = []
     if mode == "full" and scoped_product_ids and missing_count / len(scoped_product_ids) > max_missing_fraction:
         warnings.append("全量范围内未匹配商品超过缺失阈值，需要人工复核范围")
@@ -169,7 +186,7 @@ def create_import_review_batch(
         "parsed_row_count": len(staged_rows),
         "missing_count": missing_count,
         "idempotency_key": idempotency_key,
-        "result_json": json.dumps({"warnings": warnings}, ensure_ascii=False),
+        "result_json": json.dumps({"warnings": warnings, "missing_items": missing_items}, ensure_ascii=False),
         "status": "pending",
         "created_at": now,
         "completed_at": "",
