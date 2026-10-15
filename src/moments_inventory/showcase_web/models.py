@@ -26,8 +26,15 @@ class ShowcaseImportReviewBatch:
     source_scope: str
     status: ShowcaseImportReviewStatus
     created_at: str
+    mode: str = "incremental"
+    complete: bool = False
+    source_path: str = ""
     source_label: str = ""
     source_fingerprint: str = ""
+    parsed_row_count: int = 0
+    missing_count: int = 0
+    idempotency_key: str = ""
+    result_json: str = "{}"
     completed_at: str = ""
 
 
@@ -35,6 +42,7 @@ class ShowcaseImportReviewBatch:
 class ShowcaseImportReviewRow:
     review_row_id: str
     batch_id: str
+    row_number: int
     source_key: str
     status: ShowcaseImportReviewStatus
     snapshot_json: str

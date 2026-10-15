@@ -417,8 +417,15 @@ def migrate(conn: sqlite3.Connection) -> bool:
             """create table if not exists showcase_import_review_batches (
               batch_id text primary key,
               source_scope text not null,
+              mode text not null default 'incremental',
+              complete integer not null default 0 check(complete in (0,1)),
+              source_path text not null default '',
               source_label text not null default '',
               source_fingerprint text not null default '',
+              parsed_row_count integer not null default 0 check(parsed_row_count >= 0),
+              missing_count integer not null default 0 check(missing_count >= 0),
+              idempotency_key text not null default '',
+              result_json text not null default '{}',
               status text not null default 'pending'
                 check(status in ('pending','committed','discarded')),
               created_at text not null,
@@ -426,9 +433,14 @@ def migrate(conn: sqlite3.Connection) -> bool:
             )"""
         )
         conn.execute(
+            "create unique index if not exists idx_showcase_import_review_batches_idempotency "
+            "on showcase_import_review_batches(idempotency_key) where idempotency_key<>''"
+        )
+        conn.execute(
             """create table if not exists showcase_import_review_rows (
               review_row_id text primary key,
               batch_id text not null,
+              row_number integer not null check(row_number > 0),
               source_key text not null default '',
               status text not null default 'pending'
                 check(status in ('pending','committed','discarded')),
@@ -439,6 +451,7 @@ def migrate(conn: sqlite3.Connection) -> bool:
               created_at text not null,
               updated_at text not null default '',
               check(decision is null or decision <> 'link' or product_id is not null),
+              unique(batch_id,row_number),
               foreign key(batch_id) references showcase_import_review_batches(batch_id)
                 on delete cascade,
               foreign key(product_id) references showcase_products(product_id)
