@@ -1569,3 +1569,36 @@ test('放弃批次先打开二次确认，确认后才发送DELETE', async () =>
   await c.nodes.get('confirmImportReviewAction').listeners.click();
   assert.equal(requests.some((request) => request.options.method === 'DELETE'), true);
 });
+
+test('来源缺失商品可标记为已复核并保留缺失状态', async () => {
+  assert.match(fs.readFileSync(path.join(root, 'admin.html'), 'utf8'), /来源中缺失，已复核/);
+  const c = pageContext('admin.js');
+  vm.runInContext(`adminState.products = [{productId:'missing-product', publicId:'missing-product', rowVersion:3,
+    model:'测试型号', brand:'佳能', displayPrice:100, visible:true, sold:false, hasBodyImage:false,
+    hasSampleImage:false, manualPrice:false, reviewState:'missing', sourceAvailable:false,
+    sourceDisplayPrice:100, sourceVisible:true, priceOverridden:false, visibilityOverridden:false}];
+    renderAdminProducts();`, c);
+  const initialHtml = c.nodes.get('adminProductList').innerHTML;
+  assert.match(initialHtml, /来源缺失待复核/);
+  assert.match(initialHtml, /admin-review-missing/);
+
+  let request;
+  c.fetch = async (url, options) => {
+    request = {url, options};
+    return {ok:true, json:async () => ({productId:'missing-product', rowVersion:4,
+      reviewState:'missing_reviewed', sourceAvailable:false})};
+  };
+  const row = {dataset:{productId:'missing-product'}};
+  const button = {
+    classList:{contains:(name) => name === 'admin-review-missing'},
+    closest:(selector) => selector === '.admin-product-row' ? row : button,
+  };
+  await c.nodes.get('adminProductList').listeners.click({target:button});
+
+  assert.equal(request.url, '/api/admin/products/missing-product/review-missing');
+  assert.equal(request.options.method, 'POST');
+  assert.match(request.options.body, /"expectedVersion":3/);
+  assert.equal(vm.runInContext('adminState.products[0].reviewState', c), 'missing_reviewed');
+  assert.equal(vm.runInContext('adminState.products[0].sourceAvailable', c), false);
+  assert.match(c.nodes.get('adminProductList').innerHTML, /来源缺失已复核/);
+});

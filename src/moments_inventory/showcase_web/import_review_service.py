@@ -476,7 +476,12 @@ def commit_import_review_batch(repository, batch_id: str, idempotency_key: str) 
                     aliases.pop((scope, source_key), None)
 
             for product_id in missing_ids:
-                conn.execute("update showcase_products set source_available=0,review_state='missing',updated_at=?,row_version=row_version+1 where product_id=? and row_version=?",
+                conn.execute("""update showcase_products
+                    set source_available=0,
+                        review_state=case when review_state='missing_reviewed'
+                                          then review_state else 'missing' end,
+                        updated_at=?,row_version=row_version+1
+                    where product_id=? and row_version=?""",
                              (now, product_id, int(current_scope[product_id]["row_version"])))
                 if conn.execute("select changes()").fetchone()[0] != 1:
                     raise ImportReviewConflictError(f"全量缺失商品版本已变化：{product_id}")

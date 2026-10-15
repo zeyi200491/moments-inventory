@@ -168,6 +168,53 @@ def test_admin_can_update_single_product_price(
     assert product.display_price == 688
 
 
+def test_admin_can_mark_missing_product_reviewed_without_restoring_source(
+    authenticated_client: TestClient,
+    repo: SQLiteShowcaseRepository,
+) -> None:
+    product = replace(
+        _product("missing-product", visible=True, display_price=558),
+        source_available=False,
+        review_state="missing",
+    )
+    repo.upsert_product(product)
+    expected_version = repo.get_product(product.product_id).row_version
+
+    response = authenticated_client.post(
+        f"/api/admin/products/{product.product_id}/review-missing",
+        json={"expectedVersion": expected_version},
+    )
+
+    assert response.status_code == 200, response.text
+    assert response.json()["reviewState"] == "missing_reviewed"
+    assert response.json()["sourceAvailable"] is False
+    reviewed = repo.get_product(product.product_id)
+    assert reviewed is not None
+    assert reviewed.review_state == "missing_reviewed"
+    assert reviewed.source_available is False
+    assert reviewed.row_version == expected_version + 1
+    stale_response = authenticated_client.post(
+        f"/api/admin/products/{product.product_id}/review-missing",
+        json={"expectedVersion": expected_version},
+    )
+    assert stale_response.status_code == 409
+
+
+def test_admin_cannot_mark_present_product_as_missing_reviewed(
+    authenticated_client: TestClient,
+    repo: SQLiteShowcaseRepository,
+) -> None:
+    repo.upsert_product(_product("present-product", visible=True, display_price=558))
+
+    response = authenticated_client.post(
+        "/api/admin/products/present-product/review-missing",
+        json={"expectedVersion": repo.get_product("present-product").row_version},
+    )
+
+    assert response.status_code == 409
+    assert repo.get_product("present-product").review_state == ""
+
+
 def test_admin_single_product_update_rejects_cross_repository_stale_write(
     authenticated_client: TestClient,
     repo: SQLiteShowcaseRepository,

@@ -498,6 +498,24 @@ class SQLiteShowcaseRepository:
                 )
                 return cursor.rowcount == 1
 
+    def mark_missing_product_reviewed(
+        self,
+        product_id: str,
+        expected_version: int,
+        reviewed_at: str,
+    ) -> bool:
+        """确认人工复核来源缺失商品，同时保留其缺失事实。"""
+        with self._lock:
+            with self._get_connection() as conn:
+                cursor = conn.execute(
+                    """update showcase_products
+                       set review_state='missing_reviewed', updated_at=?, row_version=row_version+1
+                       where product_id=? and row_version=?
+                         and source_available=0 and review_state='missing'""",
+                    (reviewed_at, product_id, expected_version),
+                )
+                return cursor.rowcount == 1
+
     def bulk_upsert_products_with_body_images(
         self,
         products: list[ShowcaseProduct],

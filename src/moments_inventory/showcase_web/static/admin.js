@@ -843,7 +843,9 @@ function renderAdminProducts() {
           ${product.hasBodyImage ? "有机身图" : "无机身图"} ·
           ${product.hasSampleImage ? "有出片图" : "无出片图"} ·
           ${product.manualPrice ? "已改价" : "未改价"} ·
-          ${product.reviewState === "missing" ? "来源缺失待复核" : "来源正常"}
+          ${product.sourceAvailable === false
+            ? (product.reviewState === "missing_reviewed" ? "来源缺失已复核" : "来源缺失待复核")
+            : "来源正常"}
         </div>
       </div>
       <input class="admin-brand-input" aria-label="${escapeHtml(product.model)} 品牌" value="${escapeHtml(product.brand)}">
@@ -852,6 +854,9 @@ function renderAdminProducts() {
       <button class="secondary-button admin-reset-override" data-reset-field="price" type="button" ${product.priceOverridden ? "" : "disabled"}>价格跟随来源</button>
       <button class="admin-save-product" type="button">保存</button>
       <button class="admin-discard-draft" type="button">放弃草稿并刷新</button>
+      ${product.sourceAvailable === false && product.reviewState === "missing"
+        ? '<button class="secondary-button admin-review-missing" type="button">标记已复核</button>'
+        : ""}
       <button class="admin-toggle-visible" type="button">${product.visible ? "隐藏" : "显示"}</button>
       <span class="status-text">来源状态：${product.sourceVisible ? "展示" : "隐藏"}</span>
       <button class="secondary-button admin-reset-override" data-reset-field="visibility" type="button" ${product.visibilityOverridden ? "" : "disabled"}>展示状态跟随来源</button>
@@ -2668,6 +2673,23 @@ adminProductList.addEventListener("click", async (event) => {
   if (event.target.classList.contains("admin-discard-draft")) {
     adminState.drafts.delete(productId);
     await loadProducts();
+    return;
+  }
+  if (event.target.classList.contains("admin-review-missing")) {
+    const index = adminState.products.findIndex((product) => productKey(product) === productId);
+    if (index < 0) return;
+    event.target.disabled = true;
+    try {
+      const updated = await requestJson(`/api/admin/products/${encodeURIComponent(productId)}/review-missing`, {
+        method: "POST",
+        body: JSON.stringify({ expectedVersion: adminState.products[index].rowVersion }),
+      });
+      adminState.products[index] = updated.product || updated;
+      renderAdminProducts();
+    } catch (error) {
+      alert(`复核未完成：${error.message}`);
+      event.target.disabled = false;
+    }
     return;
   }
   if (event.target.classList.contains("admin-save-product")) {

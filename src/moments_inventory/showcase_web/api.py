@@ -451,6 +451,10 @@ class AdminProductPatchRequest(BaseModel):
     sold: bool | None = None
 
 
+class AdminMissingProductReviewRequest(BaseModel):
+    expectedVersion: int = Field(ge=0)
+
+
 class AdminProductCreateRequest(BaseModel):
     productId: str = Field(min_length=1, max_length=160)
     model: str = Field(min_length=1, max_length=160)
@@ -2223,6 +2227,35 @@ def create_admin_router(
             if not repo.update_admin_product_if_version(updated, product.row_version):
                 raise HTTPException(409, "商品已被其他管理操作修改，请刷新后重新保存")
             summary = repo.get_admin_product_summary(product.product_id)
+            if summary is None:
+                raise HTTPException(status_code=404, detail="product not found")
+            return AdminProductResponse.from_summary(summary)
+
+    @router.post(
+        "/products/{product_id}/review-missing",
+        response_model=AdminProductResponse,
+        dependencies=[Depends(require_admin)],
+    )
+    def review_missing_admin_product(
+        product_id: str,
+        request: AdminMissingProductReviewRequest,
+        repo: SQLiteShowcaseRepository = Depends(get_repository),
+    ) -> AdminProductResponse:
+        with repo._lock:
+            product = repo.get_product(product_id)
+            if product is None:
+                raise HTTPException(status_code=404, detail="product not found")
+            if product.row_version != request.expectedVersion:
+                raise HTTPException(409, "商品已被修改，请刷新后重新复核")
+            if product.source_available or product.review_state != "missing":
+                raise HTTPException(409, "商品当前不处于待复核状态")
+            if not repo.mark_missing_product_reviewed(
+                product_id,
+                request.expectedVersion,
+                datetime.now(timezone.utc).isoformat(),
+            ):
+                raise HTTPException(409, "商品状态已变化，请刷新后重新复核")
+            summary = repo.get_admin_product_summary(product_id)
             if summary is None:
                 raise HTTPException(status_code=404, detail="product not found")
             return AdminProductResponse.from_summary(summary)

@@ -701,6 +701,28 @@ def test_full_commit_unknown_skip_does_not_auto_bind_model_candidate(tmp_path):
     assert repo.get_product('unidentified-item').review_state == 'missing'
 
 
+def test_full_review_commit_preserves_acknowledged_missing_state(tmp_path):
+    repo = SQLiteShowcaseRepository(tmp_path / 'showcase.db')
+    _seed_product(repo, 'reviewed-missing', source_key='old-key')
+    with repo._get_connection() as conn:
+        conn.execute(
+            "update showcase_products set source_available=0,review_state='missing_reviewed' where product_id='reviewed-missing'"
+        )
+    payload = _workbook_bytes(tmp_path, [
+        {'商品ID': 'new-item', '型号': 'powershot', '品牌': '佳能', '成本价': 11, '展示价': 21, '是否展示': '是'},
+    ])
+    batch = create_import_review_batch(repo, payload, source_scope='source-a', mode='full', complete=True)
+    row = _row(repo, batch['batch_id'], 2)
+    save_import_review_decision(repo, batch['batch_id'], row['review_row_id'], decision='create')
+
+    result = commit_import_review_batch(repo, batch['batch_id'], 'reviewed-missing-key')
+
+    assert result['missing_count'] == 1
+    product = repo.get_product('reviewed-missing')
+    assert product.source_available is False
+    assert product.review_state == 'missing_reviewed'
+
+
 def test_changed_identity_key_conflicting_with_old_alias_rolls_back_link(tmp_path):
     repo = SQLiteShowcaseRepository(tmp_path / 'showcase.db')
     _seed_product(repo, 'product-p', source_key='identity-a')

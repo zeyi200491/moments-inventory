@@ -178,7 +178,15 @@ def commit_import(repository, preview: ImportPreview):
                         ],
                     )
             for product_id in preview.missing_ids:
-                conn.execute("UPDATE showcase_products SET source_available=0, review_state='missing', updated_at=?, row_version=row_version+1 WHERE product_id=?", (now, product_id))
+                conn.execute(
+                    """UPDATE showcase_products
+                       SET source_available=0,
+                           review_state=CASE WHEN review_state='missing_reviewed'
+                                             THEN review_state ELSE 'missing' END,
+                           updated_at=?, row_version=row_version+1
+                       WHERE product_id=?""",
+                    (now, product_id),
+                )
             result = ShowcaseImportResult(import_id, preview.inserted_count, preview.updated_count, preview.missing_count)
             conn.execute('INSERT INTO showcase_import_logs (import_id,source_path,imported_at,inserted_count,updated_count,missing_count,mode,scope,status,started_at,committed_at,source_fingerprint) VALUES (?,?,?,?,?,?,?,?,?,?,?,?)', (import_id, preview.source_path, now, result.inserted_count, result.updated_count, result.missing_count, preview.mode, preview.scope, 'committed', now, now, preview.fingerprint))
             conn.execute("INSERT INTO showcase_settings(setting_key,setting_value) VALUES ('inventory_updated_at',?) ON CONFLICT(setting_key) DO UPDATE SET setting_value=excluded.setting_value", (now,))

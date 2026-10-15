@@ -49,6 +49,30 @@ def test_follow_source_and_full_missing_keeps_visibility(tmp_path):
     assert repo.get_product('p2').review_state == 'missing'
 
 
+def test_manual_missing_review_ack_survives_absence_and_resets_when_source_returns(tmp_path):
+    repo = SQLiteShowcaseRepository(tmp_path / 'test.db')
+    repo.initialize()
+    path = workbook(tmp_path / 'a.xlsx', [('p1', 100, '是'), ('p2', 200, '是')])
+    import_showcase_workbook(path, repo, mode='full', complete=True)
+    with repo._get_connection() as conn:
+        conn.execute(
+            "update showcase_products set source_available=0, review_state='missing_reviewed' where product_id='p2'"
+        )
+    workbook(path, [('p1', 300, '是')])
+
+    import_showcase_workbook(path, repo, mode='full', complete=True, max_missing_fraction=1)
+
+    reviewed = repo.get_product('p2')
+    assert reviewed.source_available is False
+    assert reviewed.review_state == 'missing_reviewed'
+
+    workbook(path, [('p1', 300, '是'), ('p2', 200, '是')])
+    import_showcase_workbook(path, repo, mode='full', complete=True)
+    returned = repo.get_product('p2')
+    assert returned.source_available is True
+    assert returned.review_state == ''
+
+
 def test_same_fingerprint_reuses_result(tmp_path):
     repo = SQLiteShowcaseRepository(tmp_path / 'test.db')
     repo.initialize()
