@@ -20,7 +20,7 @@
 - 修改 `src/moments_inventory/showcase_web/api.py`：添加受管理员会话保护的批次接口和请求/响应模型。
 - 修改 `src/moments_inventory/showcase_web/static/admin.html`：增加工作簿上传、待处理批次恢复、逐行身份选择、提交差异与放弃控件。
 - 修改 `src/moments_inventory/showcase_web/static/admin.js`：实现队列 API 调用、状态恢复、行级决定编辑、冲突和幂等重试提示。
-- 修改 `src/moments_inventory/showcase_web/static/admin.css`：补充复核队列的窄屏布局、差异状态和操作反馈样式（若样式实际内嵌在 `admin.html`，沿用当前结构不另拆文件）。
+- 修改 `src/moments_inventory/showcase_web/static/admin.html`：复用页面内现有样式区补充复核队列的窄屏布局、差异状态和操作反馈样式。
 - 新建 `tests/test_showcase_web_import_review.py`：覆盖服务、身份别名、事务回滚、并发版本冲突、重试和生命周期。
 - 修改 `tests/test_showcase_web_migrations.py`、`tests/test_showcase_web_api_admin.py`：验证迁移与管理员接口授权/数据隔离。
 - 修改 `tests/browser/frontend-contracts.cjs`：锁定管理页关键 DOM/API 契约，确保客户页面不暴露来源身份复核字段。
@@ -159,7 +159,7 @@
 **Files:**
 - Modify: `src/moments_inventory/showcase_web/static/admin.html`
 - Modify: `src/moments_inventory/showcase_web/static/admin.js`
-- Modify: `src/moments_inventory/showcase_web/static/admin.css`（若为独立文件）
+- Modify: `src/moments_inventory/showcase_web/static/admin.html`（复用页面内样式区）
 - Test: `tests/browser/frontend-contracts.cjs`
 
 - [ ] **Step 1: 写前端契约失败测试**
@@ -229,3 +229,4 @@
 - 在 `codex/ccd-phase1-correctness` CCD 源工作树中实施并逐任务提交。
 - 只用临时 SQLite、虚构工作簿和虚构图片做验证；不得访问真实业务数据库、Cloudflare 账号或外部发布服务。
 - 浏览器真实登录验收和生产数据身份复核属于外部人工验收；本计划内完成自动化验证后再明确列出其状态。
+
