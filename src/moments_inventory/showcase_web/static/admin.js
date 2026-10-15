@@ -562,6 +562,71 @@ async function requestJson(url, options = {}, behavior = {}) {
   }
 }
 
+const managementMutationLocks = new WeakSet();
+async function runManagementMutation(row, button, submit, {
+  busyLabel = "正在保存…",
+  successMessage = "保存成功。",
+  operation = "保存",
+  onSuccess,
+  refresh,
+} = {}) {
+  if (!row || !button || button.disabled || managementMutationLocks.has(row)) return false;
+  managementMutationLocks.add(row);
+  const originalLabel = button.textContent;
+  const status = row.querySelector?.(".management-action-status");
+  button.disabled = true;
+  button.setAttribute?.("aria-busy", "true");
+  if (row.setAttribute) row.setAttribute("aria-busy", "true");
+  button.textContent = busyLabel;
+  if (status) {
+    status.textContent = `${operation}中…`;
+    status.dataset.state = "busy";
+  }
+
+  try {
+    const result = await submit();
+    if (onSuccess) onSuccess(result);
+    if (status) {
+      status.textContent = successMessage;
+      status.dataset.state = "success";
+    }
+    if (refresh) {
+      try {
+        await refresh(result);
+      } catch (error) {
+        if (status) {
+          status.textContent = `${operation}已完成，但页面刷新失败。请重新加载核对当前状态：${String(error.message || "未知错误").slice(0, 120)}`;
+          status.dataset.state = "error";
+        }
+      }
+    }
+    return true;
+  } catch (error) {
+    const detail = String(error?.message || "未知错误").slice(0, 140);
+    const uncertain = !error?.status || error.status >= 500;
+    const message = error?.status === 401
+      ? "登录已过期，请重新登录后核对当前状态。"
+      : error?.status === 409
+        ? `${operation}失败：数据已变化，请刷新后核对再重试。`
+        : error?.status === 422
+          ? `${operation}失败：输入未通过校验，请修改后重试。${detail}`
+          : uncertain
+            ? `${operation}结果暂未确认，请先核对列表再决定是否重试。${detail}`
+            : `${operation}失败，请检查后重试：${detail}`;
+    if (status) {
+      status.textContent = message;
+      status.dataset.state = "error";
+    }
+    return false;
+  } finally {
+    button.disabled = false;
+    button.removeAttribute?.("aria-busy");
+    button.textContent = typeof originalLabel === "string" ? originalLabel : "保存";
+    row.removeAttribute?.("aria-busy");
+    managementMutationLocks.delete(row);
+  }
+}
+
 function tagsToInput(tags) {
   return Array.isArray(tags) ? tags.join(",") : "";
 }
@@ -819,6 +884,7 @@ function renderPartners(partners) {
       </label>
       <button class="partner-save" type="button">保存</button>
       <button class="partner-delete" type="button">删除</button>
+      <p class="management-action-status status-text" role="status" aria-live="polite"></p>
     </article>
   `).join("");
   restoreManagementRows(partnerList, ".partner-admin-row");
@@ -910,6 +976,7 @@ function renderSections(sections) {
           <input class="section-item-sort" aria-label="${escapeHtml(productLabel)} 专栏排序" type="number" min="0" value="${item.sortOrder || 0}">
           <button class="section-item-save" type="button">保存</button>
           <button class="section-item-delete" type="button">移除</button>
+          <p class="management-action-status status-text" role="status" aria-live="polite"></p>
         </div>
       `;
     }).join("") : `<p class="empty-admin-text">这个专栏还没有商品</p>`;
@@ -926,14 +993,15 @@ function renderSections(sections) {
           </label>
           <button class="section-save" type="button">保存专栏</button>
           <button class="section-delete" type="button">删除专栏</button>
+          <p class="management-action-status status-text" role="status" aria-live="polite"></p>
         </div>
         <div class="section-item-editor section-search-editor">
-          <input class="section-product-search-input" type="search" placeholder="搜索型号、品牌、文案">
-          <input class="section-product-brand-input" placeholder="品牌">
-          <input class="section-product-min-price" type="number" min="0" placeholder="最低价">
-          <input class="section-product-max-price" type="number" min="0" placeholder="最高价">
-          <input class="section-new-note" placeholder="专区内推荐语">
-          <input class="section-new-sort" type="number" min="0" value="0">
+          <input class="section-product-search-input" type="search" aria-label="在${escapeHtml(section.title)}中搜索型号、品牌或文案" placeholder="搜索型号、品牌、文案">
+          <input class="section-product-brand-input" aria-label="${escapeHtml(section.title)}品牌筛选" placeholder="品牌">
+          <input class="section-product-min-price" type="number" min="0" aria-label="${escapeHtml(section.title)}最低当前展示价" placeholder="最低价">
+          <input class="section-product-max-price" type="number" min="0" aria-label="${escapeHtml(section.title)}最高当前展示价" placeholder="最高价">
+          <input class="section-new-note" aria-label="${escapeHtml(section.title)}商品推荐语" placeholder="专区内推荐语">
+          <input class="section-new-sort" type="number" min="0" aria-label="${escapeHtml(section.title)}新商品排序" value="0">
           <button class="section-product-search-button" type="button">搜索商品</button>
         </div>
         <div class="section-product-search-results">${renderSectionProductSearchResults(section, searchResults)}</div>
@@ -964,6 +1032,7 @@ function renderPurchaseStepsAdmin(steps) {
       </label>
       <button class="purchase-step-save" type="button">保存</button>
       <button class="purchase-step-delete" type="button">删除</button>
+      <p class="management-action-status status-text" role="status" aria-live="polite"></p>
     </article>
   `).join("") : `<p class="empty-admin-text">还没有买前流程步骤</p>`;
   restoreManagementRows(purchaseStepList, ".purchase-step-admin-row");
@@ -992,6 +1061,7 @@ function renderGalleryAlbums(albums) {
         <button class="gallery-image-up" type="button">上移</button>
         <button class="gallery-image-down" type="button">下移</button>
         <button class="gallery-image-delete" type="button">删除</button>
+        <p class="management-action-status status-text" role="status" aria-live="polite"></p>
       </div>
     `).join("") : `<p class="empty-admin-text">这个相册还没有图片</p>`;
 
@@ -1007,16 +1077,18 @@ function renderGalleryAlbums(albums) {
           </label>
           <button class="gallery-save" type="button">保存相册</button>
           <button class="gallery-delete" type="button">删除相册</button>
+          <p class="management-action-status status-text" role="status" aria-live="polite"></p>
         </div>
         <div class="gallery-image-uploader">
           <input class="gallery-image-file" aria-label="${escapeHtml(album.title)} 上传图片" type="file" accept="image/jpeg,image/png,image/webp">
           <span class="gallery-pending-file status-text">${escapeHtml(adminState.pendingGalleryFiles.get(album.albumId)?.name || "")}</span>
-          <input class="gallery-image-new-caption" placeholder="图片说明">
+          <input class="gallery-image-new-caption" aria-label="${escapeHtml(album.title)}新图片说明" placeholder="图片说明">
           <label class="check-field">
             <input class="gallery-image-new-visible" type="checkbox" checked>
             <span>上传后展示</span>
           </label>
           <button class="gallery-upload-image" type="button">上传图片</button>
+          <p class="management-action-status status-text" role="status" aria-live="polite"></p>
         </div>
         <div class="gallery-image-list">${imageHtml}</div>
       </article>
@@ -1330,7 +1402,6 @@ async function reorderGalleryImages(albumRow, imageId, direction) {
     method: "POST",
     body: JSON.stringify({ imageIds: ids }),
   });
-  await loadGalleryAlbums();
 }
 
 async function loadImages(row) {
@@ -1633,7 +1704,7 @@ sectionList.addEventListener("click", async (event) => {
   const sectionId = sectionRow.dataset.sectionId;
 
   if (event.target.classList.contains("section-save")) {
-    await requestJson(`/api/admin/sections/${encodeURIComponent(sectionId)}`, {
+    await runManagementMutation(sectionRow, event.target, () => requestJson(`/api/admin/sections/${encodeURIComponent(sectionId)}`, {
       method: "PATCH",
       body: JSON.stringify({
         title: sectionRow.querySelector(".section-title").value.trim(),
@@ -1641,15 +1712,23 @@ sectionList.addEventListener("click", async (event) => {
         sortOrder: Number(sectionRow.querySelector(".section-sort").value || 0),
         active: sectionRow.querySelector(".section-active").checked,
       }),
+    }), {
+      operation: "保存专栏",
+      busyLabel: "保存中…",
+      onSuccess: () => clearManagementRowDraft(sectionRow),
+      refresh: loadSections,
     });
-    clearManagementRowDraft(sectionRow);
-    await loadSections();
   }
 
   if (event.target.classList.contains("section-delete")) {
-    await requestJson(`/api/admin/sections/${encodeURIComponent(sectionId)}`, { method: "DELETE" });
-    clearManagementRowDraft(sectionRow, { clearChildren: true });
-    await loadSections();
+    await runManagementMutation(sectionRow, event.target,
+      () => requestJson(`/api/admin/sections/${encodeURIComponent(sectionId)}`, { method: "DELETE" }), {
+        operation: "删除专栏",
+        busyLabel: "删除中…",
+        successMessage: "专栏已删除。",
+        onSuccess: () => clearManagementRowDraft(sectionRow, { clearChildren: true }),
+        refresh: loadSections,
+      });
   }
 
   if (event.target.classList.contains("section-product-search-button")) {
@@ -1661,16 +1740,20 @@ sectionList.addEventListener("click", async (event) => {
     const resultRow = event.target.closest(".section-product-result");
     const productId = resultRow?.dataset.productId || "";
     if (!productId) return;
-    await requestJson(`/api/admin/sections/${encodeURIComponent(sectionId)}/items`, {
+    await runManagementMutation(sectionRow, event.target, () => requestJson(`/api/admin/sections/${encodeURIComponent(sectionId)}/items`, {
       method: "POST",
       body: JSON.stringify({
         productId,
         recommendNote: sectionRow.querySelector(".section-new-note").value.trim(),
         sortOrder: Number(sectionRow.querySelector(".section-new-sort").value || 0),
       }),
+    }), {
+      operation: "添加商品",
+      busyLabel: "添加中…",
+      successMessage: "商品已加入专栏。",
+      onSuccess: () => { adminState.sectionSearchResults[sectionId] = []; },
+      refresh: loadSections,
     });
-    adminState.sectionSearchResults[sectionId] = [];
-    await loadSections();
     return;
   }
 
@@ -1679,21 +1762,29 @@ sectionList.addEventListener("click", async (event) => {
   const itemId = itemRow.dataset.itemId;
 
   if (event.target.classList.contains("section-item-save")) {
-    await requestJson(`/api/admin/sections/${encodeURIComponent(sectionId)}/items/${encodeURIComponent(itemId)}`, {
+    await runManagementMutation(itemRow, event.target, () => requestJson(`/api/admin/sections/${encodeURIComponent(sectionId)}/items/${encodeURIComponent(itemId)}`, {
       method: "PATCH",
       body: JSON.stringify({
         recommendNote: itemRow.querySelector(".section-item-note").value.trim(),
         sortOrder: Number(itemRow.querySelector(".section-item-sort").value || 0),
       }),
+    }), {
+      operation: "保存专栏商品",
+      busyLabel: "保存中…",
+      onSuccess: () => clearManagementRowDraft(itemRow),
+      refresh: loadSections,
     });
-    clearManagementRowDraft(itemRow);
-    await loadSections();
   }
 
   if (event.target.classList.contains("section-item-delete")) {
-    await requestJson(`/api/admin/sections/${encodeURIComponent(sectionId)}/items/${encodeURIComponent(itemId)}`, { method: "DELETE" });
-    clearManagementRowDraft(itemRow);
-    await loadSections();
+    await runManagementMutation(itemRow, event.target,
+      () => requestJson(`/api/admin/sections/${encodeURIComponent(sectionId)}/items/${encodeURIComponent(itemId)}`, { method: "DELETE" }), {
+        operation: "移除专栏商品",
+        busyLabel: "移除中…",
+        successMessage: "商品已从专栏移除。",
+        onSuccess: () => clearManagementRowDraft(itemRow),
+        refresh: loadSections,
+      });
   }
 });
 
@@ -1703,7 +1794,7 @@ galleryAlbumList?.addEventListener("click", async (event) => {
   const albumId = albumRow.dataset.albumId;
 
   if (event.target.classList.contains("gallery-save")) {
-    await requestJson(`/api/admin/gallery/albums/${encodeURIComponent(albumId)}`, {
+    await runManagementMutation(albumRow, event.target, () => requestJson(`/api/admin/gallery/albums/${encodeURIComponent(albumId)}`, {
       method: "PATCH",
       body: JSON.stringify({
         title: albumRow.querySelector(".gallery-title").value.trim(),
@@ -1711,15 +1802,23 @@ galleryAlbumList?.addEventListener("click", async (event) => {
         sortOrder: Number(albumRow.querySelector(".gallery-sort").value || 0),
         isVisible: albumRow.querySelector(".gallery-visible").checked,
       }),
+    }), {
+      operation: "保存相册",
+      busyLabel: "保存中…",
+      onSuccess: () => clearManagementRowDraft(albumRow),
+      refresh: loadGalleryAlbums,
     });
-    clearManagementRowDraft(albumRow);
-    await loadGalleryAlbums();
   }
 
   if (event.target.classList.contains("gallery-delete")) {
-    await requestJson(`/api/admin/gallery/albums/${encodeURIComponent(albumId)}`, { method: "DELETE" });
-    clearManagementRowDraft(albumRow, { clearPendingFile: true, clearChildren: true });
-    await loadGalleryAlbums();
+    await runManagementMutation(albumRow, event.target,
+      () => requestJson(`/api/admin/gallery/albums/${encodeURIComponent(albumId)}`, { method: "DELETE" }), {
+        operation: "删除相册",
+        busyLabel: "删除中…",
+        successMessage: "相册及其中图片已删除。",
+        onSuccess: () => clearManagementRowDraft(albumRow, { clearPendingFile: true, clearChildren: true }),
+        refresh: loadGalleryAlbums,
+      });
   }
 
   if (event.target.classList.contains("gallery-upload-image")) {
@@ -1727,24 +1826,23 @@ galleryAlbumList?.addEventListener("click", async (event) => {
     const file = adminState.pendingGalleryFiles.get(albumId) || albumRow.querySelector(".gallery-image-file").files[0];
     if (!file) return;
     adminState.galleryUploads.add(albumId);
-    event.target.disabled = true;
     try {
-      await uploadGalleryImage(
+      await runManagementMutation(albumRow, event.target, () => uploadGalleryImage(
         albumId,
         file,
         albumRow.querySelector(".gallery-image-new-caption").value.trim(),
         albumRow.querySelector(".gallery-image-new-visible").checked,
-      );
-      if (adminState.pendingGalleryFiles.get(albumId) === file) adminState.pendingGalleryFiles.delete(albumId);
-      try {
-        await loadGalleryAlbums();
-      } catch {
-        const status = albumRow.querySelector(".gallery-pending-file");
-        if (status) status.textContent = "图片已上传，但相册列表刷新失败，请重新加载";
-      }
+      ), {
+        operation: "上传图片",
+        busyLabel: "上传中…",
+        successMessage: "图片已上传。",
+        onSuccess: () => {
+          if (adminState.pendingGalleryFiles.get(albumId) === file) adminState.pendingGalleryFiles.delete(albumId);
+        },
+        refresh: loadGalleryAlbums,
+      });
     } finally {
       adminState.galleryUploads.delete(albumId);
-      event.target.disabled = false;
     }
   }
 
@@ -1753,30 +1851,50 @@ galleryAlbumList?.addEventListener("click", async (event) => {
   const imageId = imageRow.dataset.imageId;
 
   if (event.target.classList.contains("gallery-image-save")) {
-    await requestJson(`/api/admin/gallery/images/${encodeURIComponent(imageId)}`, {
+    await runManagementMutation(imageRow, event.target, () => requestJson(`/api/admin/gallery/images/${encodeURIComponent(imageId)}`, {
       method: "PATCH",
       body: JSON.stringify({
         caption: imageRow.querySelector(".gallery-image-caption").value.trim(),
         sortOrder: Number(imageRow.querySelector(".gallery-image-sort").value || 0),
         isVisible: imageRow.querySelector(".gallery-image-visible").checked,
       }),
+    }), {
+      operation: "保存图片信息",
+      busyLabel: "保存中…",
+      onSuccess: () => clearManagementRowDraft(imageRow),
+      refresh: loadGalleryAlbums,
     });
-    clearManagementRowDraft(imageRow);
-    await loadGalleryAlbums();
   }
 
   if (event.target.classList.contains("gallery-image-up")) {
-    await reorderGalleryImages(albumRow, imageId, -1);
+    await runManagementMutation(imageRow, event.target,
+      () => reorderGalleryImages(albumRow, imageId, -1), {
+        operation: "调整图片顺序",
+        busyLabel: "调整中…",
+        successMessage: "图片顺序已更新。",
+        refresh: loadGalleryAlbums,
+      });
   }
 
   if (event.target.classList.contains("gallery-image-down")) {
-    await reorderGalleryImages(albumRow, imageId, 1);
+    await runManagementMutation(imageRow, event.target,
+      () => reorderGalleryImages(albumRow, imageId, 1), {
+        operation: "调整图片顺序",
+        busyLabel: "调整中…",
+        successMessage: "图片顺序已更新。",
+        refresh: loadGalleryAlbums,
+      });
   }
 
   if (event.target.classList.contains("gallery-image-delete")) {
-    await requestJson(`/api/admin/gallery/images/${encodeURIComponent(imageId)}`, { method: "DELETE" });
-    clearManagementRowDraft(imageRow);
-    await loadGalleryAlbums();
+    await runManagementMutation(imageRow, event.target,
+      () => requestJson(`/api/admin/gallery/images/${encodeURIComponent(imageId)}`, { method: "DELETE" }), {
+        operation: "删除图片",
+        busyLabel: "删除中…",
+        successMessage: "图片已删除。",
+        onSuccess: () => clearManagementRowDraft(imageRow),
+        refresh: loadGalleryAlbums,
+      });
   }
 });
 
@@ -1786,7 +1904,7 @@ purchaseStepList?.addEventListener("click", async (event) => {
   const stepId = row.dataset.stepId;
 
   if (event.target.classList.contains("purchase-step-save")) {
-    await requestJson(`/api/admin/purchase-steps/${encodeURIComponent(stepId)}`, {
+    await runManagementMutation(row, event.target, () => requestJson(`/api/admin/purchase-steps/${encodeURIComponent(stepId)}`, {
       method: "PATCH",
       body: JSON.stringify({
         title: row.querySelector(".purchase-step-title").value.trim(),
@@ -1794,15 +1912,23 @@ purchaseStepList?.addEventListener("click", async (event) => {
         sortOrder: Number(row.querySelector(".purchase-step-sort").value || 0),
         isVisible: row.querySelector(".purchase-step-visible").checked,
       }),
+    }), {
+      operation: "保存买前步骤",
+      busyLabel: "保存中…",
+      onSuccess: () => clearManagementRowDraft(row),
+      refresh: loadPurchaseStepsAdmin,
     });
-    clearManagementRowDraft(row);
-    await loadPurchaseStepsAdmin();
   }
 
   if (event.target.classList.contains("purchase-step-delete")) {
-    await requestJson(`/api/admin/purchase-steps/${encodeURIComponent(stepId)}`, { method: "DELETE" });
-    clearManagementRowDraft(row);
-    await loadPurchaseStepsAdmin();
+    await runManagementMutation(row, event.target,
+      () => requestJson(`/api/admin/purchase-steps/${encodeURIComponent(stepId)}`, { method: "DELETE" }), {
+        operation: "删除买前步骤",
+        busyLabel: "删除中…",
+        successMessage: "步骤已删除。",
+        onSuccess: () => clearManagementRowDraft(row),
+        refresh: loadPurchaseStepsAdmin,
+      });
   }
 });
 
@@ -1811,7 +1937,7 @@ partnerList.addEventListener("click", async (event) => {
   if (!row) return;
   const partnerId = row.dataset.partnerId;
   if (event.target.classList.contains("partner-save")) {
-    await requestJson(`/api/admin/partners/${encodeURIComponent(partnerId)}`, {
+    await runManagementMutation(row, event.target, () => requestJson(`/api/admin/partners/${encodeURIComponent(partnerId)}`, {
       method: "PATCH",
       body: JSON.stringify({
         name: row.querySelector(".partner-name").value.trim(),
@@ -1819,14 +1945,22 @@ partnerList.addEventListener("click", async (event) => {
         sortOrder: Number(row.querySelector(".partner-sort").value || 0),
         active: row.querySelector(".partner-active").checked,
       }),
+    }), {
+      operation: "保存合作方",
+      busyLabel: "保存中…",
+      onSuccess: () => clearManagementRowDraft(row),
+      refresh: loadPartners,
     });
-    clearManagementRowDraft(row);
-    await loadPartners();
   }
   if (event.target.classList.contains("partner-delete")) {
-    await requestJson(`/api/admin/partners/${encodeURIComponent(partnerId)}`, { method: "DELETE" });
-    clearManagementRowDraft(row);
-    await loadPartners();
+    await runManagementMutation(row, event.target,
+      () => requestJson(`/api/admin/partners/${encodeURIComponent(partnerId)}`, { method: "DELETE" }), {
+        operation: "删除合作方",
+        busyLabel: "删除中…",
+        successMessage: "合作方已删除。",
+        onSuccess: () => clearManagementRowDraft(row),
+        refresh: loadPartners,
+      });
   }
 });
 

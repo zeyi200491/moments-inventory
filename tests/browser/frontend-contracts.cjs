@@ -106,8 +106,8 @@ test('商品管理包含明确的批量作用范围和价格段控件', () => {
   assert.ok(html.indexOf('id="bulkPricingPanel"') > html.indexOf('<h2>商品管理</h2>'));
   assert.match(html, /id="bulkPreviewStatus"[^>]*aria-live="polite"/);
   assert.match(html, /id="bulkConfirmStatus"[^>]*role="alert"/);
-  assert.match(html, /showcase\.css\?v=20260925-bulk-price-workflow/);
-  assert.match(html, /admin\.js\?v=20261015-admin-feedback/);
+  assert.match(html, /showcase\.css\?v=20261015-row-action-feedback/);
+  assert.match(html, /admin\.js\?v=20261015-row-action-feedback/);
   assert.match(fs.readFileSync(path.join(root, 'index.html'), 'utf8'), /showcase\.js\?v=20261015-access-feedback/);
   assert.match(fs.readFileSync(path.join(root, 'product.html'), 'utf8'), /showcase\.js\?v=20261015-access-feedback/);
 });
@@ -199,6 +199,11 @@ test('动态管理输入与详情图片按钮具有上下文无障碍名称', ()
   assert.match(admin, /aria-label="\$\{escapeHtml\(product\.model\).*?展示价格/);
   assert.match(admin, /aria-label="\$\{escapeHtml\(partner\.name\).*?合作方名称/);
   assert.match(admin, /aria-label="\$\{escapeHtml\(album\.title\).*?上传图片/);
+  assert.match(admin, /aria-label="在\$\{escapeHtml\(section\.title\)\}中搜索型号、品牌或文案"/);
+  assert.match(admin, /aria-label="\$\{escapeHtml\(section\.title\)\}最低当前展示价"/);
+  assert.match(admin, /aria-label="\$\{escapeHtml\(section\.title\)\}最高当前展示价"/);
+  assert.match(admin, /aria-label="\$\{escapeHtml\(section\.title\)\}商品推荐语"/);
+  assert.match(admin, /aria-label="\$\{escapeHtml\(album\.title\)\}新图片说明"/);
   assert.match(showcase, /aria-label="查看\$\{escapeHtml\(title\)}图片，第\$\{index \+ 1\}张"/);
 });
 
@@ -417,6 +422,109 @@ test('后台异步写入失败时展示可理解的错误并且不冒报成功',
   assert.match(errorPanel.textContent, /操作失败/);
   assert.match(errorPanel.textContent, /网络断开/);
   assert.equal(errorPanel.hidden, false);
+});
+
+test('行级写入期间锁定动作，失败后保留草稿并显示可核对提示', async () => {
+  const c = pageContext('admin.js');
+  const status = { textContent: '', dataset: {}, setAttribute() {}, removeAttribute() {} };
+  const row = {
+    dataset: { draft: '保留的值' },
+    querySelector(selector) { return selector === '.management-action-status' ? status : null; },
+    setAttribute() {},
+    removeAttribute() {},
+  };
+  const button = {
+    disabled: false,
+    textContent: '保存',
+    setAttribute() {},
+    removeAttribute() {},
+  };
+  let rejectRequest;
+  const pending = vm.runInContext(`runManagementMutation(managementRow, managementButton,
+    () => new Promise((_resolve, reject) => { rejectManagementRequest = reject; }),
+    { busyLabel: '保存中…', successMessage: '保存成功' })`, Object.assign(c, {
+    managementRow: row,
+    managementButton: button,
+  }));
+  assert.equal(button.disabled, true);
+  assert.equal(status.dataset.state, 'busy');
+  c.rejectManagementRequest(Object.assign(new Error('连接中断'), { status: 0 }));
+  assert.equal(await pending, false);
+  assert.equal(button.disabled, false);
+  assert.equal(button.textContent, '保存');
+  assert.equal(row.dataset.draft, '保留的值');
+  assert.equal(status.dataset.state, 'error');
+  assert.match(status.textContent, /结果暂未确认/);
+  assert.match(status.textContent, /核对/);
+});
+
+test('专栏保存失败显示在对应行且不清除输入', async () => {
+  const c = pageContext('admin.js');
+  const status = { textContent: '', dataset: {} };
+  const controls = {
+    '.section-title': { value: '已修改专栏' },
+    '.section-subtitle': { value: '保留的说明' },
+    '.section-sort': { value: '3' },
+    '.section-active': { checked: true },
+  };
+  const row = {
+    dataset: { sectionId: 'section-1' },
+    querySelector(selector) { return selector === '.management-action-status' ? status : controls[selector]; },
+    querySelectorAll() { return []; },
+    setAttribute() {},
+    removeAttribute() {},
+  };
+  const button = {
+    disabled: false,
+    textContent: '保存专栏',
+    classList: { contains(name) { return name === 'section-save'; } },
+    closest(selector) { return selector === '.section-admin-row' ? row : null; },
+    setAttribute() {},
+    removeAttribute() {},
+  };
+  c.fetch = async () => ({ ok: false, status: 500, text: async () => '数据库繁忙' });
+  await c.nodes.get('sectionList').listeners.click({ target: button });
+  assert.equal(button.disabled, false);
+  assert.equal(button.textContent, '保存专栏');
+  assert.equal(controls['.section-title'].value, '已修改专栏');
+  assert.equal(controls['.section-subtitle'].value, '保留的说明');
+  assert.equal(status.dataset.state, 'error');
+  assert.match(status.textContent, /结果暂未确认/);
+  assert.match(status.textContent, /数据库繁忙/);
+});
+
+test('相册上传失败时保留待上传文件并在相册行提示结果未知', async () => {
+  const c = pageContext('admin.js');
+  const status = { textContent: '', dataset: {} };
+  const file = { name: 'camera.jpg' };
+  const controls = {
+    '.gallery-image-file': { files: [file] },
+    '.gallery-image-new-caption': { value: '正面图' },
+    '.gallery-image-new-visible': { checked: true },
+  };
+  const row = {
+    dataset: { albumId: 'album-1' },
+    querySelector(selector) { return selector === '.management-action-status' ? status : controls[selector]; },
+    setAttribute() {},
+    removeAttribute() {},
+  };
+  const button = {
+    disabled: false,
+    textContent: '上传图片',
+    classList: { contains(name) { return name === 'gallery-upload-image'; } },
+    closest(selector) { return selector === '.gallery-admin-row' ? row : null; },
+    setAttribute() {},
+    removeAttribute() {},
+  };
+  c.FormData = class { append() {} };
+  vm.runInContext("adminState.pendingGalleryFiles.set('album-1', uploadFile)", Object.assign(c, { uploadFile: file }));
+  c.fetch = async () => ({ ok: false, status: 503, text: async () => '存储服务繁忙' });
+  await c.nodes.get('galleryAlbumList').listeners.click({ target: button });
+  assert.equal(button.disabled, false);
+  assert.equal(vm.runInContext("adminState.pendingGalleryFiles.get('album-1') === uploadFile", c), true);
+  assert.equal(status.dataset.state, 'error');
+  assert.match(status.textContent, /结果暂未确认/);
+  assert.match(status.textContent, /存储服务繁忙/);
 });
 
 test('设置保存失败会清除上一次的成功状态', async () => {
@@ -1114,7 +1222,7 @@ test('CCD身份复核工作区声明上传、pending恢复、决定与确认控�
   assert.match(html, /value="full"/);
   assert.match(html, /name="file"/);
   assert.match(html, /aria-live="polite"/);
-  assert.match(html, /admin\.js\?v=20261015-admin-feedback/);
+  assert.match(html, /admin\.js\?v=20261015-row-action-feedback/);
 });
 
 test('导入身份复核可恢复 pending 批次并渲染来源范围与未决定数量', async () => {

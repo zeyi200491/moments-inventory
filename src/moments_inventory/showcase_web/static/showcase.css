@@ -1098,6 +1098,14 @@ textarea {
   font-weight: 800;
 }
 
+.management-action-status:empty {
+  display: none;
+}
+
+.management-action-status[data-state="error"] {
+  color: #9b3548;
+}
+
 .admin-product-list {
   display: grid;
   gap: 10px;
