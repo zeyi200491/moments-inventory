@@ -19,6 +19,7 @@ def create_import_review_batch(
     source_path: str = "",
     source_label: str = "",
     max_missing_fraction: float = 0.3,
+    parsed_rows: list[dict] | None = None,
 ) -> dict[str, object]:
     """解析并持久化人工复核批次；不更改商品库存和正式导入日志。"""
     if mode not in ("incremental", "full") or not source_scope.strip():
@@ -26,7 +27,7 @@ def create_import_review_batch(
     source_scope = source_scope.strip()
     if not 0 <= max_missing_fraction <= 1:
         raise ValueError("缺失复核阈值必须介于0和1")
-    parsed = parse_review_workbook(content)
+    parsed = parsed_rows if parsed_rows is not None else parse_review_workbook(content)
     row_errors = [
         f"第 {item['row_number']} 行：{error}"
         for item in parsed

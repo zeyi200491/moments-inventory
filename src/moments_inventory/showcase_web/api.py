@@ -1436,26 +1436,25 @@ def create_admin_router(
                 if len(content) > _MAX_UPLOAD_BYTES:
                     raise HTTPException(status_code=413, detail="复核工作簿不能超过10MB")
             filename = Path(file.filename or "").name or "upload.xlsx"
+            workbook_content = bytes(content)
+            try:
+                parsed_rows = import_review_service.parse_review_workbook(workbook_content)
+            except (ValueError, BadZipFile, KeyError, ParseError, IndexError) as error:
+                raise HTTPException(status_code=400, detail=str(error)) from None
             try:
                 batch = import_review_service.create_import_review_batch(
                     repo,
-                    bytes(content),
+                    workbook_content,
                     source_scope=sourceScope,
                     mode=mode,
                     complete=complete,
                     source_path=filename,
                     source_label=filename,
                     max_missing_fraction=maxMissingFraction,
+                    parsed_rows=parsed_rows,
                 )
-            except (ValueError, BadZipFile, KeyError, ParseError) as error:
+            except ValueError as error:
                 raise HTTPException(status_code=400, detail=str(error)) from None
-            except IndexError:
-                # 仅在复跑工作簿解析也出现索引越界时，才认定为客户端文件错误。
-                try:
-                    import_review_service.parse_review_workbook(bytes(content))
-                except IndexError:
-                    raise HTTPException(status_code=400, detail="Excel 工作簿索引无效") from None
-                raise
             rows = import_review_service.list_import_review_rows(repo, str(batch["batch_id"]))
             return AdminImportReviewBatchDetailResponse(**batch, rows=rows)
         except HTTPException:

@@ -4,7 +4,8 @@ import csv
 from dataclasses import replace
 from pathlib import Path
 from io import BytesIO, StringIO
-from zipfile import ZipFile
+from zipfile import BadZipFile, ZipFile
+from xml.etree.ElementTree import ParseError
 
 import pytest
 from fastapi.testclient import TestClient
@@ -1859,6 +1860,38 @@ def test_import_review_upload_keeps_service_index_errors_as_server_errors(
     )
 
     assert response.status_code == 500
+
+
+@pytest.mark.parametrize("error_type", [BadZipFile, ParseError, KeyError])
+def test_import_review_upload_keeps_service_format_errors_as_server_errors(
+    tmp_path: Path,
+    authenticated_client: TestClient,
+    repo: SQLiteShowcaseRepository,
+    monkeypatch: pytest.MonkeyPatch,
+    error_type: type[Exception],
+) -> None:
+    def raise_format_error(*args: object, **kwargs: object) -> None:
+        raise error_type("service-level failure")
+
+    monkeypatch.setattr(
+        "moments_inventory.showcase_web.api.import_review_service.create_import_review_batch",
+        raise_format_error,
+    )
+    content = _review_workbook_bytes(tmp_path, [{
+        "商品ID": "new-product", "型号": "ixus80", "品牌": "佳能", "成本价": "100",
+        "展示价": "200", "是否展示": "是",
+    }])
+    before = repo._get_connection().execute("select count(*) from showcase_import_review_batches").fetchone()[0]
+
+    response = authenticated_client.post(
+        "/api/admin/import-review/batches",
+        data={"sourceScope": "source-a", "mode": "incremental", "complete": "false"},
+        files={"file": ("valid.xlsx", content, "application/octet-stream")},
+    )
+
+    after = repo._get_connection().execute("select count(*) from showcase_import_review_batches").fetchone()[0]
+    assert response.status_code == 500
+    assert after == before
 
 
 def test_stale_import_review_target_returns_conflict_and_keeps_batch_pending(
