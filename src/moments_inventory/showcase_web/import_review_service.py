@@ -28,6 +28,13 @@ def create_import_review_batch(
     if not 0 <= max_missing_fraction <= 1:
         raise ValueError("缺失复核阈值必须介于0和1")
     parsed = parse_review_workbook(content)
+    row_errors = [
+        f"第 {item['row_number']} 行：{error}"
+        for item in parsed
+        for error in item["errors"]
+    ]
+    if row_errors:
+        raise ValueError("工作簿行校验失败：" + "；".join(row_errors))
     if mode == "full" and (not complete or not parsed):
         raise ValueError("全量导入需要完整性声明且不能是空表")
     now = datetime.now(timezone.utc).isoformat()

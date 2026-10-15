@@ -110,21 +110,21 @@ def test_duplicate_source_keys_keep_both_rows_and_mark_conflict(tmp_path):
     assert all(item['decision'] is None for item in rows)
 
 
-def test_row_numbers_are_excel_rows_and_bad_rows_remain_reviewable(tmp_path):
+def test_invalid_row_rejects_batch_with_real_excel_row_number(tmp_path):
     repo = SQLiteShowcaseRepository(tmp_path / 'showcase.db')
     path = tmp_path / 'review.xlsx'
     bad = dict.fromkeys(SHOWCASE_HEADERS, '')
     bad.update({'商品ID': 'bad', '型号': 'ixus80', '品牌': '佳能', '成本价': 'bad', '展示价': 20, '是否展示': '是'})
     good = dict.fromkeys(SHOWCASE_HEADERS, '')
     good.update({'商品ID': 'good', '型号': 'ixus80', '品牌': '佳能', '成本价': 10, '展示价': 20, '是否展示': '是'})
-    _write_workbook(path, [SHOWCASE_HEADERS, [bad[name] for name in SHOWCASE_HEADERS], [good[name] for name in SHOWCASE_HEADERS]])
+    _write_workbook(path, [SHOWCASE_HEADERS, [good[name] for name in SHOWCASE_HEADERS], [bad[name] for name in SHOWCASE_HEADERS]])
 
-    batch = create_import_review_batch(repo, path.read_bytes(), source_scope='source-a')
-    rows = list_import_review_rows(repo, batch['batch_id'])
+    with pytest.raises(ValueError, match='第 3 行'):
+        create_import_review_batch(repo, path.read_bytes(), source_scope='source-a')
 
-    assert [item['row_number'] for item in rows] == [2, 3]
-    assert rows[0]['errors']
-    assert rows[1]['snapshot']['product_id'] == 'good'
+    with repo._get_connection() as conn:
+        assert conn.execute('select count(*) from showcase_import_review_batches').fetchone()[0] == 0
+        assert conn.execute('select count(*) from showcase_import_review_rows').fetchone()[0] == 0
 
 
 def test_full_batch_requires_complete_and_nonempty_scope(tmp_path):
@@ -134,6 +134,21 @@ def test_full_batch_requires_complete_and_nonempty_scope(tmp_path):
         create_import_review_batch(repo, payload, source_scope='source-a', mode='full')
     with pytest.raises(ValueError, match='来源范围'):
         create_import_review_batch(repo, payload, source_scope=' ')
+    empty_payload = _workbook_bytes(tmp_path, [])
+    with pytest.raises(ValueError, match='完整性声明'):
+        create_import_review_batch(repo, empty_payload, source_scope='source-a', mode='full', complete=True)
+    with repo._get_connection() as conn:
+        assert conn.execute('select count(*) from showcase_import_review_batches').fetchone()[0] == 0
+
+
+def test_missing_threshold_must_be_between_zero_and_one(tmp_path):
+    repo = SQLiteShowcaseRepository(tmp_path / 'showcase.db')
+    payload = _workbook_bytes(tmp_path, [{'商品ID': 'new-1', '型号': 'ixus80', '品牌': '佳能', '成本价': 10, '展示价': 20, '是否展示': '是'}])
+    for threshold in (-0.01, 1.01):
+        with pytest.raises(ValueError, match='阈值'):
+            create_import_review_batch(repo, payload, source_scope='source-a', max_missing_fraction=threshold)
+    with repo._get_connection() as conn:
+        assert conn.execute('select count(*) from showcase_import_review_batches').fetchone()[0] == 0
 
 
 def test_decisions_persist_and_terminal_batches_reject_updates(tmp_path):

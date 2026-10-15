@@ -48,7 +48,7 @@ def parse_review_workbook(content: bytes) -> list[dict]:
             record_errors = []
         except (ValueError, IndexError) as exc:
             record = None
-            record_errors = [str(exc)]
+            record_errors = [str(exc).replace('第 2 行', f'第 {number} 行')]
         source_key = raw.get('来源商品键', raw.get('product_key', '')).strip()
         errors = list(record_errors)
         if len(source_key) > 256 or any(ord(character) < 32 for character in source_key):
