@@ -411,6 +411,9 @@ test('登录成功后自动恢复导入身份复核 pending 队列', async () =>
   await c.nodes.get('loginForm').listeners.submit({ preventDefault() {} });
   assert.equal(requests.filter((url) => url === '/api/admin/import-review/batches').length, 1);
   assert.equal(c.nodes.get('importReviewStatus').textContent, '待处理列表已刷新。');
+  c.nodes.get('importReviewStatus').textContent = '提交结果尚未确认，请使用同一幂等键重试。';
+  await vm.runInContext('loadImportReviewBatches()', c);
+  assert.equal(c.nodes.get('importReviewStatus').textContent, '提交结果尚未确认，请使用同一幂等键重试。');
 });
 
 test('批量价格段转换为包含边界且默认排除隐藏和已售商品', () => {
