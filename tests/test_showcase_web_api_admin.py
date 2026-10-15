@@ -1796,6 +1796,71 @@ def test_import_review_upload_maps_invalid_workbook_xml_to_400(
     assert after == before
 
 
+def test_import_review_upload_maps_shared_string_index_error_to_400(
+    authenticated_client: TestClient,
+    repo: SQLiteShowcaseRepository,
+) -> None:
+    invalid_workbook = BytesIO()
+    with ZipFile(invalid_workbook, "w") as archive:
+        archive.writestr(
+            "xl/sharedStrings.xml",
+            '<sst xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main"><si><t>only-value</t></si></sst>',
+        )
+        archive.writestr(
+            "xl/workbook.xml",
+            '<workbook xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main" '
+            'xmlns:r="http://schemas.openxmlformats.org/officeDocument/2006/relationships">'
+            '<sheets><sheet name="Sheet1" sheetId="1" r:id="rId1"/></sheets></workbook>',
+        )
+        archive.writestr(
+            "xl/_rels/workbook.xml.rels",
+            '<Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships">'
+            '<Relationship Id="rId1" Target="worksheets/sheet1.xml"/></Relationships>',
+        )
+        archive.writestr(
+            "xl/worksheets/sheet1.xml",
+            '<worksheet xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main">'
+            '<sheetData><row r="1"><c r="A1" t="s"><v>1</v></c></row></sheetData></worksheet>',
+        )
+    before = repo._get_connection().execute("select count(*) from showcase_import_review_batches").fetchone()[0]
+
+    response = authenticated_client.post(
+        "/api/admin/import-review/batches",
+        data={"sourceScope": "source-a", "mode": "incremental", "complete": "false"},
+        files={"file": ("invalid-shared-string.xlsx", invalid_workbook.getvalue(), "application/octet-stream")},
+    )
+
+    after = repo._get_connection().execute("select count(*) from showcase_import_review_batches").fetchone()[0]
+    assert response.status_code == 400
+    assert after == before
+
+
+def test_import_review_upload_keeps_service_index_errors_as_server_errors(
+    tmp_path: Path,
+    authenticated_client: TestClient,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    def raise_index_error(*args: object, **kwargs: object) -> None:
+        raise IndexError("service bug")
+
+    monkeypatch.setattr(
+        "moments_inventory.showcase_web.api.import_review_service.create_import_review_batch",
+        raise_index_error,
+    )
+    content = _review_workbook_bytes(tmp_path, [{
+        "商品ID": "new-product", "型号": "ixus80", "品牌": "佳能", "成本价": "100",
+        "展示价": "200", "是否展示": "是",
+    }])
+
+    response = authenticated_client.post(
+        "/api/admin/import-review/batches",
+        data={"sourceScope": "source-a", "mode": "incremental", "complete": "false"},
+        files={"file": ("valid.xlsx", content, "application/octet-stream")},
+    )
+
+    assert response.status_code == 500
+
+
 def test_stale_import_review_target_returns_conflict_and_keeps_batch_pending(
     tmp_path: Path,
     authenticated_client: TestClient,

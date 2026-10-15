@@ -1449,6 +1449,13 @@ def create_admin_router(
                 )
             except (ValueError, BadZipFile, KeyError, ParseError) as error:
                 raise HTTPException(status_code=400, detail=str(error)) from None
+            except IndexError:
+                # 仅在复跑工作簿解析也出现索引越界时，才认定为客户端文件错误。
+                try:
+                    import_review_service.parse_review_workbook(bytes(content))
+                except IndexError:
+                    raise HTTPException(status_code=400, detail="Excel 工作簿索引无效") from None
+                raise
             rows = import_review_service.list_import_review_rows(repo, str(batch["batch_id"]))
             return AdminImportReviewBatchDetailResponse(**batch, rows=rows)
         except HTTPException:
