@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from contextlib import contextmanager
 import inspect
 import pytest
 
@@ -253,6 +254,37 @@ def test_full_product_id_from_other_scope_is_error_and_does_not_count_present(tm
     assert batch['result']['missing_items'][0]['product_id'] == 'current-product'
     assert any('其他来源范围' in error for error in staged['errors'])
     assert staged['recommendation'] is None
+
+
+def test_full_missing_summary_uses_one_read_snapshot_during_product_deletion(tmp_path):
+    repo = SQLiteShowcaseRepository(tmp_path / 'showcase.db')
+    _seed_product(repo, 'snapshot-product', source_key='snapshot-key')
+    payload = _workbook_bytes(tmp_path, [{'商品ID': 'new-product', '型号': 'powershot', '品牌': '佳能', '成本价': 10, '展示价': 20, '是否展示': '是', '来源商品键': 'new-key'}])
+    original_read_connection = repo._read_connection
+    read_count = 0
+
+    @contextmanager
+    def delete_after_first_snapshot():
+        nonlocal read_count
+        read_count += 1
+        with original_read_connection() as conn:
+            yield conn
+        if read_count == 1:
+            with repo._get_connection() as write_conn:
+                write_conn.execute("delete from showcase_products where product_id='snapshot-product'")
+
+    repo._read_connection = delete_after_first_snapshot
+
+    batch = create_import_review_batch(repo, payload, source_scope='source-a', mode='full', complete=True)
+
+    assert batch['missing_count'] == 1
+    assert batch['result']['missing_items'] == [{
+        'product_id': 'snapshot-product',
+        'model': 'ixus80',
+        'brand': '佳能',
+        'source_product_key': 'snapshot-key',
+        'row_version': 0,
+    }]
 
 
 def test_missing_threshold_must_be_between_zero_and_one(tmp_path):

@@ -41,21 +41,24 @@ def create_import_review_batch(
     fingerprint = hashlib.sha256(content).hexdigest()
 
     with repository._read_connection() as conn:
-        aliases = {}
-        for alias_scope, source_key, product_id in conn.execute(
-            "select source_scope,source_key,product_id from showcase_source_identity_aliases"
-        ).fetchall():
-            aliases.setdefault(str(source_key), []).append((str(alias_scope), str(product_id)))
-        scoped_product_ids = {str(row[0]) for row in conn.execute(
-            "select product_id from showcase_products where source_scope=?", (source_scope,)
-        ).fetchall()}
-    # sqlite rows become tuples without row_factory, map them explicitly.
-    with repository._read_connection() as conn:
-        cursor = conn.execute(
-            "select product_id,model,brand,row_version,source_scope,source_product_key from showcase_products"
-        )
-        columns = [column[0] for column in cursor.description]
-        products = [dict(zip(columns, row)) for row in cursor.fetchall()]
+        # 三组数据必须来自同一 SQLite 读快照，避免商品在查询间增删造成范围摘要错位。
+        conn.execute("BEGIN")
+        try:
+            aliases = {}
+            for alias_scope, source_key, product_id in conn.execute(
+                "select source_scope,source_key,product_id from showcase_source_identity_aliases"
+            ).fetchall():
+                aliases.setdefault(str(source_key), []).append((str(alias_scope), str(product_id)))
+            scoped_product_ids = {str(row[0]) for row in conn.execute(
+                "select product_id from showcase_products where source_scope=?", (source_scope,)
+            ).fetchall()}
+            cursor = conn.execute(
+                "select product_id,model,brand,row_version,source_scope,source_product_key from showcase_products"
+            )
+            columns = [column[0] for column in cursor.description]
+            products = [dict(zip(columns, row)) for row in cursor.fetchall()]
+        finally:
+            conn.rollback()
     products_by_id = {str(product["product_id"]): product for product in products}
     by_source_key = {
         (str(product["source_scope"]), str(product["source_product_key"])): product
