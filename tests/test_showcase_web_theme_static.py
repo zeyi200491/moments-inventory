@@ -42,7 +42,7 @@ def test_filter_buttons_render_sticker_icon_markup() -> None:
     assert "filter-025.png" in js
     assert "shop-intro-panel" in js
     # 发布新版交互时必须更新缓存版本，避免浏览器继续执行旧脚本。
-    assert "showcase.js?v=20261009-copy-fallback" in html
+    assert "showcase.js?v=20261015-access-feedback" in html
     assert "showcase.css?v=20260921-optimization2" in html
 
 

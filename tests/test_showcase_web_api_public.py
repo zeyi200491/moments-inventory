@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from urllib.parse import quote
 import time
@@ -13,6 +14,7 @@ from moments_inventory.showcase_web.app import create_showcase_app
 from moments_inventory.showcase_web.auth import hash_password
 from moments_inventory.showcase_web.models import (
     ShowcaseGalleryImage,
+    ShowcaseGalleryAlbum,
     ShowcaseProduct,
     ShowcasePurchaseStep,
     ShowcaseSection,
@@ -110,15 +112,82 @@ def test_customer_password_also_protects_original_media(tmp_path: Path) -> None:
     samples.mkdir()
     (storage / "body.jpg").write_bytes(b"media")
     (samples / "sample.jpg").write_bytes(b"sample")
+    repo.upsert_product(_product("visible", visible=True, display_price=500))
+    repo.add_product_image("body", "visible", "storage/showcase_images/body.jpg", "body", 0, True)
+    repo.add_product_image("sample", "visible", "sample-images/sample.jpg", "sample", 0, False)
     client = TestClient(
         create_showcase_app(repository=repo, storage_dir=storage, sample_images_dir=samples)
     )
 
     assert client.get("/storage/showcase_images/body.jpg").status_code == 401
     assert client.get("/sample-images/sample.jpg").status_code == 401
+    assert client.get("/storage/showcase_images/unreferenced.jpg").status_code == 401
     assert client.post("/api/public/access", json={"password": "week-pass"}).status_code == 200
     assert client.get("/storage/showcase_images/body.jpg").content == b"media"
     assert client.get("/sample-images/sample.jpg").content == b"sample"
+    assert client.get("/storage/showcase_images/unreferenced.jpg").status_code == 404
+
+
+def test_hidden_product_media_is_denied_unless_another_public_product_references_it(tmp_path: Path) -> None:
+    repo = SQLiteShowcaseRepository(tmp_path / "showcase.db")
+    repo.initialize()
+    storage = tmp_path / "storage"
+    storage.mkdir()
+    (storage / "only-hidden.jpg").write_bytes(b"private")
+    (storage / "shared.jpg").write_bytes(b"shared")
+    hidden = _product("hidden-media", visible=True, display_price=500)
+    public = _product("public-media", visible=True, display_price=600)
+    repo.upsert_product(hidden)
+    repo.upsert_product(public)
+    repo.add_product_image("hidden-cover", hidden.product_id, "storage/showcase_images/only-hidden.jpg", "body", 0, True)
+    repo.add_product_image("hidden-shared", hidden.product_id, "storage/showcase_images/shared.jpg", "body", 1, False)
+    repo.add_product_image("public-shared", public.product_id, "storage/showcase_images/shared.jpg", "body", 0, True)
+    client = TestClient(create_showcase_app(repository=repo, storage_dir=storage, sample_images_dir=tmp_path / "samples"))
+
+    assert client.get("/storage/showcase_images/only-hidden.jpg").status_code == 200
+    assert client.get("/storage/showcase_images/shared.jpg").status_code == 200
+    repo.set_product_visibility(hidden.product_id, False)
+    response = client.get("/storage/showcase_images/only-hidden.jpg")
+    assert response.status_code == 404
+    assert response.headers["cache-control"] == "private, no-store"
+    variant_response = client.get(
+        "/api/public/image-variant",
+        params={"path": "storage/showcase_images/only-hidden.jpg"},
+    )
+    assert variant_response.status_code == 404
+    assert client.get("/storage/showcase_images/shared.jpg").status_code == 200
+
+    public.sold = True
+    repo.upsert_product(public)
+    assert client.get("/storage/showcase_images/shared.jpg").status_code == 404
+
+    admin_session = "admin-media-session"
+    repo.save_admin_session(admin_session, (datetime.now(timezone.utc) + timedelta(days=1)).isoformat())
+    admin_client = TestClient(client.app)
+    admin_client.cookies.set("showcase_admin_session", admin_session)
+    admin_response = admin_client.get("/storage/showcase_images/only-hidden.jpg")
+    assert admin_response.status_code == 200
+    assert admin_response.headers["cache-control"] == "private, no-store"
+
+
+def test_hidden_gallery_media_is_denied_to_customer_links(tmp_path: Path) -> None:
+    repo = SQLiteShowcaseRepository(tmp_path / "showcase.db")
+    repo.initialize()
+    storage = tmp_path / "storage"
+    storage.mkdir()
+    (storage / "gallery.jpg").write_bytes(b"gallery")
+    now = "2026-10-15T00:00:00+00:00"
+    album = ShowcaseGalleryAlbum("album", "图库", "", 0, True, now, now)
+    repo.upsert_gallery_album(album)
+    repo.add_gallery_image(ShowcaseGalleryImage("gallery-image", "album", "storage/showcase_images/gallery.jpg", "", 0, True, now, now))
+    client = TestClient(create_showcase_app(repository=repo, storage_dir=storage, sample_images_dir=tmp_path / "samples"))
+
+    assert client.get("/storage/showcase_images/gallery.jpg").status_code == 200
+    album.is_visible = False
+    repo.upsert_gallery_album(album)
+    response = client.get("/storage/showcase_images/gallery.jpg")
+    assert response.status_code == 404
+    assert response.headers["cache-control"] == "private, no-store"
 
 
 def test_public_products_use_sample_image_as_cover_when_body_cover_is_missing(
@@ -556,6 +625,10 @@ def test_app_serves_sample_images_directory(tmp_path: Path) -> None:
     (image_dir / "01.jpg").write_bytes(b"sample-image")
     repo = SQLiteShowcaseRepository(tmp_path / "showcase.db")
     repo.initialize()
+    repo.upsert_product(_product("sample-product", visible=True, display_price=500))
+    repo.add_product_image(
+        "sample-image", "sample-product", "sample-images/索尼/索尼DSC-T10/01.jpg", "sample", 0, False,
+    )
     client = TestClient(create_showcase_app(repository=repo, sample_images_dir=sample_dir))
 
     response = client.get("/sample-images/" + quote("索尼/索尼DSC-T10/01.jpg"))

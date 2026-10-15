@@ -1202,6 +1202,36 @@ class SQLiteShowcaseRepository:
             ).fetchall()
         return [ShowcaseProductImage(*row[:5],bool(row[5]),str(row[6])) for row in rows]
 
+    def is_media_path_public(self, image_path: str) -> bool:
+        """只允许当前公开商品或公开图库仍引用的媒体通过客户链接访问。"""
+        normalized_path = str(image_path).replace("\\", "/").lstrip("/")
+        if not normalized_path or any(part == ".." for part in normalized_path.split("/")):
+            return False
+        with self._read_connection() as conn:
+            product_reference = conn.execute(
+                """select 1 from showcase_products p
+                where p.visible=1 and p.sold=0 and (
+                    replace(p.cover_image_path,char(92),'/')=?
+                    or exists (
+                        select 1 from showcase_all_product_images i
+                        where i.product_id=p.product_id
+                          and replace(i.image_path,char(92),'/')=?
+                    )
+                ) limit 1""",
+                (normalized_path, normalized_path),
+            ).fetchone()
+            if product_reference is not None:
+                return True
+            gallery_reference = conn.execute(
+                """select 1 from showcase_gallery_images i
+                join showcase_gallery_albums a on a.album_id=i.album_id
+                where i.is_visible=1 and a.is_visible=1
+                  and replace(i.image_path,char(92),'/')=?
+                limit 1""",
+                (normalized_path,),
+            ).fetchone()
+        return gallery_reference is not None
+
     @staticmethod
     def _repair_cover(conn: sqlite3.Connection, product_id: str) -> None:
         row = conn.execute("select cover_image_path from showcase_products where product_id=?", (product_id,)).fetchone()

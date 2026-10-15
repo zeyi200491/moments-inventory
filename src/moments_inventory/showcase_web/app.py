@@ -3,9 +3,8 @@ from __future__ import annotations
 from pathlib import Path
 from contextlib import asynccontextmanager
 from datetime import datetime, timezone
-import time
 
-from fastapi import FastAPI, HTTPException, Cookie, Request
+from fastapi import FastAPI, HTTPException, Request
 from fastapi.responses import FileResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
 
@@ -38,32 +37,59 @@ def create_showcase_app(
 
     app = FastAPI(title="星星CCD库存展示系统", lifespan=lifespan)
     app.add_middleware(PublicResponseCacheMiddleware, repository=repo)
-    media_access_state = {"checked_at": 0.0, "password_hash": ""}
+
+    def _is_admin_session(session_id: str | None) -> bool:
+        expires_at_raw = repo.get_admin_session_expires_at(session_id) if session_id else None
+        try:
+            expiration = datetime.fromisoformat(expires_at_raw) if expires_at_raw else None
+            if expiration is not None and expiration.tzinfo is None:
+                expiration = expiration.replace(tzinfo=timezone.utc)
+            return expiration is not None and expiration > datetime.now(timezone.utc)
+        except (TypeError, ValueError):
+            return False
+
+    def _media_path_from_url(url_path: str) -> str | None:
+        for prefix in ("storage/showcase_images", "sample-images"):
+            url_prefix = f"/{prefix}/"
+            if not url_path.startswith(url_prefix):
+                continue
+            relative_path = url_path[len(url_prefix):]
+            if not relative_path or any(part == ".." for part in relative_path.replace("\\", "/").split("/")):
+                return None
+            return f"{prefix}/{relative_path}"
+        return None
+
+    def _media_access_error(request: Request, media_path: str | None) -> tuple[int, str] | None:
+        if _is_admin_session(request.cookies.get("showcase_admin_session")):
+            return None
+        password_hash = repo.get_setting("customer_password_hash") or ""
+        if password_hash and not _has_valid_customer_session(
+            repo,
+            request.cookies.get("showcase_customer_access"),
+        ):
+            return 401, "customer password required"
+        if media_path is None or not repo.is_media_path_public(media_path):
+            return 404, "图片不存在"
+        return None
 
     @app.middleware("http")
     async def protect_customer_media(request: Request, call_next):
-        """客户口令开启时，原图与变体使用同一访问边界。"""
+        """客户口令与公开引用共同控制原图访问，避免隐藏后直链继续有效。"""
+        media_path = _media_path_from_url(request.url.path)
         if request.url.path.startswith(("/storage/showcase_images/", "/sample-images/")):
-            now = time.monotonic()
-            if now - media_access_state["checked_at"] >= 0.25:
-                media_access_state["password_hash"] = repo.get_setting("customer_password_hash") or ""
-                media_access_state["checked_at"] = now
-            password_hash = media_access_state["password_hash"]
-            session_id = request.cookies.get("showcase_customer_access")
-            admin_session = request.cookies.get("showcase_admin_session")
-            admin_expires_at = repo.get_admin_session_expires_at(admin_session) if admin_session else None
-            try:
-                expiration = datetime.fromisoformat(admin_expires_at) if admin_expires_at else None
-                if expiration is not None and expiration.tzinfo is None:
-                    expiration = expiration.replace(tzinfo=timezone.utc)
-                is_admin = expiration is not None and expiration > datetime.now(timezone.utc)
-            except (TypeError, ValueError):
-                is_admin = False
-            if password_hash and not is_admin and not _has_valid_customer_session(repo, session_id):
-                return JSONResponse({"detail": "customer password required"}, status_code=401)
+            access_error = _media_access_error(request, media_path)
+            response = (
+                JSONResponse(
+                    {"detail": access_error[1]},
+                    status_code=access_error[0],
+                    headers={"Cache-Control": "private, no-store"},
+                )
+                if access_error is not None
+                else await call_next(request)
+            )
+            response.headers["Cache-Control"] = "private, no-store"
+            return response
         response = await call_next(request)
-        if request.url.path.startswith(("/storage/showcase_images/", "/sample-images/")):
-            response.headers["Cache-Control"] = "private, no-store" if request.cookies.get("showcase_admin_session") else "private, max-age=3600"
         return response
 
     app.include_router(create_public_router(repo, customer_access_cookie_days, limiter))
@@ -90,16 +116,17 @@ def create_showcase_app(
     )
 
     @app.get("/api/public/image-variant")
-    def image_variant(path: str, width: int = 480, showcase_customer_access: str | None = Cookie(default=None)):
-        if repo.get_setting("customer_password_hash") and not _has_valid_customer_session(repo, showcase_customer_access):
-            raise HTTPException(401, "customer password required")
+    def image_variant(path: str, request: Request, width: int = 480):
+        access_error = _media_access_error(request, path)
+        if access_error is not None:
+            raise HTTPException(access_error[0], access_error[1], headers={"Cache-Control": "private, no-store"})
         try:
             variant = variants.get_variant(path, width)
         except FileNotFoundError:
-            raise HTTPException(404, "图片不存在")
+            raise HTTPException(404, "图片不存在", headers={"Cache-Control": "private, no-store"})
         except (ValueError, UnidentifiedImageError):
-            raise HTTPException(400, "无效图片或尺寸")
-        return FileResponse(variant, media_type="image/webp", headers={"Cache-Control": "private, max-age=3600"})
+            raise HTTPException(400, "无效图片或尺寸", headers={"Cache-Control": "private, no-store"})
+        return FileResponse(variant, media_type="image/webp", headers={"Cache-Control": "private, no-store"})
 
     @app.get("/")
     def index() -> FileResponse:

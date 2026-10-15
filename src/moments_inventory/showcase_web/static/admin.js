@@ -284,8 +284,8 @@ function buildAdminProductQuery(offset = 0) {
   const params = new URLSearchParams();
   if (filters.query) params.set("query", filters.query);
   if (filters.brands.length) params.set("brands", filters.brands.join(","));
-  if (filters.priceMin !== null) params.set("priceMin", String(filters.priceMin));
-  if (filters.priceMax !== null) params.set("priceMax", String(filters.priceMax));
+  if (Number.isFinite(filters.priceMin)) params.set("priceMin", String(filters.priceMin));
+  if (Number.isFinite(filters.priceMax)) params.set("priceMax", String(filters.priceMax));
   if (filters.visible !== null) params.set("visible", String(filters.visible));
   if (filters.sold !== null) params.set("sold", String(filters.sold));
   if (filters.hasBodyImage !== null) params.set("hasBodyImage", String(filters.hasBodyImage));

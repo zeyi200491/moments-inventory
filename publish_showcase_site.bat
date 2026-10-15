@@ -1,27 +1,7 @@
 @echo off
 setlocal
-cd /d "%~dp0"
-
-if not exist ".venv\Scripts\python.exe" (
-  echo [ERROR] Missing .venv. Please run setup_windows.bat first.
-  pause
-  exit /b 1
-)
-
-echo [INFO] Building CCD showcase site...
-set /p SHOWCASE_PASSWORD=Enter this week access password: 
-if "%SHOWCASE_PASSWORD%"=="" (
-  echo [ERROR] Access password is required for customer publishing.
-  pause
-  exit /b 1
-)
-
-".venv\Scripts\python.exe" -m moments_inventory.cli showcase-build --sample-assets-dir "showcase_assets" --output-dir "site_dist" --access-password "%SHOWCASE_PASSWORD%"
-if errorlevel 1 (
-  echo [ERROR] Showcase site build failed.
-  pause
-  exit /b 1
-)
-
-echo [OK] Showcase site built at site_dist
+echo [已停用] 旧静态展示站发布入口不再用于 CCD 正式展示系统。
+echo 当前管理数据保存在本地 SQLite；Cloudflare 仅接收只读发布快照。
+echo 请按 docs\ccd-release-runbook.md 和 Cloudflare 仓库的发布手册操作。
 pause
+exit /b 1

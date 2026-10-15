@@ -193,24 +193,48 @@ function showAccessPanel(onUnlocked) {
   renderPartners("authorizedPartners");
   panel.hidden = false;
 
+  let submitting = false;
+  const submitButton = form.querySelector('button[type="submit"], input[type="submit"]');
   form.onsubmit = async (event) => {
     event.preventDefault();
+    if (submitting) return;
+    submitting = true;
+    if (submitButton) submitButton.disabled = true;
     if (error) error.hidden = true;
     const password = document.getElementById("customerPasswordInput")?.value || "";
-    const response = await fetch("/api/public/access", {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ password }),
-    });
-    if (!response.ok) {
-      if (error) {
-        error.textContent = "口令不正确，请找星星CCD获取本周口令";
-        error.hidden = false;
+    try {
+      let response;
+      try {
+        response = await fetch("/api/public/access", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ password }),
+        });
+      } catch {
+        if (error) {
+          error.textContent = "网络连接失败，请检查网络后重试";
+          error.hidden = false;
+        }
+        return;
       }
-      return;
+
+      if (!response.ok) {
+        if (error) {
+          error.textContent = response.status === 401 || response.status === 403
+            ? "口令不正确，请找星星CCD获取本周口令"
+            : response.status === 429
+              ? "尝试次数过多，请稍后再试"
+              : "服务暂时不可用，请稍后重试";
+          error.hidden = false;
+        }
+        return;
+      }
+      panel.hidden = true;
+      await onUnlocked();
+    } finally {
+      submitting = false;
+      if (submitButton) submitButton.disabled = false;
     }
-    panel.hidden = true;
-    await onUnlocked();
   };
 }
 

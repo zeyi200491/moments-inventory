@@ -33,6 +33,54 @@ test('筛选元数据返回前保留恢复品牌，成功加载后才清除无�
   assert.deepEqual(Array.from(vm.runInContext('[...state.brands]', c)), ['佳能']);
 });
 
+test('客户口令错误、服务异常和网络失败分别提示且提交期间防止重复请求', async () => {
+  const c = pageContext('showcase.js');
+  const panel = c.document.getElementById('accessPanel');
+  const form = c.document.getElementById('customerAccessForm');
+  const error = c.document.getElementById('customerAccessError');
+  const submit = { disabled: false };
+  form.querySelector = () => submit;
+  c.document.getElementById('customerPasswordInput').value = 'secret';
+  let resolveFetch;
+  let requestCount = 0;
+  c.fetch = () => {
+    requestCount += 1;
+    return new Promise((resolve) => { resolveFetch = resolve; });
+  };
+  vm.runInContext('showAccessPanel(async () => {})', c);
+  const event = { preventDefault() {} };
+  const first = form.onsubmit(event);
+  assert.equal(submit.disabled, true);
+  await form.onsubmit(event);
+  assert.equal(requestCount, 1);
+  resolveFetch({ ok: false, status: 401 });
+  await first;
+  assert.match(error.textContent, /口令不正确/);
+  assert.equal(submit.disabled, false);
+  assert.equal(panel.hidden, false);
+
+  c.fetch = async () => ({ ok: false, status: 503 });
+  await form.onsubmit(event);
+  assert.match(error.textContent, /服务暂时不可用/);
+
+  c.fetch = async () => { throw new Error('网络断开'); };
+  await form.onsubmit(event);
+  assert.match(error.textContent, /网络连接失败/);
+  assert.equal(submit.disabled, false);
+});
+
+test('管理商品最高价为零时保留筛选，非法负数和小数不进入查询', () => {
+  const c = pageContext('admin.js');
+  c.nodes.get('adminMaxPriceInput').value = '0';
+  assert.equal(vm.runInContext('buildAdminProductQuery()', c).get('priceMax'), '0');
+  c.nodes.get('adminMaxPriceInput').value = '-1';
+  assert.equal(vm.runInContext('buildAdminProductQuery()', c).has('priceMax'), false);
+  c.nodes.get('adminMaxPriceInput').value = '1.5';
+  assert.equal(vm.runInContext('buildAdminProductQuery()', c).has('priceMax'), false);
+  c.nodes.get('adminMaxPriceInput').value = '';
+  assert.equal(vm.runInContext('buildAdminProductQuery()', c).has('priceMax'), false);
+});
+
 test('库存列表错误区域显示实际恢复提示，409刷新提示不会被固定文案覆盖', async () => {
   const c = pageContext('showcase.js');
   const errorMessage = c.document.getElementById('listErrorMessage');
@@ -59,7 +107,17 @@ test('商品管理包含明确的批量作用范围和价格段控件', () => {
   assert.match(html, /id="bulkPreviewStatus"[^>]*aria-live="polite"/);
   assert.match(html, /id="bulkConfirmStatus"[^>]*role="alert"/);
   assert.match(html, /showcase\.css\?v=20260925-bulk-price-workflow/);
-  assert.match(html, /admin\.js\?v=20261009-admin-ux-round5/);
+  assert.match(html, /admin\.js\?v=20261015-filter-validation/);
+  assert.match(fs.readFileSync(path.join(root, 'index.html'), 'utf8'), /showcase\.js\?v=20261015-access-feedback/);
+  assert.match(fs.readFileSync(path.join(root, 'product.html'), 'utf8'), /showcase\.js\?v=20261015-access-feedback/);
+});
+
+test('旧静态站发布入口明确停止，避免继续构建与当前 SQLite 系统并行的旧站点', () => {
+  const script = fs.readFileSync(path.resolve(root, '../../../../publish_showcase_site.bat'), 'utf8');
+  assert.match(script, /已停用/);
+  assert.match(script, /SQLite/);
+  assert.doesNotMatch(script, /set \/p SHOWCASE_PASSWORD/i);
+  assert.doesNotMatch(script, /--access-password "%SHOWCASE_PASSWORD%"/i);
 });
 
 function pageContext(file) {
@@ -189,6 +247,67 @@ test('样片匹配商品列表可分页追加且最后一页隐藏加载按钮',
   assert.deepEqual(offsets, ['0', '1']);
   assert.deepEqual(Array.from(vm.runInContext('adminState.sampleMatchingProducts.map((item) => item.productId)', c)), ['sample-a', 'sample-b']);
   assert.equal(c.nodes.get('sampleMatchLoadMoreButton').hidden, true);
+});
+
+test('样片候选组可分页追加，旧响应不会覆盖新筛选结果', async () => {
+  const c = pageContext('admin.js');
+  const offsets = [];
+  c.fetch = async (url) => {
+    offsets.push(new URL(url, 'http://local').searchParams.get('offset'));
+    const first = offsets.length === 1;
+    return { ok: true, json: async () => ({ groups: [{ id: first ? 'g1' : 'g2' }], hasMore: first, total: 2 }) };
+  };
+  await vm.runInContext('loadSampleMatchingGroups()', c);
+  await vm.runInContext('loadSampleMatchingGroups({append:true})', c);
+  assert.deepEqual(offsets, ['0', '1']);
+  assert.deepEqual(Array.from(vm.runInContext('adminState.sampleMatchingGroups.map((item) => item.id)', c)), ['g1', 'g2']);
+  assert.equal(c.nodes.get('sampleGroupLoadMoreButton').hidden, true);
+
+  let resolveOld;
+  let resolveNew;
+  let requestCount = 0;
+  c.fetch = (url) => new Promise((resolve) => {
+    if (requestCount++ === 0) resolveOld = resolve;
+    else resolveNew = resolve;
+  });
+  const oldRequest = vm.runInContext('loadSampleMatchingGroups()', c);
+  const newRequest = vm.runInContext('loadSampleMatchingGroups()', c);
+  resolveNew({ ok: true, json: async () => ({ groups: [{ id: 'new' }], hasMore: false, total: 1 }) });
+  await newRequest;
+  resolveOld({ ok: true, json: async () => ({ groups: [{ id: 'stale' }], hasMore: false, total: 1 }) });
+  await oldRequest;
+  assert.deepEqual(Array.from(vm.runInContext('adminState.sampleMatchingGroups.map((item) => item.id)', c)), ['new']);
+});
+
+test('样片图库可按四十项分页追加且旧查询结果被丢弃', async () => {
+  const c = pageContext('admin.js');
+  const offsets = [];
+  c.fetch = async (url) => {
+    offsets.push(new URL(url, 'http://local').searchParams.get('offset'));
+    const first = offsets.length === 1;
+    return { ok: true, json: async () => ({ assets: [{ path: first ? 'a' : 'b' }], hasMore: first, total: 2 }) };
+  };
+  await vm.runInContext('searchSampleAssets()', c);
+  await vm.runInContext('searchSampleAssets({append:true})', c);
+  assert.deepEqual(offsets, ['0', '1']);
+  assert.deepEqual(Array.from(vm.runInContext('adminState.sampleAssets.map((item) => item.path)', c)), ['a', 'b']);
+  assert.equal(c.nodes.get('sampleAssetLoadMoreButton').hidden, true);
+
+  let resolveOld;
+  let resolveNew;
+  c.fetch = (url) => new Promise((resolve) => {
+    if (url.includes('query=old')) resolveOld = resolve;
+    else resolveNew = resolve;
+  });
+  c.nodes.get('sampleAssetSearchInput').value = 'old';
+  const oldRequest = vm.runInContext('searchSampleAssets()', c);
+  c.nodes.get('sampleAssetSearchInput').value = 'new';
+  const newRequest = vm.runInContext('searchSampleAssets()', c);
+  resolveNew({ ok: true, json: async () => ({ assets: [{ path: 'new' }], hasMore: false, total: 1 }) });
+  await newRequest;
+  resolveOld({ ok: true, json: async () => ({ assets: [{ path: 'old' }], hasMore: false, total: 1 }) });
+  await oldRequest;
+  assert.deepEqual(Array.from(vm.runInContext('adminState.sampleAssets.map((item) => item.path)', c)), ['new']);
 });
 
 test('管理列表刷新后保留其他实体尚未保存的字段草稿', () => {
