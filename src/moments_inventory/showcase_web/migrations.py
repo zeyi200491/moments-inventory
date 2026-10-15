@@ -488,4 +488,9 @@ def migrate(conn: sqlite3.Connection) -> bool:
             "on showcase_source_identity_aliases(product_id)"
         )
         conn.execute("insert into showcase_schema_migrations(version) values (12)")
+    if 13 not in applied:
+        # 共享管理员口令下，历史预览和幂等键必须能跨重新登录恢复。
+        conn.execute("update showcase_bulk_previews set owner='shared-admin'")
+        conn.execute("update showcase_idempotency set owner='shared-admin'")
+        conn.execute("insert into showcase_schema_migrations(version) values (13)")
     return fresh

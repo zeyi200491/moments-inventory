@@ -51,6 +51,8 @@ from moments_inventory.showcase_web.sample_images import (
 )
 
 MAX_PRODUCT_LIST_OFFSET = 10_000
+# 后台使用共享管理员凭据；批量预览和恢复记录应跨重新登录保持可见。
+BULK_OPERATION_OWNER = "shared-admin"
 
 
 _MAX_UPLOAD_BYTES = 10 * 1024 * 1024
@@ -1663,7 +1665,7 @@ def create_admin_router(
         )
         request_snapshot["filterText"] = _bulk_filter_text(request)
         preview_id, expires = bulk_service.save_preview(
-            repo, showcase_admin_session, request_snapshot,
+            repo, BULK_OPERATION_OWNER, request_snapshot,
             [item.model_dump() for item in preview.items],
         )
         displayed_items = preview.items[:200]
@@ -1685,7 +1687,7 @@ def create_admin_router(
         repo: SQLiteShowcaseRepository = Depends(get_repository),
     ) -> StreamingResponse:
         items = bulk_service.load_preview_items(
-            repo, showcase_admin_session, preview_id,
+            repo, BULK_OPERATION_OWNER, preview_id,
         )
 
         def iter_csv_rows():
@@ -1733,7 +1735,7 @@ def create_admin_router(
         repo: SQLiteShowcaseRepository = Depends(get_repository),
     ) -> AdminBulkApplyResponse:
         return AdminBulkApplyResponse(**bulk_service.execute(
-            repo, showcase_admin_session, request.idempotencyKey, request.previewId))
+            repo, BULK_OPERATION_OWNER, request.idempotencyKey, request.previewId))
 
     @router.get(
         "/operations",
@@ -1770,7 +1772,7 @@ def create_admin_router(
         repo: SQLiteShowcaseRepository = Depends(get_repository),
     ) -> AdminBulkApplyResponse:
         return AdminBulkApplyResponse(**bulk_service.execute(
-            repo, showcase_admin_session, request.idempotencyKey, operation_id, undo=True))
+            repo, BULK_OPERATION_OWNER, request.idempotencyKey, operation_id, undo=True))
 
     @router.get(
         "/diagnostics",

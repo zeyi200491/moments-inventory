@@ -1310,7 +1310,7 @@ def test_admin_can_export_complete_bulk_preview_csv(
     ) in response.text
 
 
-def test_bulk_preview_snapshot_is_private_to_its_owner(
+def test_bulk_preview_and_idempotent_result_survive_admin_relogin(
     authenticated_client: TestClient,
     repo: SQLiteShowcaseRepository,
 ) -> None:
@@ -1332,8 +1332,28 @@ def test_bulk_preview_snapshot_is_private_to_its_owner(
     response = other_client.get(
         f"/api/admin/products/bulk-preview/{preview['previewId']}/export"
     )
+    assert response.status_code == 200
 
-    assert response.status_code == 404
+    payload = {"previewId": preview["previewId"], "idempotencyKey": "recover-after-login"}
+    first = other_client.post("/api/admin/products/bulk-apply", json=payload)
+    assert first.status_code == 200
+    assert first.json()["updatedCount"] == 1
+
+    relogged_client = TestClient(create_showcase_app(repository=repo))
+    login_again = relogged_client.post("/api/admin/login", json={"password": "admin-pass"})
+    assert login_again.status_code == 200
+    replay = relogged_client.post("/api/admin/products/bulk-apply", json=payload)
+
+    assert replay.status_code == 200
+    assert replay.json() == first.json()
+    assert repo.get_product("p1").display_price == 230
+    undo_payload = {"idempotencyKey": "undo-recover-after-login"}
+    undo = relogged_client.post(f"/api/admin/operations/{first.json()['operationId']}/undo", json=undo_payload)
+    assert undo.status_code == 200
+    undo_replay = other_client.post(f"/api/admin/operations/{first.json()['operationId']}/undo", json=undo_payload)
+    assert undo_replay.status_code == 200
+    assert undo_replay.json() == undo.json()
+    assert repo.get_product("p1").display_price == 200
 
 
 def test_bulk_preview_snapshot_rejects_expired_preview(

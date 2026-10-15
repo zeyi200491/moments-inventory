@@ -589,6 +589,19 @@ test('专栏保存失败显示在对应行且不清除输入', async () => {
   assert.match(status.textContent, /数据库繁忙/);
 });
 
+test('保存专栏后仍保留该专栏的商品搜索条件', () => {
+  const c = pageContext('admin.js');
+  const input = { classList: { contains: () => false }, className: 'section-product-search-input', value: 'IXUS' };
+  const row = { dataset: { sectionId: 'section-a' }, querySelectorAll: () => [input] };
+  c.sectionRow = row;
+  vm.runInContext('rememberSectionSearchDraft(sectionRow)', c);
+  vm.runInContext("adminState.sections = [{sectionId:'section-a', title:'精选', active:true}]", c);
+  const list = c.nodes.get('sectionList');
+  list.querySelectorAll = () => [];
+  vm.runInContext('renderSections(adminState.sections)', c);
+  assert.match(list.innerHTML, /class="section-product-search-input"[^>]*value="IXUS"/);
+});
+
 test('相册上传失败时保留待上传文件并在相册行提示结果未知', async () => {
   const c = pageContext('admin.js');
   const status = { textContent: '', dataset: {} };
@@ -632,12 +645,15 @@ test('设置保存失败会清除上一次的成功状态', async () => {
   assert.equal(status.textContent, '');
 });
 
-test('样片重建失败后不残留正在处理状态', async () => {
+test('样片重建失败后在页面提示且不残留正在处理状态', async () => {
   const c = pageContext('admin.js');
   const status = c.document.getElementById('sampleMatchingStatus');
-  c.fetch = async () => ({ ok: false, status: 503, text: async () => '数据库暂时不可用' });
-  await assert.rejects(c.nodes.get('rebuildSampleMatchingButton').listeners.click());
-  assert.match(status.textContent, /重建失败/);
+  const button = { disabled: false, textContent: '重建样片匹配', setAttribute() {}, removeAttribute() {} };
+  c.fetch = async () => ({ ok: false, status: 408, text: async () => '请求超时' });
+  await assert.doesNotReject(c.nodes.get('rebuildSampleMatchingButton').listeners.click({ currentTarget: button }));
+  assert.equal(button.disabled, false);
+  assert.equal(button.textContent, '重建样片匹配');
+  assert.match(status.textContent, /重建结果暂未确认/);
 });
 
 test('同一后台写请求并发触发时合并为一次网络提交', async () => {
@@ -1024,6 +1040,32 @@ test('批量执行区分可重试和失效错误并在模态框内提示', async
   assert.equal(expired.document.activeElement, expired.nodes.get('adminPasswordInput'));
 });
 
+test('批量请求等待超时后以可恢复的 408 结束', async () => {
+  const c = pageContext('admin.js');
+  let signal;
+  c.fetch = (_url, options) => {
+    signal = options.signal;
+    return new Promise(() => {});
+  };
+  await assert.rejects(
+    vm.runInContext('requestJson("/api/admin/products/bulk-apply", {method:"POST", body:"{}"}, {timeoutMs:5})', c),
+    (error) => error.status === 408 && /超时/.test(error.message),
+  );
+  assert.equal(signal.aborted, true);
+
+  const body = pageContext('admin.js');
+  let bodySignal;
+  body.fetch = (_url, options) => {
+    bodySignal = options.signal;
+    return Promise.resolve({ok:true, json:() => new Promise(() => {})});
+  };
+  await assert.rejects(
+    vm.runInContext('requestJson("/api/admin/products/bulk-apply", {method:"POST", body:"{}"}, {timeoutMs:5})', body),
+    (error) => error.status === 408 && /超时/.test(error.message),
+  );
+  assert.equal(bodySignal.aborted, true);
+});
+
 test('新预览会取消旧请求并维护预览按钮忙碌状态', async () => {
   const c = pageContext('admin.js');
   c.nodes.get('bulkScopeInput').value = 'filtered';
@@ -1241,6 +1283,77 @@ test('样片文件夹复制不可用时提供可手动复制路径且不显示�
   c.navigator.clipboard = { writeText: async () => {} };
   await c.nodes.get('sampleAssetSearchResults').listeners.click({ target });
   assert.match(c.nodes.get('sampleMatchingStatus').textContent, /^已复制：/);
+});
+
+test('样片绑定失败就地提示并锁定重复提交，不产生未处理拒绝', async () => {
+  const c = pageContext('admin.js');
+  const status = {textContent:'',dataset:{}};
+  const row = {
+    dataset:{productId:'p1'},
+    querySelector(selector) {
+      if (selector === '.sample-bind-folder-input') return {value:'佳能/ixus'};
+      if (selector === '.management-action-status') return status;
+      return null;
+    },
+    setAttribute() {}, removeAttribute() {},
+  };
+  const button = {
+    disabled:false,textContent:'绑定',
+    classList:{contains:(name) => name === 'sample-bind-product-folder'},
+    closest:() => row,
+    setAttribute() {}, removeAttribute() {},
+  };
+  let finish;
+  let requests = 0;
+  c.fetch = () => {
+    requests += 1;
+    return new Promise((resolve) => { finish = resolve; });
+  };
+  const listener = c.nodes.get('sampleMatchProductList').listeners.click;
+  const first = listener({target:button});
+  assert.equal(button.disabled, true);
+  await listener({target:button});
+  assert.equal(requests, 1);
+  finish({ok:false,status:408,text:async () => '请求超时'});
+  await assert.doesNotReject(first);
+  assert.equal(button.disabled, false);
+  assert.equal(status.dataset.state, 'error');
+  assert.match(status.textContent, /结果暂未确认|请求超时/);
+});
+
+test('样片列表重绘后按商品身份阻止重复绑定', async () => {
+  const c = pageContext('admin.js');
+  let finish;
+  let requests = 0;
+  c.fetch = () => {
+    requests += 1;
+    return new Promise((resolve) => { finish = resolve; });
+  };
+  const makeRow = () => ({
+    dataset: { productId: 'same-product' },
+    querySelector(selector) {
+      if (selector === '.sample-bind-folder-input') return { value: '佳能/ixus' };
+      if (selector === '.management-action-status') return { textContent: '', dataset: {} };
+      return null;
+    },
+    setAttribute() {}, removeAttribute() {},
+  });
+  const makeButton = (row) => ({
+    disabled: false, textContent: '绑定',
+    classList: { contains: (name) => name === 'sample-bind-product-folder' },
+    closest: () => row, setAttribute() {}, removeAttribute() {},
+  });
+  const listener = c.nodes.get('sampleMatchProductList').listeners.click;
+  const firstButton = makeButton(makeRow());
+  const secondButton = makeButton(makeRow());
+  const first = listener({ target: firstButton });
+  assert.equal(firstButton.disabled, true);
+  await listener({ target: secondButton });
+  assert.equal(requests, 1);
+  assert.equal(secondButton.disabled, false);
+  finish({ ok: false, status: 409, text: async () => '数据已变化' });
+  await assert.doesNotReject(first);
+  assert.equal(requests, 1);
 });
 
 test('客户剪贴板失败时把完整咨询文案提供给手动复制', async () => {

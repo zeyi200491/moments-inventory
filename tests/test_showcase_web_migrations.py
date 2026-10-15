@@ -154,7 +154,7 @@ def test_import_review_migration_adds_constrained_tables_and_is_repeatable(tmp_p
     } <= tables
     assert conn.execute(
         "select version from showcase_schema_migrations order by version desc limit 1"
-    ).fetchone()[0] == 12
+    ).fetchone()[0] == 13
     batch_columns = {
         row[1] for row in conn.execute("pragma table_info(showcase_import_review_batches)")
     }
@@ -260,7 +260,7 @@ def test_import_review_migration_adds_constrained_tables_and_is_repeatable(tmp_p
     assert after == before
     assert conn.execute(
         "select version from showcase_schema_migrations order by version desc limit 1"
-    ).fetchone()[0] == 12
+    ).fetchone()[0] == 13
 
     conn.execute("delete from showcase_products where product_id='p1'")
     deleted_target = conn.execute(
@@ -271,6 +271,27 @@ def test_import_review_migration_adds_constrained_tables_and_is_repeatable(tmp_p
         "select product_id,target_row_version,decision from showcase_import_review_rows where review_row_id='row-committed'"
     ).fetchone()
     assert tuple(committed_audit) == (None, 8, "link")
+
+
+def test_migration_13_moves_legacy_bulk_preview_and_idempotency_to_shared_admin(tmp_path):
+    repo = SQLiteShowcaseRepository(tmp_path / "bulk-owner-migration.db")
+    repo.initialize()
+    conn = repo._get_connection()
+    conn.execute(
+        """insert into showcase_bulk_previews
+        (preview_id,owner,request_json,items_json,expires_at,operation_id)
+        values ('legacy-preview','old-session','{}','[]','2099-01-01T00:00:00+00:00','')"""
+    )
+    conn.execute(
+        "insert into showcase_idempotency values ('legacy-key','old-session','fingerprint','{}')"
+    )
+    conn.execute("delete from showcase_schema_migrations where version=13")
+
+    from moments_inventory.showcase_web.migrations import migrate
+    migrate(conn)
+
+    assert conn.execute("select owner from showcase_bulk_previews where preview_id='legacy-preview'").fetchone()[0] == "shared-admin"
+    assert conn.execute("select owner from showcase_idempotency where idempotency_key='legacy-key'").fetchone()[0] == "shared-admin"
 
 
 def test_public_ids_work_for_image_and_product_changes():

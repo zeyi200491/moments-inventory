@@ -69,6 +69,7 @@ const adminState = {
   sampleGroupsRequestId: 0,
   sampleAssetsRequestId: 0,
   sectionSearchResults: {},
+  sectionSearchDrafts: {},
   productQuery: "",
   selectedProductIds: new Set(),
   visibleProductCount: 80,
@@ -167,14 +168,29 @@ function restoreManagementRows(container, selector) {
   container?.querySelectorAll(selector).forEach(restoreManagementRow);
 }
 
+function rememberSectionSearchDraft(row) {
+  const sectionId = row?.dataset?.sectionId;
+  if (!sectionId) return;
+  const draft = {};
+  row.querySelectorAll(".section-search-editor input, .section-search-editor textarea").forEach((control) => {
+    const className = String(control.className || control.getAttribute("class") || "").trim().split(/\s+/)[0];
+    if (className) draft[className] = control.value;
+  });
+  adminState.sectionSearchDrafts[sectionId] = draft;
+}
+
 const managementRowSelector = ".partner-admin-row, .section-admin-row, .section-item-row, .purchase-step-admin-row, .gallery-admin-row, .gallery-image-row";
 document.addEventListener("input", (event) => {
   const row = event.target.closest?.(managementRowSelector);
   if (row) rememberManagementRow(row);
+  const sectionRow = event.target.closest?.(".section-admin-row");
+  if (sectionRow && event.target.closest?.(".section-search-editor")) rememberSectionSearchDraft(sectionRow);
 });
 document.addEventListener("change", (event) => {
   const row = event.target.closest?.(managementRowSelector);
   if (row) rememberManagementRow(row);
+  const sectionRow = event.target.closest?.(".section-admin-row");
+  if (sectionRow && event.target.closest?.(".section-search-editor")) rememberSectionSearchDraft(sectionRow);
   if (!event.target.classList.contains("gallery-image-file")) return;
   const albumRow = event.target.closest(".gallery-admin-row");
   if (!albumRow) return;
@@ -555,22 +571,40 @@ async function requestJson(url, options = {}, behavior = {}) {
   const requestKey = method === "GET" || url === "/api/admin/products/bulk-preview" ? "" : `${method}:${url}:${String(options.body || "")}`;
   if (requestKey && inFlightMutationRequests.has(requestKey)) return inFlightMutationRequests.get(requestKey);
   const request = (async () => {
-    const response = await fetch(url, {
+    const controller = new AbortController();
+    const fetchOptions = {
       headers: { "Content-Type": "application/json", ...(options.headers || {}) },
       ...options,
-    });
-    if (!response.ok) {
-      if (response.status === 401 && url !== "/api/admin/login" && !behavior.deferUnauthorizedUi) {
-        adminApp.hidden = true;
-        loginPanel.hidden = false;
-        loginError.textContent = "登录已过期，请重新登录；草稿和待上传文件仍保留";
-        loginError.hidden = false;
+    };
+    if (!fetchOptions.signal) fetchOptions.signal = controller.signal;
+    const operation = (async () => {
+      const response = await fetch(url, fetchOptions);
+      if (!response.ok) {
+        if (response.status === 401 && url !== "/api/admin/login" && !behavior.deferUnauthorizedUi) {
+          adminApp.hidden = true;
+          loginPanel.hidden = false;
+          loginError.textContent = "登录已过期，请重新登录；草稿和待上传文件仍保留";
+          loginError.hidden = false;
+        }
+        const error = new Error(await response.text());
+        error.status = response.status;
+        throw error;
       }
-      const error = new Error(await response.text());
-      error.status = response.status;
-      throw error;
-    }
-    return response.json();
+      return response.json();
+    })();
+    if (!Number.isFinite(behavior.timeoutMs) || behavior.timeoutMs <= 0) return operation;
+    let timeoutId;
+    return Promise.race([
+      operation,
+      new Promise((_, reject) => {
+        timeoutId = setTimeout(() => {
+          const error = new Error("请求超时");
+          error.status = 408;
+          reject(error);
+          controller.abort();
+        }, behavior.timeoutMs);
+      }),
+    ]).finally(() => clearTimeout(timeoutId));
   })();
   if (!requestKey) return request;
   inFlightMutationRequests.set(requestKey, request);
@@ -582,15 +616,18 @@ async function requestJson(url, options = {}, behavior = {}) {
 }
 
 const managementMutationLocks = new WeakSet();
+const managementIdentityMutationLocks = new Set();
 async function runManagementMutation(row, button, submit, {
   busyLabel = "正在保存…",
   successMessage = "保存成功。",
   operation = "保存",
+  lockKey = "",
   onSuccess,
   refresh,
 } = {}) {
-  if (!row || !button || button.disabled || managementMutationLocks.has(row)) return false;
+  if (!row || !button || button.disabled || managementMutationLocks.has(row) || (lockKey && managementIdentityMutationLocks.has(lockKey))) return false;
   managementMutationLocks.add(row);
+  if (lockKey) managementIdentityMutationLocks.add(lockKey);
   const originalLabel = button.textContent;
   const status = row.querySelector?.(".management-action-status");
   button.disabled = true;
@@ -606,7 +643,7 @@ async function runManagementMutation(row, button, submit, {
     const result = await submit();
     if (onSuccess) onSuccess(result);
     if (status) {
-      status.textContent = successMessage;
+      status.textContent = typeof successMessage === "function" ? successMessage(result) : successMessage;
       status.dataset.state = "success";
     }
     if (refresh) {
@@ -622,7 +659,7 @@ async function runManagementMutation(row, button, submit, {
     return true;
   } catch (error) {
     const detail = String(error?.message || "未知错误").slice(0, 140);
-    const uncertain = !error?.status || error.status >= 500;
+    const uncertain = !error?.status || error.status === 408 || error.status >= 500;
     const message = error?.status === 401
       ? "登录已过期，请重新登录后核对当前状态。"
       : error?.status === 409
@@ -643,6 +680,59 @@ async function runManagementMutation(row, button, submit, {
     button.textContent = typeof originalLabel === "string" ? originalLabel : "保存";
     row.removeAttribute?.("aria-busy");
     managementMutationLocks.delete(row);
+    if (lockKey) managementIdentityMutationLocks.delete(lockKey);
+  }
+}
+
+async function runAdminButtonAction(button, status, action, {
+  busyLabel = "处理中…",
+  successMessage = "操作成功。",
+  operation = "操作",
+  refresh,
+} = {}) {
+  if (!button || button.disabled) return false;
+  const originalLabel = button.textContent;
+  button.disabled = true;
+  button.setAttribute?.("aria-busy", "true");
+  button.textContent = busyLabel;
+  if (status) {
+    status.textContent = `${operation}中…`;
+    status.dataset.state = "busy";
+  }
+  try {
+    const result = await action();
+    if (refresh) {
+      try {
+        await refresh(result);
+      } catch (error) {
+        if (status) {
+          status.textContent = `${operation}已完成，但页面刷新失败。请重新加载核对当前状态：${String(error.message || "未知错误").slice(0, 120)}`;
+          status.dataset.state = "error";
+        }
+        return true;
+      }
+    }
+    if (status) {
+      status.textContent = typeof successMessage === "function" ? successMessage(result) : successMessage;
+      status.dataset.state = "success";
+    }
+    return true;
+  } catch (error) {
+    const detail = String(error?.message || "未知错误").slice(0, 140);
+    const uncertain = !error?.status || error.status === 408 || error.status >= 500;
+    if (status) {
+      status.textContent = error?.status === 401
+        ? "登录已过期，请重新登录后核对当前状态。"
+        : uncertain
+          ? `${operation}结果暂未确认，请先刷新核对当前状态。${detail}`
+          : `${operation}失败，请检查后重试：${detail}`;
+      status.dataset.state = "error";
+    }
+    return false;
+  } finally {
+    button.disabled = false;
+    button.removeAttribute?.("aria-busy");
+    button.textContent = originalLabel;
   }
 }
 
@@ -983,6 +1073,7 @@ function renderSections(sections) {
   sectionList.innerHTML = sections.map((section) => {
     const items = Array.isArray(section.items) ? section.items : [];
     const searchResults = adminState.sectionSearchResults[section.sectionId] || [];
+    const searchDraft = adminState.sectionSearchDrafts[section.sectionId] || {};
     const itemHtml = items.length ? items.map((item) => {
       const product = item.product || {};
       const productLabel = product.model
@@ -1015,12 +1106,12 @@ function renderSections(sections) {
           <p class="management-action-status status-text" role="status" aria-live="polite"></p>
         </div>
         <div class="section-item-editor section-search-editor">
-          <input class="section-product-search-input" type="search" aria-label="在${escapeHtml(section.title)}中搜索型号、品牌或文案" placeholder="搜索型号、品牌、文案">
-          <input class="section-product-brand-input" aria-label="${escapeHtml(section.title)}品牌筛选" placeholder="品牌">
-          <input class="section-product-min-price" type="number" min="0" aria-label="${escapeHtml(section.title)}最低当前展示价" placeholder="最低价">
-          <input class="section-product-max-price" type="number" min="0" aria-label="${escapeHtml(section.title)}最高当前展示价" placeholder="最高价">
-          <input class="section-new-note" aria-label="${escapeHtml(section.title)}商品推荐语" placeholder="专区内推荐语">
-          <input class="section-new-sort" type="number" min="0" aria-label="${escapeHtml(section.title)}新商品排序" value="0">
+          <input class="section-product-search-input" type="search" aria-label="在${escapeHtml(section.title)}中搜索型号、品牌或文案" value="${escapeHtml(searchDraft["section-product-search-input"] || "")}" placeholder="搜索型号、品牌、文案">
+          <input class="section-product-brand-input" aria-label="${escapeHtml(section.title)}品牌筛选" value="${escapeHtml(searchDraft["section-product-brand-input"] || "")}" placeholder="品牌">
+          <input class="section-product-min-price" type="number" min="0" aria-label="${escapeHtml(section.title)}最低当前展示价" value="${escapeHtml(searchDraft["section-product-min-price"] || "")}" placeholder="最低价">
+          <input class="section-product-max-price" type="number" min="0" aria-label="${escapeHtml(section.title)}最高当前展示价" value="${escapeHtml(searchDraft["section-product-max-price"] || "")}" placeholder="最高价">
+          <input class="section-new-note" aria-label="${escapeHtml(section.title)}商品推荐语" value="${escapeHtml(searchDraft["section-new-note"] || "")}" placeholder="专区内推荐语">
+          <input class="section-new-sort" type="number" min="0" aria-label="${escapeHtml(section.title)}新商品排序" value="${escapeHtml(searchDraft["section-new-sort"] ?? "0")}">
           <button class="section-product-search-button" type="button">搜索商品</button>
         </div>
         <div class="section-product-search-results">${renderSectionProductSearchResults(section, searchResults)}</div>
@@ -1221,6 +1312,7 @@ function renderSampleMatchingProducts() {
         <input class="sample-bind-folder-input" aria-label="${escapeHtml(product.model)} 样片文件夹路径" value="${escapeHtml(product.folderPath || "")}" placeholder="品牌/型号文件夹">
         <button class="sample-bind-product-folder" type="button">绑定</button>
       </div>
+      <p class="management-action-status status-text" role="status" aria-live="polite"></p>
     </div>
   `).join("") : `<p class="empty-admin-text">当前筛选下没有商品</p>`;
   const loadMore = document.getElementById("sampleMatchLoadMoreButton");
@@ -1253,6 +1345,7 @@ function renderSampleMatchingGroups() {
       <strong>${escapeHtml(group.model)} · ${escapeHtml(group.brand)}</strong>
       <span>${sampleMatchStatusLabel(group.status)} · 影响 ${group.productCount} 台 · 置信度 ${Number(group.confidence || 0)}% · ${escapeHtml(group.folderPath)}</span>
       <button class="access-button sample-bind-group" type="button">确认这一组</button>
+      <p class="management-action-status status-text" role="status" aria-live="polite"></p>
     </div>
   `).join("") : `<p class="empty-admin-text">当前没有可批量确认的候选组</p>`;
   const loadMore = document.getElementById("sampleGroupLoadMoreButton");
@@ -1593,31 +1686,23 @@ document.getElementById("refreshDiagnosticsButton")?.addEventListener("click", a
   await Promise.all([loadDiagnostics(), loadImportReports(), loadOperations()]);
 });
 
-document.getElementById("refreshSampleMatchingButton")?.addEventListener("click", async () => {
-  if (sampleMatchingStatus) sampleMatchingStatus.textContent = "正在刷新";
-  try {
-    await loadSampleMatchingCenter();
-    if (sampleMatchingStatus) sampleMatchingStatus.textContent = "已刷新";
-  } catch (error) {
-    if (sampleMatchingStatus) sampleMatchingStatus.textContent = "刷新失败，请检查页面错误提示";
-    throw error;
-  }
+document.getElementById("refreshSampleMatchingButton")?.addEventListener("click", async (event) => {
+  await runAdminButtonAction(event.currentTarget, sampleMatchingStatus, loadSampleMatchingCenter, {
+    busyLabel: "正在刷新…", successMessage: "已刷新。", operation: "刷新",
+  });
 });
 
-document.getElementById("rebuildSampleMatchingButton")?.addEventListener("click", async () => {
-  if (sampleMatchingStatus) sampleMatchingStatus.textContent = "正在重建";
-  try {
+document.getElementById("rebuildSampleMatchingButton")?.addEventListener("click", async (event) => {
+  await runAdminButtonAction(event.currentTarget, sampleMatchingStatus, async () => {
     const result = await requestJson("/api/admin/sample-matching/rebuild", { method: "POST" });
     renderSampleMatchingSummary(result.summary || {});
-    if (sampleMatchingStatus) {
-      const imported = result.importResult || {};
-      sampleMatchingStatus.textContent = `已重建：匹配 ${imported.matchedProductCount || 0} 台，写入 ${imported.insertedImageCount || 0} 张`;
-    }
-    await Promise.all([loadSampleMatchingProducts(), loadProducts(), loadDiagnostics()]);
-  } catch (error) {
-    if (sampleMatchingStatus) sampleMatchingStatus.textContent = "重建失败，请核对匹配列表后重试";
-    throw error;
-  }
+    const imported = result.importResult || {};
+    return { ...result, imported };
+  }, {
+    busyLabel: "正在重建…", operation: "重建",
+    successMessage: ({ imported = {} } = {}) => `已重建：匹配 ${imported.matchedProductCount || 0} 台，写入 ${imported.insertedImageCount || 0} 张`,
+    refresh: () => Promise.all([loadSampleMatchingProducts(), loadProducts(), loadDiagnostics()]),
+  });
 });
 
 document.getElementById("sampleMatchStatusFilter")?.addEventListener("change", loadSampleMatchingProducts);
@@ -1659,21 +1744,18 @@ sampleMatchProductList?.addEventListener("click", async (event) => {
   const productId = row?.dataset.productId || "";
   const folderPath = row?.querySelector(".sample-bind-folder-input")?.value.trim() || "";
   if (!productId || !folderPath) return;
-  if (sampleMatchingStatus) sampleMatchingStatus.textContent = "正在绑定";
-  try {
-    const result = await requestJson("/api/admin/sample-matching/bind", {
+  await runManagementMutation(row, event.target, () => requestJson("/api/admin/sample-matching/bind", {
       method: "POST",
       body: JSON.stringify({ productId, folderPath }),
-    });
-    if (sampleMatchingStatus) {
+    }), {
+      operation: "绑定样片目录", busyLabel: "正在绑定…",
+      lockKey: `sample-product:${productId}`,
+      successMessage: (result) => {
       const imported = result.importResult || {};
-      sampleMatchingStatus.textContent = `已绑定：${result.folderPath}，当前匹配 ${imported.matchedProductCount || 0} 台`;
-    }
-    await Promise.all([loadSampleMatchingCenter(), loadProducts(), loadDiagnostics()]);
-  } catch (error) {
-    if (sampleMatchingStatus) sampleMatchingStatus.textContent = "绑定失败，请核对商品匹配状态后重试";
-    throw error;
-  }
+        return `已绑定：${result.folderPath}，当前匹配 ${imported.matchedProductCount || 0} 台`;
+      },
+      refresh: () => Promise.all([loadSampleMatchingCenter(), loadProducts(), loadDiagnostics()]),
+    });
 });
 
 sampleMatchGroupList?.addEventListener("click", async (event) => {
@@ -1681,24 +1763,21 @@ sampleMatchGroupList?.addEventListener("click", async (event) => {
   const row = event.target.closest(".sample-match-group-row");
   const group = adminState.sampleMatchingGroups[Number(row?.dataset.groupIndex || -1)];
   if (!group || !Array.isArray(group.productIds) || !group.productIds.length) return;
-  if (sampleMatchingStatus) sampleMatchingStatus.textContent = "正在批量确认";
-  try {
-    const result = await requestJson("/api/admin/sample-matching/groups/bind", {
+  await runManagementMutation(row, event.target, () => requestJson("/api/admin/sample-matching/groups/bind", {
       method: "POST",
       body: JSON.stringify({
         productIds: group.productIds,
         folderPath: group.folderPath,
       }),
-    });
-    if (sampleMatchingStatus) {
+    }), {
+      operation: "确认样片分组", busyLabel: "正在确认…",
+      lockKey: `sample-group:${JSON.stringify([...group.productIds].sort())}`,
+      successMessage: (result) => {
       const imported = result.importResult || {};
-      sampleMatchingStatus.textContent = `已确认 ${result.boundProductCount || 0} 台，当前匹配 ${imported.matchedProductCount || 0} 台`;
-    }
-    await Promise.all([loadSampleMatchingCenter(), loadProducts(), loadDiagnostics()]);
-  } catch (error) {
-    if (sampleMatchingStatus) sampleMatchingStatus.textContent = "批量确认失败，请核对匹配列表后重试";
-    throw error;
-  }
+        return `已确认 ${result.boundProductCount || 0} 台，当前匹配 ${imported.matchedProductCount || 0} 台`;
+      },
+      refresh: () => Promise.all([loadSampleMatchingCenter(), loadProducts(), loadDiagnostics()]),
+    });
 });
 
 document.getElementById("operationList")?.addEventListener("click", async (event) => {
@@ -2467,7 +2546,7 @@ async function executeBulkRequest(request, recovering = false) {
       result = await requestJson("/api/admin/products/bulk-apply", {
         method: "POST",
         body: JSON.stringify(stableRequest),
-      }, { deferUnauthorizedUi: true });
+      }, { deferUnauthorizedUi: true, timeoutMs: 60_000 });
     } catch (error) {
       const recoverable = !error.status || error.status >= 500 || error.status === 408 || error.status === 429 || (recovering && error.status === 401);
       let message;
