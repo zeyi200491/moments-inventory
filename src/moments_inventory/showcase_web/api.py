@@ -8,13 +8,15 @@ from typing import Self
 import os
 import secrets
 import uuid
+from zipfile import BadZipFile
 
 from fastapi import APIRouter, Cookie, Depends, File, Form, HTTPException, Request, UploadFile
 from fastapi import Response
 from fastapi.responses import StreamingResponse
-from pydantic import BaseModel, Field, field_validator, model_validator
+from pydantic import BaseModel, ConfigDict, Field, ValidationError, field_validator, model_validator
 from PIL import Image, UnidentifiedImageError
 from moments_inventory.showcase_web import bulk_service
+from moments_inventory.showcase_web import import_review_service
 
 from moments_inventory.showcase_web.auth import LoginAttemptLimiter, hash_password, verify_password
 from moments_inventory.showcase_web.models import (
@@ -375,6 +377,62 @@ class AdminLoginRequest(BaseModel):
 
 class AdminLoginResponse(BaseModel):
     ok: bool
+
+
+class AdminImportReviewResponse(BaseModel):
+    model_config = ConfigDict(populate_by_name=True)
+
+
+class AdminImportReviewBatchResponse(AdminImportReviewResponse):
+    batch_id: str = Field(alias="batchId")
+    source_scope: str = Field(alias="sourceScope")
+    mode: str
+    complete: bool
+    source_path: str = Field(alias="sourcePath")
+    source_label: str = Field(alias="sourceLabel")
+    source_fingerprint: str = Field(alias="sourceFingerprint")
+    parsed_row_count: int = Field(alias="parsedRowCount")
+    missing_count: int = Field(alias="missingCount")
+    idempotency_key: str = Field(alias="idempotencyKey")
+    result: dict[str, object] = Field(default_factory=dict)
+    status: str
+    created_at: str = Field(alias="createdAt")
+    completed_at: str = Field(alias="completedAt")
+
+
+class AdminImportReviewRowResponse(AdminImportReviewResponse):
+    review_row_id: str = Field(alias="reviewRowId")
+    batch_id: str = Field(alias="batchId")
+    row_number: int = Field(alias="rowNumber")
+    source_key: str = Field(alias="sourceKey")
+    status: str
+    decision: str | None = None
+    product_id: str | None = Field(default=None, alias="productId")
+    target_row_version: int | None = Field(default=None, alias="targetRowVersion")
+    snapshot: dict[str, object] = Field(default_factory=dict)
+    errors: list[str] = Field(default_factory=list)
+    recommendation: dict[str, object] | None = None
+    candidates: list[dict[str, object]] = Field(default_factory=list)
+
+
+class AdminImportReviewBatchDetailResponse(AdminImportReviewBatchResponse):
+    rows: list[AdminImportReviewRowResponse] = Field(default_factory=list)
+
+
+class AdminImportReviewDecisionRequest(AdminImportReviewResponse):
+    decision: str = Field(pattern="^(link|create|skip)$")
+    product_id: str | None = Field(default=None, alias="productId", max_length=160)
+
+
+class AdminImportReviewCommitRequest(AdminImportReviewResponse):
+    idempotency_key: str = Field(alias="idempotencyKey", min_length=1, max_length=256)
+
+
+class AdminImportReviewCommitResponse(AdminImportReviewResponse):
+    import_id: str
+    inserted_count: int
+    updated_count: int
+    missing_count: int
 
 
 class AdminProductPatchRequest(BaseModel):
@@ -1352,6 +1410,170 @@ def create_admin_router(
             max_age=12 * 60 * 60,
         )
         return AdminLoginResponse(ok=True)
+
+    @router.post(
+        "/import-review/batches",
+        response_model=AdminImportReviewBatchDetailResponse,
+        dependencies=[Depends(require_admin)],
+    )
+    async def upload_import_review_batch(
+        file: UploadFile = File(...),
+        sourceScope: str = Form(...),
+        mode: str = Form("incremental"),
+        complete: bool = Form(False),
+        maxMissingFraction: float = Form(0.3),
+        repo: SQLiteShowcaseRepository = Depends(get_repository),
+    ) -> AdminImportReviewBatchDetailResponse:
+        try:
+            content = await file.read()
+            filename = Path(file.filename or "").name or "upload.xlsx"
+            try:
+                batch = import_review_service.create_import_review_batch(
+                    repo,
+                    content,
+                    source_scope=sourceScope,
+                    mode=mode,
+                    complete=complete,
+                    source_path=filename,
+                    source_label=filename,
+                    max_missing_fraction=maxMissingFraction,
+                )
+            except (ValueError, BadZipFile) as error:
+                raise HTTPException(status_code=400, detail=str(error)) from None
+            rows = import_review_service.list_import_review_rows(repo, str(batch["batch_id"]))
+            return AdminImportReviewBatchDetailResponse(**batch, rows=rows)
+        except HTTPException:
+            raise
+        except Exception:
+            raise HTTPException(status_code=500, detail="复核批次上传失败") from None
+        finally:
+            await file.close()
+
+    @router.get(
+        "/import-review/batches",
+        response_model=list[AdminImportReviewBatchResponse],
+        dependencies=[Depends(require_admin)],
+    )
+    def list_pending_import_review_batches(
+        repo: SQLiteShowcaseRepository = Depends(get_repository),
+    ) -> list[AdminImportReviewBatchResponse]:
+        try:
+            batches = repo.list_import_review_batches()
+            responses = []
+            for batch in batches:
+                decoded = import_review_service.get_import_review_batch(repo, str(batch["batch_id"]))
+                responses.append(AdminImportReviewBatchResponse(**decoded))
+            return responses
+        except Exception:
+            raise HTTPException(status_code=500, detail="复核批次列表读取失败") from None
+
+    @router.get(
+        "/import-review/batches/{batch_id}",
+        response_model=AdminImportReviewBatchDetailResponse,
+        dependencies=[Depends(require_admin)],
+    )
+    def get_import_review_batch_detail(
+        batch_id: str,
+        repo: SQLiteShowcaseRepository = Depends(get_repository),
+    ) -> AdminImportReviewBatchDetailResponse:
+        try:
+            batch = import_review_service.get_import_review_batch(repo, batch_id)
+            rows = import_review_service.list_import_review_rows(repo, batch_id)
+            return AdminImportReviewBatchDetailResponse(**batch, rows=rows)
+        except ValidationError:
+            raise HTTPException(status_code=500, detail="复核批次读取失败") from None
+        except ValueError as error:
+            if str(error) == "复核批次不存在":
+                raise HTTPException(status_code=404, detail="复核批次不存在") from None
+            raise HTTPException(status_code=400, detail=str(error)) from None
+        except Exception:
+            raise HTTPException(status_code=500, detail="复核批次读取失败") from None
+
+    @router.put(
+        "/import-review/batches/{batch_id}/rows/{row_number}",
+        response_model=AdminImportReviewRowResponse,
+        dependencies=[Depends(require_admin)],
+    )
+    def decide_import_review_row(
+        batch_id: str,
+        row_number: int,
+        request: AdminImportReviewDecisionRequest,
+        repo: SQLiteShowcaseRepository = Depends(get_repository),
+    ) -> AdminImportReviewRowResponse:
+        try:
+            batch = repo.get_import_review_batch(batch_id)
+            if batch is None:
+                raise HTTPException(status_code=404, detail="复核批次不存在")
+            rows = import_review_service.list_import_review_rows(repo, batch_id)
+            row = next((item for item in rows if int(item["row_number"]) == row_number), None)
+            if row is None:
+                raise HTTPException(status_code=404, detail="复核行不存在")
+            updated = import_review_service.save_import_review_decision(
+                repo,
+                batch_id,
+                str(row["review_row_id"]),
+                decision=request.decision,
+                product_id=request.product_id,
+            )
+            return AdminImportReviewRowResponse(**updated)
+        except HTTPException:
+            raise
+        except ValidationError:
+            raise HTTPException(status_code=500, detail="复核决定保存失败") from None
+        except ValueError as error:
+            if "pending" in str(error):
+                raise HTTPException(status_code=409, detail="复核批次或记录已结束") from None
+            raise HTTPException(status_code=400, detail=str(error)) from None
+        except Exception:
+            raise HTTPException(status_code=500, detail="复核决定保存失败") from None
+
+    @router.post(
+        "/import-review/batches/{batch_id}/commit",
+        response_model=AdminImportReviewCommitResponse,
+        dependencies=[Depends(require_admin)],
+    )
+    def commit_import_review(
+        batch_id: str,
+        request: AdminImportReviewCommitRequest,
+        repo: SQLiteShowcaseRepository = Depends(get_repository),
+    ) -> AdminImportReviewCommitResponse:
+        try:
+            result = import_review_service.commit_import_review_batch(
+                repo, batch_id, request.idempotency_key
+            )
+            return AdminImportReviewCommitResponse(**result)
+        except import_review_service.ImportReviewConflictError as error:
+            raise HTTPException(status_code=409, detail=str(error)) from None
+        except ValidationError:
+            raise HTTPException(status_code=500, detail="复核批次提交失败") from None
+        except ValueError as error:
+            if str(error) == "复核批次不存在":
+                raise HTTPException(status_code=404, detail="复核批次不存在") from None
+            raise HTTPException(status_code=400, detail=str(error)) from None
+        except Exception:
+            raise HTTPException(status_code=500, detail="复核批次提交失败") from None
+
+    @router.delete(
+        "/import-review/batches/{batch_id}",
+        response_model=AdminImportReviewBatchResponse,
+        dependencies=[Depends(require_admin)],
+    )
+    def discard_import_review(
+        batch_id: str,
+        repo: SQLiteShowcaseRepository = Depends(get_repository),
+    ) -> AdminImportReviewBatchResponse:
+        try:
+            if repo.get_import_review_batch(batch_id) is None:
+                raise HTTPException(status_code=404, detail="复核批次不存在")
+            import_review_service.discard_import_review_batch(repo, batch_id)
+            decoded = import_review_service.get_import_review_batch(repo, batch_id)
+            return AdminImportReviewBatchResponse(**decoded)
+        except HTTPException:
+            raise
+        except ValueError as error:
+            raise HTTPException(status_code=409, detail="只有 pending 批次可以放弃") from None
+        except Exception:
+            raise HTTPException(status_code=500, detail="复核批次放弃失败") from None
 
     @router.get(
         "/products",

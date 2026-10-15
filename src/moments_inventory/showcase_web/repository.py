@@ -2085,6 +2085,14 @@ class SQLiteShowcaseRepository:
                 return None
             return dict(zip((item[0] for item in cursor.description), row))
 
+    def list_import_review_batches(self) -> list[dict[str, object]]:
+        """列出待复核批次，供管理端刷新后恢复工作。"""
+        with self._read_connection() as conn:
+            cursor = conn.execute(
+                "select * from showcase_import_review_batches where status='pending' order by created_at desc,batch_id"
+            )
+            return [dict(zip((item[0] for item in cursor.description), row)) for row in cursor.fetchall()]
+
     def list_import_review_rows(self, batch_id: str) -> list[dict[str, object]]:
         with self._read_connection() as conn:
             cursor = conn.execute(

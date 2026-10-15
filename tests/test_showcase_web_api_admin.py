@@ -1645,3 +1645,147 @@ def test_admin_can_read_import_reports(
         "unmatchedCount": 0,
         "missingImageCount": 0,
     }
+from moments_inventory.exporter import _write_workbook
+from moments_inventory.showcase import SHOWCASE_HEADERS
+
+
+def _review_workbook_bytes(tmp_path: Path, rows: list[dict[str, str]]) -> bytes:
+    path = tmp_path / "review-upload.xlsx"
+    sheet = [SHOWCASE_HEADERS]
+    for values in rows:
+        row = dict.fromkeys(SHOWCASE_HEADERS, "")
+        row.update(values)
+        sheet.append([row[name] for name in SHOWCASE_HEADERS])
+    _write_workbook(path, sheet)
+    return path.read_bytes()
+
+
+def test_import_review_admin_endpoints_require_admin_for_every_operation(repo: SQLiteShowcaseRepository) -> None:
+    client = TestClient(create_showcase_app(repository=repo))
+    paths = [
+        ("post", "/api/admin/import-review/batches"),
+        ("get", "/api/admin/import-review/batches"),
+        ("get", "/api/admin/import-review/batches/missing"),
+        ("put", "/api/admin/import-review/batches/missing/rows/2"),
+        ("post", "/api/admin/import-review/batches/missing/commit"),
+        ("delete", "/api/admin/import-review/batches/missing"),
+    ]
+
+    for method, path in paths:
+        response = getattr(client, method)(path)
+        assert response.status_code == 401, (method, path, response.status_code)
+
+
+def test_admin_can_upload_review_decide_commit_retry_and_discard(
+    tmp_path: Path,
+    authenticated_client: TestClient,
+    repo: SQLiteShowcaseRepository,
+) -> None:
+    values = dict(zip(SHOWCASE_HEADERS, [
+        "new-product", "ixus80", "Canon", "100", "200", "\u662f", "", "", "review-raw", "", "", "", "", "", "source-key-1",
+    ]))
+    content = _review_workbook_bytes(tmp_path, [values])
+
+    uploaded = authenticated_client.post(
+        "/api/admin/import-review/batches",
+        data={"sourceScope": "source-a", "mode": "incremental", "complete": "false"},
+        files={"file": (r"C:\\private\\review.xlsx", content, "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet")},
+    )
+
+    assert uploaded.status_code == 200, uploaded.text
+    batch = uploaded.json()
+    batch_id = batch["batchId"]
+    assert batch["status"] == "pending"
+    assert batch["sourceLabel"] == "review.xlsx"
+    assert batch["sourcePath"] == "review.xlsx"
+    assert "source_key" not in batch
+    assert authenticated_client.get("/api/admin/import-review/batches").json()[0]["batchId"] == batch_id
+    detail = authenticated_client.get(f"/api/admin/import-review/batches/{batch_id}")
+    assert detail.status_code == 200
+    row = detail.json()["rows"][0]
+    assert row["rowNumber"] == 2
+    assert row["sourceKey"] == "source-key-1"
+    assert row["snapshot"]["raw_copy"] == "review-raw"
+
+    decided = authenticated_client.put(
+        f"/api/admin/import-review/batches/{batch_id}/rows/2",
+        json={"decision": "create"},
+    )
+    assert decided.status_code == 200, decided.text
+    assert decided.json()["decision"] == "create"
+    committed = authenticated_client.post(
+        f"/api/admin/import-review/batches/{batch_id}/commit",
+        json={"idempotencyKey": "review-commit-1"},
+    )
+    assert committed.status_code == 200, committed.text
+    assert committed.json()["inserted_count"] == 1
+    retry = authenticated_client.post(
+        f"/api/admin/import-review/batches/{batch_id}/commit",
+        json={"idempotencyKey": "review-commit-1"},
+    )
+    assert retry.status_code == 200
+    assert retry.json() == committed.json()
+    conflict = authenticated_client.post(
+        f"/api/admin/import-review/batches/{batch_id}/commit",
+        json={"idempotencyKey": "different-key"},
+    )
+    assert conflict.status_code == 409
+
+    another = authenticated_client.post(
+        "/api/admin/import-review/batches",
+        data={"sourceScope": "source-a", "mode": "incremental", "complete": "false"},
+        files={"file": ("discard.xlsx", content, "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet")},
+    )
+    discarded = authenticated_client.delete(f"/api/admin/import-review/batches/{another.json()['batchId']}")
+    assert discarded.status_code == 200
+    assert discarded.json()["status"] == "discarded"
+
+
+def test_invalid_import_review_upload_returns_400_without_creating_batch(
+    authenticated_client: TestClient,
+    repo: SQLiteShowcaseRepository,
+) -> None:
+    before = repo._get_connection().execute("select count(*) from showcase_import_review_batches").fetchone()[0]
+
+    response = authenticated_client.post(
+        "/api/admin/import-review/batches",
+        data={"sourceScope": "source-a", "mode": "incremental", "complete": "false"},
+        files={"file": ("invalid.xlsx", b"not an xlsx", "application/octet-stream")},
+    )
+
+    after = repo._get_connection().execute("select count(*) from showcase_import_review_batches").fetchone()[0]
+    assert response.status_code == 400
+    assert after == before
+
+
+def test_stale_import_review_target_returns_conflict_and_keeps_batch_pending(
+    tmp_path: Path,
+    authenticated_client: TestClient,
+    repo: SQLiteShowcaseRepository,
+) -> None:
+    repo.upsert_product(_product("existing", visible=True, display_price=100))
+    path = tmp_path / "stale-review.xlsx"
+    _write_workbook(path, [SHOWCASE_HEADERS, [
+        "new-product", "ixus80", "Canon", "100", "200", "\u662f", "", "", "", "", "", "", "", "", "",
+    ]])
+    content = path.read_bytes()
+    uploaded = authenticated_client.post(
+        "/api/admin/import-review/batches",
+        data={"sourceScope": "default", "mode": "incremental", "complete": "false"},
+        files={"file": ("review.xlsx", content, "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet")},
+    )
+    assert uploaded.status_code == 200, uploaded.text
+    batch_id = uploaded.json()["batchId"]
+    assert authenticated_client.put(
+        f"/api/admin/import-review/batches/{batch_id}/rows/2", json={"decision": "link", "productId": "existing"}
+    ).status_code == 200
+    changed = repo.get_product("existing")
+    changed.display_price += 1
+    repo.upsert_product(changed)
+
+    response = authenticated_client.post(
+        f"/api/admin/import-review/batches/{batch_id}/commit", json={"idempotencyKey": "stale-key"}
+    )
+
+    assert response.status_code == 409
+    assert repo.get_import_review_batch(batch_id)["status"] == "pending"

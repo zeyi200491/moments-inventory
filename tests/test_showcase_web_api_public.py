@@ -5,6 +5,8 @@ from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from urllib.parse import quote
 import time
+from moments_inventory.exporter import _write_workbook
+from moments_inventory.showcase import SHOWCASE_HEADERS
 
 from fastapi.testclient import TestClient
 from starlette.requests import Request
@@ -672,3 +674,37 @@ def test_public_cache_does_not_allocate_locks_for_404_paths(tmp_path: Path) -> N
 
     assert len(middleware._build_locks) == 64
     assert middleware._cache == {}
+
+def test_public_responses_and_html_do_not_expose_import_review_data(
+    tmp_path: Path,
+) -> None:
+    from moments_inventory.showcase_web.import_review_service import create_import_review_batch
+
+    repo = SQLiteShowcaseRepository(tmp_path / "showcase.db")
+    repo.initialize()
+    repo.upsert_product(_product("public-product", visible=True, display_price=100))
+    path = tmp_path / "review.xlsx"
+    values = dict(zip(SHOWCASE_HEADERS, [
+        "hidden-product", "secret-model", "Canon", "100", "200", "\u662f", "", "", "secret-review-raw-copy", "", "", "", "", "", "secret-source-key",
+    ]))
+    row = dict.fromkeys(SHOWCASE_HEADERS, "")
+    row.update(values)
+    _write_workbook(path, [SHOWCASE_HEADERS, [row[name] for name in SHOWCASE_HEADERS]])
+    content = path.read_bytes()
+    create_import_review_batch(repo, content, source_scope="default")
+    client = TestClient(create_showcase_app(repository=repo))
+
+    responses = [
+        client.get("/api/public/products"),
+        client.get("/api/public/products/public-product"),
+        client.get("/api/public/settings"),
+        client.get("/"),
+    ]
+
+    assert all(response.status_code == 200 for response in responses)
+    for response in responses:
+        body = response.text
+        assert "secret-source-key" not in body
+        assert "secret-review-raw-copy" not in body
+        assert "secret-model" not in body
+        assert "candidates" not in body
