@@ -22,6 +22,9 @@ const bulkConfirmDialog = document.getElementById("bulkConfirmDialog");
 const cancelBulkConfirmButton = document.getElementById("cancelBulkConfirmButton");
 const bulkConfirmStatus = document.getElementById("bulkConfirmStatus");
 const applyBulkButton = document.getElementById("applyBulkButton");
+const bulkRecoveryPanel = document.getElementById("bulkRecoveryPanel");
+const bulkRecoveryStatus = document.getElementById("bulkRecoveryStatus");
+const retryBulkRecoveryButton = document.getElementById("retryBulkRecoveryButton");
 const sampleMatchingSummary = document.getElementById("sampleMatchingSummary");
 const sampleMatchProductList = document.getElementById("sampleMatchProductList");
 const sampleMatchGroupList = document.getElementById("sampleMatchGroupList");
@@ -34,6 +37,19 @@ const importReviewConfirmDialog = document.getElementById("importReviewConfirmDi
 const importReviewConfirmMessage = document.getElementById("importReviewConfirmMessage");
 const importReviewConfirmStatus = document.getElementById("importReviewConfirmStatus");
 const confirmImportReviewAction = document.getElementById("confirmImportReviewAction");
+const PENDING_BULK_STORAGE_KEY = "ccd-admin-pending-bulk-request-v1";
+
+function restorePendingBulkRequest() {
+  try {
+    const saved = JSON.parse(sessionStorage.getItem(PENDING_BULK_STORAGE_KEY) || "null");
+    if (!saved || typeof saved.previewId !== "string" || !saved.previewId ||
+        typeof saved.idempotencyKey !== "string" || !saved.idempotencyKey) return null;
+    return Object.freeze({ previewId: saved.previewId, idempotencyKey: saved.idempotencyKey });
+  } catch (_error) {
+    return null;
+  }
+}
+
 const adminState = {
   products: [],
   sections: [],
@@ -60,6 +76,7 @@ const adminState = {
   productHasMore: false,
   lastBulkRequest: null,
   lastBulkPreview: null,
+  pendingBulkRequest: restorePendingBulkRequest(),
   drafts: new Map(),
   managementDrafts: new Map(),
   pendingGalleryFiles: new Map(),
@@ -75,6 +92,8 @@ const adminState = {
   previewController: null,
   previewBusy: false,
   bulkAuthExpired: false,
+  bulkRecoveryMessage: "",
+  bulkRecoveryStorageFailed: false,
   undoKeys: new Map(),
   pendingImageFiles: new Map(),
   imageUploads: new Set(),
@@ -2141,6 +2160,41 @@ function setBulkPreviewBusy(busy) {
   generateBulkPreviewButton.textContent = busy ? "预览生成中…" : "生成预览";
 }
 
+function updateBulkRecoveryPanel(message = "") {
+  const pending = adminState.pendingBulkRequest;
+  if (message) adminState.bulkRecoveryMessage = message;
+  if (!pending) adminState.bulkRecoveryMessage = "";
+  const storageWarning = adminState.bulkRecoveryStorageFailed
+    ? "浏览器未能保存会话恢复信息，请勿刷新页面，直到本次操作结果明确。"
+    : "";
+  if (bulkRecoveryPanel) bulkRecoveryPanel.hidden = !pending;
+  if (retryBulkRecoveryButton) retryBulkRecoveryButton.disabled = !pending || adminState.bulkBusy;
+  if (pending && openBulkConfirmButton) openBulkConfirmButton.disabled = true;
+  if (!pending || !bulkRecoveryStatus) return;
+  const status = adminState.bulkBusy
+    ? "批量请求仍在后台执行。关闭确认框或调整筛选不会改变这次请求；若最终没有收到结果，可在这里安全重试原请求。"
+    : adminState.bulkRecoveryMessage || "上次批量操作结果尚未确认。重试会复用原预览和幂等键，避免重复改价。";
+  bulkRecoveryStatus.textContent = [status, storageWarning].filter(Boolean).join(" ");
+}
+
+function savePendingBulkRequest(request) {
+  adminState.pendingBulkRequest = request ? Object.freeze({
+    previewId: request.previewId,
+    idempotencyKey: request.idempotencyKey,
+  }) : null;
+  try {
+    if (adminState.pendingBulkRequest) {
+      sessionStorage.setItem(PENDING_BULK_STORAGE_KEY, JSON.stringify(adminState.pendingBulkRequest));
+    } else {
+      sessionStorage.removeItem(PENDING_BULK_STORAGE_KEY);
+    }
+    adminState.bulkRecoveryStorageFailed = false;
+  } catch (_error) {
+    adminState.bulkRecoveryStorageFailed = Boolean(adminState.pendingBulkRequest);
+  }
+  updateBulkRecoveryPanel();
+}
+
 function invalidateBulkPreview(message = "条件已变化，请重新生成预览") {
   adminState.previewController?.abort();
   adminState.previewController = null;
@@ -2154,6 +2208,7 @@ function invalidateBulkPreview(message = "条件已变化，请重新生成预�
   if (bulkPreviewSummary) bulkPreviewSummary.innerHTML = "";
   if (bulkPreviewPanel) bulkPreviewPanel.innerHTML = "";
   if (bulkPreviewStatus) bulkPreviewStatus.textContent = message;
+  updateBulkRecoveryPanel();
 }
 
 function renderBulkPreview(preview) {
@@ -2208,6 +2263,11 @@ function formatBulkExpiry(expiresAt) {
 document.getElementById("batchPriceForm")?.addEventListener("submit", async (event) => {
   event.preventDefault();
   if (adminState.bulkBusy) return;
+  if (adminState.pendingBulkRequest) {
+    updateBulkRecoveryPanel("请先重试或确认上一次批量操作，再生成新的批量预览，避免结果未知时重复改价。");
+    bulkRecoveryStatus?.focus();
+    return;
+  }
   invalidateBulkPreview("正在生成预览…");
   const previewRequestId = adminState.previewRequestId;
   const controller = new AbortController();
@@ -2360,6 +2420,11 @@ bulkConfirmDialog?.addEventListener("close", () => {
     document.getElementById("adminPasswordInput")?.focus();
     return;
   }
+  if (bulkConfirmDialog.returnValue !== "confirm" && (adminState.bulkBusy || adminState.pendingBulkRequest)) {
+    updateBulkRecoveryPanel();
+    bulkRecoveryStatus?.focus();
+    return;
+  }
   if (bulkConfirmDialog.returnValue === "confirm" || !adminState.lastBulkRequest) {
     bulkPreviewStatus?.focus();
   } else {
@@ -2369,9 +2434,9 @@ bulkConfirmDialog?.addEventListener("close", () => {
 
 bulkConfirmDialog?.addEventListener("cancel", (event) => {
   if (!adminState.bulkBusy) return;
-  event.preventDefault();
+  updateBulkRecoveryPanel();
   if (bulkConfirmStatus) {
-    bulkConfirmStatus.textContent = "批量操作正在执行，请等待结果返回后再关闭。";
+    bulkConfirmStatus.textContent = "确认框可以关闭，服务器请求会继续执行；如果未收到结果，请使用页面上的“安全重试同一操作”。";
     bulkConfirmStatus.hidden = false;
   }
 });
@@ -2382,35 +2447,56 @@ exportBulkPreviewButton?.addEventListener("click", () => {
   window.location.href = `/api/admin/products/bulk-preview/${encodeURIComponent(previewId)}/export`;
 });
 
-applyBulkButton?.addEventListener("click", async () => {
-  if (!adminState.lastBulkRequest || adminState.bulkBusy) return;
+async function executeBulkRequest(request, recovering = false) {
+  if (!request || adminState.bulkBusy) return;
+  const stableRequest = adminState.pendingBulkRequest || Object.freeze({
+    previewId: request.previewId,
+    idempotencyKey: request.idempotencyKey,
+  });
   adminState.bulkBusy = true;
-  applyBulkButton.disabled = true;
-  if (cancelBulkConfirmButton) cancelBulkConfirmButton.disabled = true;
-  const originalLabel = applyBulkButton.textContent;
-  applyBulkButton.textContent = "正在执行…";
+  if (!adminState.pendingBulkRequest) savePendingBulkRequest(stableRequest);
+  updateBulkRecoveryPanel();
+  if (applyBulkButton) applyBulkButton.disabled = true;
+  if (retryBulkRecoveryButton) retryBulkRecoveryButton.disabled = true;
+  if (cancelBulkConfirmButton) cancelBulkConfirmButton.disabled = false;
+  const originalLabel = applyBulkButton?.textContent || "确认执行";
+  if (applyBulkButton) applyBulkButton.textContent = "正在执行…";
   try {
     let result;
     try {
       result = await requestJson("/api/admin/products/bulk-apply", {
         method: "POST",
-        body: JSON.stringify(adminState.lastBulkRequest),
+        body: JSON.stringify(stableRequest),
       }, { deferUnauthorizedUi: true });
     } catch (error) {
-      const recoverable = !error.status || error.status >= 500;
+      const recoverable = !error.status || error.status >= 500 || error.status === 408 || error.status === 429 || (recovering && error.status === 401);
       let message;
       if (recoverable) {
-        message = error.status
-          ? `服务暂时不可用（${error.status}）。可重试同一预览，系统不会重复执行。`
-          : `网络连接异常：${error.message}。可重试同一预览，系统不会重复执行。`;
+        message = error.status === 401
+          ? "登录已过期。请重新登录后，使用页面上的安全重试继续核对这次操作。"
+          : error.status === 408
+            ? "请求超时（408）。操作结果未知，可安全重试原请求。"
+          : error.status === 429
+            ? "请求过于频繁。请稍后使用页面上的安全重试继续核对这次操作。"
+            : error.status
+              ? `服务暂时不可用（${error.status}）。操作结果未知，可安全重试原请求。`
+              : `网络连接异常：${error.message}。操作结果未知，可安全重试原请求。`;
+        updateBulkRecoveryPanel(message);
+        if (error.status === 401) {
+          adminApp.hidden = true;
+          loginPanel.hidden = false;
+          loginError.textContent = "登录已过期，请重新登录后再安全重试上次批量操作";
+          loginError.hidden = false;
+        }
       } else {
         const messages = {
-          401: "登录已过期。请关闭窗口后重新登录，再重新生成预览。",
+          401: "登录已过期。请关闭窗口后重新登录，再检查并生成预览。",
           404: "预览不存在或已过期，请重新生成预览。",
           409: "商品数据已经变化，请重新生成预览并核对差异。",
           422: "执行参数已失效，请检查条件后重新生成预览。",
         };
         message = messages[error.status] || `当前预览无法继续执行（${error.status}），请重新生成预览。`;
+        savePendingBulkRequest(null);
         adminState.bulkAuthExpired = error.status === 401;
         invalidateBulkPreview(message);
       }
@@ -2423,6 +2509,7 @@ applyBulkButton?.addEventListener("click", async () => {
       return;
     }
 
+    savePendingBulkRequest(null);
     adminState.lastBulkRequest = null;
     adminState.lastBulkPreview = null;
     adminState.selectedProductIds = new Set();
@@ -2441,10 +2528,25 @@ applyBulkButton?.addEventListener("click", async () => {
   } finally {
     adminState.bulkBusy = false;
     if (cancelBulkConfirmButton) cancelBulkConfirmButton.disabled = false;
-    applyBulkButton.disabled = !adminState.lastBulkRequest;
-    applyBulkButton.textContent = originalLabel;
+    if (applyBulkButton) {
+      applyBulkButton.disabled = !adminState.lastBulkRequest || Boolean(adminState.pendingBulkRequest);
+      applyBulkButton.textContent = originalLabel;
+    }
+    updateBulkRecoveryPanel();
   }
+}
+
+applyBulkButton?.addEventListener("click", async () => {
+  if (!adminState.lastBulkRequest || adminState.pendingBulkRequest || adminState.bulkBusy) return;
+  await executeBulkRequest(adminState.lastBulkRequest);
 });
+
+retryBulkRecoveryButton?.addEventListener("click", async () => {
+  if (!adminState.pendingBulkRequest || adminState.bulkBusy) return;
+  await executeBulkRequest(adminState.pendingBulkRequest, true);
+});
+
+updateBulkRecoveryPanel();
 
 document.getElementById("createProductForm").addEventListener("submit", async (event) => {
   event.preventDefault();

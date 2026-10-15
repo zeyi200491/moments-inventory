@@ -106,8 +106,8 @@ test('商品管理包含明确的批量作用范围和价格段控件', () => {
   assert.ok(html.indexOf('id="bulkPricingPanel"') > html.indexOf('<h2>商品管理</h2>'));
   assert.match(html, /id="bulkPreviewStatus"[^>]*aria-live="polite"/);
   assert.match(html, /id="bulkConfirmStatus"[^>]*role="alert"/);
-  assert.match(html, /showcase\.css\?v=20261015-row-action-feedback/);
-  assert.match(html, /admin\.js\?v=20261015-row-action-feedback/);
+  assert.match(html, /showcase\.css\?v=20261015-bulk-recovery/);
+  assert.match(html, /admin\.js\?v=20261015-bulk-recovery/);
   assert.match(fs.readFileSync(path.join(root, 'index.html'), 'utf8'), /showcase\.js\?v=20261015-access-feedback/);
   assert.match(fs.readFileSync(path.join(root, 'product.html'), 'utf8'), /showcase\.js\?v=20261015-access-feedback/);
 });
@@ -120,8 +120,9 @@ test('旧静态站发布入口明确停止，避免继续构建与当前 SQLite 
   assert.doesNotMatch(script, /--access-password "%SHOWCASE_PASSWORD%"/i);
 });
 
-function pageContext(file) {
+function pageContext(file, initialSessionValues = {}) {
   const nodes = new Map();
+  const sessionValues = new Map(Object.entries(initialSessionValues));
   const documentListeners = {};
   const windowListeners = {};
   function node(id) {
@@ -144,6 +145,7 @@ function pageContext(file) {
   }
   const context = vm.createContext({
     console, URL, URLSearchParams, AbortController, setTimeout, clearTimeout, alert() {}, crypto: { randomUUID: () => 'test-key' },
+    MutationObserver: class { observe() {} disconnect() {} },
     document: {
       activeElement: null,
       getElementById: node,
@@ -157,13 +159,18 @@ function pageContext(file) {
       addEventListener(event, callback, options) { documentListeners[event] = { callback, options }; },
     },
     window: { addEventListener(event, callback) { windowListeners[event] = callback; }, history: {replaceState() {}}, location: {search:'',pathname:'/',href:''}, setTimeout() {}, scrollTo() {} },
-    sessionStorage: {getItem: () => null, removeItem() {}},
+    sessionStorage: {
+      getItem: (key) => sessionValues.get(key) || null,
+      setItem: (key, value) => sessionValues.set(key, String(value)),
+      removeItem: (key) => sessionValues.delete(key),
+    },
     fetch: async () => { throw new Error('未配置请求'); },
   });
   vm.runInContext(fs.readFileSync(path.join(root, 'shared/product-utils.js'), 'utf8'), context);
   const source = fs.readFileSync(path.join(root, file), 'utf8').replace('initListPage().catch(showStartupError);', '').replace('initDetailPage().catch(showStartupError);', '');
   vm.runInContext(source, context);
   context.nodes = nodes;
+  context.sessionValues = sessionValues;
   context.documentListeners = documentListeners;
   context.windowListeners = windowListeners;
   return context;
@@ -286,13 +293,102 @@ test('忙碌提交状态兼容 input 提交控件的 value 文案', async () => 
   assert.equal(attributes.has('aria-busy'), false);
 });
 
-test('批量操作执行期间阻止 Esc 关闭确认框并丢失重试状态', () => {
+test('批量操作执行期间按 Esc 收起确认框并保留恢复入口', () => {
   const c = pageContext('admin.js');
-  vm.runInContext('adminState.bulkBusy = true', c);
+  vm.runInContext("adminState.bulkBusy = true; adminState.pendingBulkRequest = {previewId:'preview-1',idempotencyKey:'key-1'}", c);
   let prevented = false;
   c.nodes.get('bulkConfirmDialog').listeners.cancel({ preventDefault() { prevented = true; } });
-  assert.equal(prevented, true);
-  assert.match(c.nodes.get('bulkConfirmStatus').textContent, /正在执行/);
+  assert.equal(prevented, false);
+  assert.match(c.nodes.get('bulkConfirmStatus').textContent, /服务器请求会继续执行/);
+});
+
+test('批量操作关闭确认框、修改筛选并遇到响应丢失后仍可安全重试原请求', async () => {
+  const c = pageContext('admin.js');
+  vm.runInContext(`adminState.lastBulkRequest = {previewId:'preview-stable',idempotencyKey:'key-stable'};
+    adminState.lastBulkPreview = {matchedCount:3,changedCount:2,skippedCount:1};`, c);
+  const requests = [];
+  let rejectOriginal;
+  c.fetch = (url, options) => {
+    if (url === '/api/admin/products/bulk-apply') requests.push({ url, options });
+    if (requests.length === 1) return new Promise((_resolve, reject) => { rejectOriginal = reject; });
+    return Promise.resolve({ ok: true, json: async () => ({ updatedCount: 2 }) });
+  };
+
+  c.nodes.get('bulkConfirmDialog').showModal();
+  const apply = c.nodes.get('applyBulkButton').listeners.click;
+  const firstAttempt = apply();
+  assert.equal(requests.length, 1);
+  assert.deepEqual(JSON.parse(requests[0].options.body), { previewId: 'preview-stable', idempotencyKey: 'key-stable' });
+
+  let prevented = false;
+  c.nodes.get('bulkConfirmDialog').listeners.cancel({ preventDefault() { prevented = true; } });
+  assert.equal(prevented, false, '执行中允许收起确认框');
+  c.nodes.get('bulkConfirmDialog').close('cancel');
+  c.nodes.get('bulkPriceRangeInput').value = 'up_to_200';
+  c.nodes.get('bulkPriceRangeInput').listeners.change();
+  assert.equal(vm.runInContext('adminState.lastBulkRequest', c), null, '筛选变更应使旧预览失效');
+  assert.equal(c.nodes.get('bulkRecoveryPanel').hidden, false, '正在执行的请求应显示独立恢复区');
+
+  rejectOriginal(new Error('响应连接中断'));
+  await firstAttempt;
+  assert.match(c.nodes.get('bulkRecoveryStatus').textContent, /操作结果未知/);
+  await c.nodes.get('batchPriceForm').listeners.submit({ preventDefault() {} });
+  assert.equal(requests.length, 1, '结果未知时不允许创建可能重复执行的新预览');
+  const retry = c.nodes.get('retryBulkRecoveryButton').listeners.click;
+  await retry();
+  assert.equal(requests.length, 2);
+  assert.equal(requests[1].options.body, requests[0].options.body, '重试必须逐字复用原请求');
+  assert.equal(c.nodes.get('bulkRecoveryPanel').hidden, true, '确认成功后清除恢复提示');
+  assert.equal(vm.runInContext('adminState.pendingBulkRequest', c), null);
+  assert.equal(c.sessionValues.has('ccd-admin-pending-bulk-request-v1'), false);
+});
+
+test('刷新页面后恢复会话中未确认的批量请求并复用幂等键', async () => {
+  const request = { previewId: 'preview-restored', idempotencyKey: 'key-restored' };
+  const c = pageContext('admin.js', {
+    'ccd-admin-pending-bulk-request-v1': JSON.stringify(request),
+  });
+  assert.deepEqual(JSON.parse(JSON.stringify(vm.runInContext('adminState.pendingBulkRequest', c))), request);
+  assert.equal(c.nodes.get('bulkRecoveryPanel').hidden, false);
+  let body = '';
+  c.fetch = async (url, options) => {
+    if (url === '/api/admin/products/bulk-apply') body = options.body;
+    return { ok: true, json: async () => ({ updatedCount: 1 }) };
+  };
+  await c.nodes.get('retryBulkRecoveryButton').listeners.click();
+  assert.deepEqual(JSON.parse(body), request);
+  assert.equal(c.nodes.get('bulkRecoveryPanel').hidden, true);
+});
+
+test('浏览器禁止会话存储时明确提示不要刷新未知结果页面', async () => {
+  const c = pageContext('admin.js');
+  vm.runInContext('adminState.lastBulkRequest = {previewId:"preview-storage",idempotencyKey:"key-storage"}', c);
+  c.sessionStorage.setItem = () => { throw new Error('存储不可用'); };
+  c.fetch = async () => { throw new Error('响应未知'); };
+  await c.nodes.get('applyBulkButton').listeners.click();
+  assert.match(c.nodes.get('bulkRecoveryStatus').textContent, /浏览器未能保存会话恢复信息/);
+  assert.match(c.nodes.get('bulkRecoveryStatus').textContent, /请勿刷新页面/);
+});
+
+test('HTTP 408 的提交结果保持未知并保留原幂等重试', async () => {
+  const c = pageContext('admin.js');
+  vm.runInContext('adminState.lastBulkRequest = {previewId:"preview-timeout",idempotencyKey:"key-timeout"}', c);
+  let applyAttempts = 0;
+  c.fetch = async (url) => {
+    if (url === '/api/admin/products/bulk-apply') {
+      applyAttempts += 1;
+      return applyAttempts === 1
+        ? { ok: false, status: 408, text: async () => '请求超时' }
+        : { ok: true, json: async () => ({ updatedCount: 1 }) };
+    }
+    return { ok: true, json: async () => ({}) };
+  };
+  await c.nodes.get('applyBulkButton').listeners.click();
+  assert.equal(vm.runInContext('adminState.pendingBulkRequest.idempotencyKey', c), 'key-timeout');
+  assert.match(c.nodes.get('bulkRecoveryStatus').textContent, /结果未知/);
+  await c.nodes.get('retryBulkRecoveryButton').listeners.click();
+  assert.equal(applyAttempts, 2, '只重放一次原批量请求');
+  assert.equal(vm.runInContext('adminState.pendingBulkRequest', c), null);
 });
 
 test('样片商品筛选只应用最后一次请求的结果', async () => {
@@ -900,7 +996,7 @@ test('批量执行区分可重试和失效错误并在模态框内提示', async
   network.fetch = async () => { throw new Error('连接断开'); };
   await network.nodes.get('applyBulkButton').listeners.click();
   assert.equal(vm.runInContext('adminState.lastBulkRequest.idempotencyKey', network), 'same-key');
-  assert.match(network.nodes.get('bulkConfirmStatus').textContent, /可重试/);
+  assert.match(network.nodes.get('bulkConfirmStatus').textContent, /安全重试/);
   assert.equal(network.document.activeElement, network.nodes.get('bulkConfirmStatus'));
 
   const conflict = pageContext('admin.js');
@@ -1070,7 +1166,7 @@ test('批量执行拒绝双击且网络失败后重用幂等键', async () => {
   assert.equal(pending.length, 1);
   pending[0].reject(new Error('连接断开'));
   await first;
-  const retry = click();
+  const retry = c.nodes.get('retryBulkRecoveryButton').listeners.click();
   assert.equal(pending[1].options.body, pending[0].options.body);
   assert.deepEqual(JSON.parse(pending[1].options.body), {previewId:'preview-1',idempotencyKey:'key-1'});
   pending[1].resolve({ok:true,json:async () => ({updatedCount:2})});
@@ -1222,7 +1318,7 @@ test('CCD身份复核工作区声明上传、pending恢复、决定与确认控�
   assert.match(html, /value="full"/);
   assert.match(html, /name="file"/);
   assert.match(html, /aria-live="polite"/);
-  assert.match(html, /admin\.js\?v=20261015-row-action-feedback/);
+  assert.match(html, /admin\.js\?v=20261015-bulk-recovery/);
 });
 
 test('导入身份复核可恢复 pending 批次并渲染来源范围与未决定数量', async () => {

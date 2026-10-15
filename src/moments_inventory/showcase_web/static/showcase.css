@@ -1152,6 +1152,28 @@ textarea {
   margin-top: 14px;
 }
 
+.bulk-recovery-panel {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  flex-wrap: wrap;
+  margin-top: 12px;
+  padding: 12px;
+  border: 1px solid #c16b12;
+  border-radius: 10px;
+  background: #fff7e8;
+}
+
+.bulk-recovery-panel[hidden] {
+  display: none;
+}
+
+.bulk-recovery-panel p {
+  flex: 1 1 260px;
+  margin: 0;
+}
+
 .bulk-preview-stats {
   display: grid;
   grid-template-columns: repeat(auto-fit, minmax(120px, 1fr));

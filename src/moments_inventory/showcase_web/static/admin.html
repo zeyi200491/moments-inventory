@@ -5,7 +5,7 @@
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <title>星星CCD 管理后台</title>
   <link rel="icon" href="data:,">
-  <link rel="stylesheet" href="/static/showcase.css?v=20261015-row-action-feedback">
+  <link rel="stylesheet" href="/static/showcase.css?v=20261015-bulk-recovery">
   <style>
     .import-review-workbench { border-color: #eac7d3; background: linear-gradient(145deg, #fffdfd 0%, #fff5f8 64%, #fffaf5 100%); }
     .import-review-heading { display: flex; align-items: flex-start; justify-content: space-between; gap: 1rem; }
@@ -500,6 +500,10 @@
             <button id="generateBulkPreviewButton" class="secondary-button" type="submit">生成预览</button>
           </form>
           <p id="bulkPreviewStatus" class="status-text" aria-live="polite" tabindex="-1"></p>
+          <div id="bulkRecoveryPanel" class="bulk-recovery-panel" aria-live="polite" hidden>
+            <p id="bulkRecoveryStatus" class="status-text" tabindex="-1"></p>
+            <button id="retryBulkRecoveryButton" class="secondary-button" type="button">安全重试同一操作</button>
+          </div>
           <div id="bulkPreviewSummary" class="bulk-preview-stats"></div>
           <div id="bulkPreviewPanel" class="admin-compact-list"></div>
           <div class="bulk-preview-actions">
@@ -538,6 +542,6 @@
     </section>
   </main>
   <script src="/static/shared/product-utils.js?v=20260921"></script>
-  <script src="/static/admin.js?v=20261015-row-action-feedback"></script>
+  <script src="/static/admin.js?v=20261015-bulk-recovery"></script>
 </body>
 </html>
