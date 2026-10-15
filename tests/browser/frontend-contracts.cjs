@@ -107,7 +107,7 @@ test('商品管理包含明确的批量作用范围和价格段控件', () => {
   assert.match(html, /id="bulkPreviewStatus"[^>]*aria-live="polite"/);
   assert.match(html, /id="bulkConfirmStatus"[^>]*role="alert"/);
   assert.match(html, /showcase\.css\?v=20260925-bulk-price-workflow/);
-  assert.match(html, /admin\.js\?v=20261015-import-review-ui/);
+  assert.match(html, /admin\.js\?v=20261015-admin-feedback/);
   assert.match(fs.readFileSync(path.join(root, 'index.html'), 'utf8'), /showcase\.js\?v=20261015-access-feedback/);
   assert.match(fs.readFileSync(path.join(root, 'product.html'), 'utf8'), /showcase\.js\?v=20261015-access-feedback/);
 });
@@ -200,6 +200,85 @@ test('动态管理输入与详情图片按钮具有上下文无障碍名称', ()
   assert.match(admin, /aria-label="\$\{escapeHtml\(partner\.name\).*?合作方名称/);
   assert.match(admin, /aria-label="\$\{escapeHtml\(album\.title\).*?上传图片/);
   assert.match(showcase, /aria-label="查看\$\{escapeHtml\(title\)}图片，第\$\{index \+ 1\}张"/);
+});
+
+test('样片绑定文件夹输入的可访问名称包含商品型号', () => {
+  const c = pageContext('admin.js');
+  vm.runInContext("adminState.sampleMatchingProducts = [{publicId:'p1',model:'IXUS 80',brand:'佳能'}]; renderSampleMatchingProducts()", c);
+  assert.match(c.nodes.get('sampleMatchProductList').innerHTML, /aria-label="IXUS 80 样片文件夹路径"/);
+});
+
+test('管理设置提交中显示忙碌态并阻止重复提交', async () => {
+  const c = pageContext('admin.js');
+  const form = c.nodes.get('settingsForm');
+  const attributes = new Map();
+  const submitButton = {
+    disabled: false,
+    textContent: '保存设置',
+    setAttribute(name, value) { attributes.set(name, value); },
+    removeAttribute(name) { attributes.delete(name); },
+  };
+  form.querySelector = () => submitButton;
+  let resolveSave;
+  let writes = 0;
+  c.fetch = async (url, options = {}) => {
+    if (options.method === 'PATCH') {
+      writes += 1;
+      return new Promise((resolve) => { resolveSave = resolve; });
+    }
+    return { ok: true, json: async () => ({}) };
+  };
+  const submit = () => {
+    let prevented = false;
+    const request = form.listeners.submit({ target: form, preventDefault() { prevented = true; } });
+    return { request, prevented: () => prevented };
+  };
+
+  const first = submit();
+  assert.equal(submitButton.disabled, true);
+  assert.equal(submitButton.textContent, '正在提交…');
+  assert.equal(attributes.get('aria-busy'), 'true');
+  const second = submit();
+  await second.request;
+  assert.equal(second.prevented(), true);
+  assert.equal(writes, 1);
+
+  resolveSave({ ok: true, json: async () => ({}) });
+  await first.request;
+  assert.equal(submitButton.disabled, false);
+  assert.equal(submitButton.textContent, '保存设置');
+  assert.equal(attributes.has('aria-busy'), false);
+});
+
+test('忙碌提交状态兼容 input 提交控件的 value 文案', async () => {
+  const c = pageContext('admin.js');
+  const form = c.nodes.get('settingsForm');
+  const attributes = new Map();
+  const submitInput = {
+    tagName: 'INPUT',
+    type: 'submit',
+    disabled: false,
+    value: '保存设置',
+    textContent: '',
+    setAttribute(name, value) { attributes.set(name, value); },
+    removeAttribute(name) { attributes.delete(name); },
+  };
+  form.querySelector = () => submitInput;
+  let resolveSave;
+  c.fetch = async (url, options = {}) => {
+    if (options.method === 'PATCH') return new Promise((resolve) => { resolveSave = resolve; });
+    return { ok: true, json: async () => ({}) };
+  };
+
+  const pending = form.listeners.submit({ target: form, preventDefault() {} });
+  assert.equal(submitInput.disabled, true);
+  assert.equal(submitInput.value, '正在提交…');
+  assert.equal(attributes.get('aria-busy'), 'true');
+  resolveSave({ ok: true, json: async () => ({}) });
+  await pending;
+  assert.equal(submitInput.disabled, false);
+  assert.equal(submitInput.value, '保存设置');
+  assert.equal(attributes.has('aria-busy'), false);
 });
 
 test('批量操作执行期间阻止 Esc 关闭确认框并丢失重试状态', () => {
@@ -1035,7 +1114,7 @@ test('CCD身份复核工作区声明上传、pending恢复、决定与确认控�
   assert.match(html, /value="full"/);
   assert.match(html, /name="file"/);
   assert.match(html, /aria-live="polite"/);
-  assert.match(html, /admin\.js\?v=20261015-import-review-ui/);
+  assert.match(html, /admin\.js\?v=20261015-admin-feedback/);
 });
 
 test('导入身份复核可恢复 pending 批次并渲染来源范围与未决定数量', async () => {

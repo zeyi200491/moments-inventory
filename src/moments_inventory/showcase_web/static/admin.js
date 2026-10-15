@@ -497,6 +497,40 @@ async function searchImportReviewProducts(rowElement) {
 }
 
 const inFlightMutationRequests = new Map();
+function bindBusySubmit(form, handler, { busyLabel = "正在提交…" } = {}) {
+  if (!form) return;
+  let busy = false;
+  form.addEventListener("submit", async (event) => {
+    if (busy) {
+      event.preventDefault();
+      return;
+    }
+    busy = true;
+    const button = form.querySelector?.('button[type="submit"], input[type="submit"]');
+    const usesValueLabel = String(button?.tagName || "").toUpperCase() === "INPUT";
+    const originalLabel = usesValueLabel ? button.value : button?.textContent;
+    if (button) {
+      button.disabled = true;
+      button.setAttribute("aria-busy", "true");
+      if (usesValueLabel) button.value = busyLabel;
+      else if ("textContent" in button) button.textContent = busyLabel;
+    }
+    try {
+      await handler(event);
+    } finally {
+      busy = false;
+      if (button) {
+        button.disabled = false;
+        button.removeAttribute("aria-busy");
+        if (typeof originalLabel === "string") {
+          if (usesValueLabel) button.value = originalLabel;
+          else button.textContent = originalLabel;
+        }
+      }
+    }
+  });
+}
+
 async function requestJson(url, options = {}, behavior = {}) {
   const method = String(options.method || "GET").toUpperCase();
   const requestKey = method === "GET" || url === "/api/admin/products/bulk-preview" ? "" : `${method}:${url}:${String(options.body || "")}`;
@@ -1093,7 +1127,7 @@ function renderSampleMatchingProducts() {
       <strong>${escapeHtml(product.model)} · ${escapeHtml(product.brand)}</strong>
       <span>${sampleMatchStatusLabel(product.status)} · 置信度 ${Number(product.confidence || 0)}% · ${escapeHtml(product.reason || "")}</span>
       <div class="sample-match-bind-controls">
-        <input class="sample-bind-folder-input" value="${escapeHtml(product.folderPath || "")}" placeholder="品牌/型号文件夹">
+        <input class="sample-bind-folder-input" aria-label="${escapeHtml(product.model)} 样片文件夹路径" value="${escapeHtml(product.folderPath || "")}" placeholder="品牌/型号文件夹">
         <button class="sample-bind-product-folder" type="button">绑定</button>
       </div>
     </div>
@@ -1353,7 +1387,7 @@ document.addEventListener("click", (event) => {
   event.stopImmediatePropagation();
 }, true);
 
-loginForm.addEventListener("submit", async (event) => {
+bindBusySubmit(loginForm, async (event) => {
   event.preventDefault();
   loginError.hidden = true;
   try {
@@ -1367,9 +1401,9 @@ loginForm.addEventListener("submit", async (event) => {
     return;
   }
   await loadAdminApp();
-});
+}, { busyLabel: "正在登录…" });
 
-document.getElementById("settingsForm").addEventListener("submit", async (event) => {
+bindBusySubmit(document.getElementById("settingsForm"), async (event) => {
   event.preventDefault();
   document.getElementById("settingsStatus").textContent = "";
   const submittedValues = Object.fromEntries(["statementInput", "shopIntroInput", "watermarkInput", "inventoryUpdatedInput"]
@@ -1396,7 +1430,7 @@ document.getElementById("settingsForm").addEventListener("submit", async (event)
   await loadSettings();
 });
 
-document.getElementById("partnerForm").addEventListener("submit", async (event) => {
+bindBusySubmit(document.getElementById("partnerForm"), async (event) => {
   event.preventDefault();
   await requestJson("/api/admin/partners", {
     method: "POST",
@@ -1412,7 +1446,7 @@ document.getElementById("partnerForm").addEventListener("submit", async (event) 
   await loadPartners();
 });
 
-document.getElementById("sectionForm").addEventListener("submit", async (event) => {
+bindBusySubmit(document.getElementById("sectionForm"), async (event) => {
   event.preventDefault();
   await requestJson("/api/admin/sections", {
     method: "POST",
@@ -1428,7 +1462,7 @@ document.getElementById("sectionForm").addEventListener("submit", async (event) 
   await loadSections();
 });
 
-document.getElementById("galleryForm")?.addEventListener("submit", async (event) => {
+bindBusySubmit(document.getElementById("galleryForm"), async (event) => {
   event.preventDefault();
   await requestJson("/api/admin/gallery/albums", {
     method: "POST",
@@ -1444,7 +1478,7 @@ document.getElementById("galleryForm")?.addEventListener("submit", async (event)
   await loadGalleryAlbums();
 });
 
-document.getElementById("purchaseStepForm")?.addEventListener("submit", async (event) => {
+bindBusySubmit(document.getElementById("purchaseStepForm"), async (event) => {
   event.preventDefault();
   await requestJson("/api/admin/purchase-steps", {
     method: "POST",
