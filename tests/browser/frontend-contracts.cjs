@@ -687,8 +687,10 @@ test('设置保存失败会清除上一次的成功状态', async () => {
   const status = c.document.getElementById('settingsStatus');
   status.textContent = '已保存';
   c.fetch = async () => ({ ok: false, status: 500, text: async () => '数据库暂时不可用' });
-  await assert.rejects(c.nodes.get('settingsForm').listeners.submit({ preventDefault() {} }));
-  assert.equal(status.textContent, '');
+  await assert.doesNotReject(c.nodes.get('settingsForm').listeners.submit({ preventDefault() {} }));
+  assert.match(status.textContent, /提交或刷新未完成/);
+  assert.match(status.textContent, /数据库暂时不可用/);
+  assert.equal(status.dataset.state, 'error');
 });
 
 test('样片重建失败后在页面提示且不残留正在处理状态', async () => {
@@ -739,6 +741,40 @@ test('登录成功但管理模块加载失败时不误报密码错误，并允�
   assert.equal(c.nodes.get('loginPanel').hidden, true);
   assert.equal(c.nodes.get('adminApp').hidden, false);
   assert.equal(typeof c.nodes.get('retryAdminStartupButton').listeners.click, 'function');
+});
+
+test('管理员登录只把401报告为口令错误，服务异常明确提示重试', async () => {
+  const c = pageContext('admin.js');
+  c.fetch = async () => ({ ok: false, status: 500, text: async () => '服务不可用' });
+  await c.nodes.get('loginForm').listeners.submit({ preventDefault() {} });
+  assert.doesNotMatch(c.nodes.get('loginError').textContent, /密码错误/);
+  assert.match(c.nodes.get('loginError').textContent, /登录服务暂时不可用|登录请求失败/);
+
+  c.fetch = async () => ({ ok: false, status: 401, text: async () => '密码错误' });
+  await c.nodes.get('loginForm').listeners.submit({ preventDefault() {} });
+  assert.match(c.nodes.get('loginError').textContent, /密码错误/);
+});
+
+test('普通新增表单失败显示行内错误并解除忙碌状态', async () => {
+  const html = fs.readFileSync(path.join(root, 'admin.html'), 'utf8');
+  for (const id of ['partnerFormStatus', 'sectionFormStatus', 'galleryFormStatus', 'purchaseStepFormStatus', 'createProductFormStatus']) {
+    assert.match(html, new RegExp(`<p id="${id}"[^>]*data-form-status`));
+  }
+  const c = pageContext('admin.js');
+  const form = c.nodes.get('partnerForm');
+  const button = { disabled: false, textContent: '新增合作方', setAttribute() {}, removeAttribute() {} };
+  form.querySelector = () => button;
+  c.fetch = async () => ({ ok: false, status: 500, text: async () => '保存服务异常' });
+  await form.listeners.submit({ preventDefault() {} });
+  assert.match(c.nodes.get('partnerFormStatus').textContent, /提交或刷新未完成/);
+  assert.equal(c.nodes.get('partnerFormStatus').dataset.state, 'error');
+  assert.equal(button.disabled, false);
+  assert.equal(button.textContent, '新增合作方');
+
+  c.fetch = async () => ({ ok: false, status: 422, text: async () => '字段格式不正确' });
+  await form.listeners.submit({ preventDefault() {} });
+  assert.match(c.nodes.get('partnerFormStatus').textContent, /输入未通过校验/);
+  assert.match(c.nodes.get('partnerFormStatus').textContent, /字段格式不正确/);
 });
 
 test('登录成功后自动恢复导入身份复核 pending 队列', async () => {

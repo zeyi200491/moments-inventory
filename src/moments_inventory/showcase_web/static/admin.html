@@ -144,7 +144,7 @@
             <input id="customerPasswordAdminInput" type="password" placeholder="留空则不修改">
           </label>
           <button class="access-button" type="submit">保存设置</button>
-          <p id="settingsStatus" class="status-text"></p>
+          <p id="settingsStatus" class="status-text" data-form-status role="status" aria-live="polite"></p>
         </form>
       </section>
 
@@ -168,6 +168,7 @@
             <span>客户页展示</span>
           </label>
           <button class="access-button" type="submit">新增步骤</button>
+          <p id="purchaseStepFormStatus" class="status-text field-wide" data-form-status role="status" aria-live="polite"></p>
         </form>
         <p class="status-text">这个模块显示在声明/店铺简介下面、店铺图片橱窗上面，用来告诉客户下一步怎么咨询和下单。</p>
         <div id="purchaseStepList" class="purchase-step-admin-list"></div>
@@ -193,6 +194,7 @@
             <span>客户页展示</span>
           </label>
           <button class="access-button" type="submit">新增相册</button>
+          <p id="galleryFormStatus" class="status-text field-wide" data-form-status role="status" aria-live="polite"></p>
         </form>
         <p class="status-text">建议固定维护：相机实拍、礼盒装展示、工作室日常、买家反馈。买家反馈上传前请先打码头像、昵称、地址、电话和订单号。</p>
         <div id="galleryAlbumList" class="gallery-admin-list"></div>
@@ -218,6 +220,7 @@
             <span>启用展示</span>
           </label>
           <button class="access-button" type="submit">新增合作方</button>
+          <p id="partnerFormStatus" class="status-text field-wide" data-form-status role="status" aria-live="polite"></p>
         </form>
         <div id="partnerList" class="partner-admin-list"></div>
       </section>
@@ -242,6 +245,7 @@
             <span>首页展示</span>
           </label>
           <button class="access-button" type="submit">新增专栏</button>
+          <p id="sectionFormStatus" class="status-text field-wide" data-form-status role="status" aria-live="polite"></p>
         </form>
         <div id="sectionList" class="section-admin-list"></div>
       </section>
@@ -348,6 +352,7 @@
             <input id="createSectionSortInput" type="number" min="0" value="0">
           </label>
           <button class="access-button" type="submit">新增</button>
+          <p id="createProductFormStatus" class="status-text field-wide" data-form-status role="status" aria-live="polite"></p>
         </form>
       </section>
 

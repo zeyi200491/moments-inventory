@@ -532,7 +532,23 @@ async function searchImportReviewProducts(rowElement) {
 }
 
 const inFlightMutationRequests = new Map();
-function bindBusySubmit(form, handler, { busyLabel = "正在提交…" } = {}) {
+function formatAdminSubmitError(error, operation) {
+  const detail = String(error?.message || "未知错误").slice(0, 140);
+  if (error?.status === 401) return "登录已过期，请重新登录后核对当前状态。";
+  if (error?.status === 429) return `${operation}请求过于频繁，请稍后再试。`;
+  if (error?.status === 422) return `${operation}失败：输入未通过校验。${detail}`;
+  if (!error?.status || error.status === 408 || error.status >= 500) {
+    return `${operation}提交或刷新未完成，请先刷新列表核对后再决定是否重试。${detail}`;
+  }
+  return `${operation}失败：${detail}`;
+}
+
+function bindBusySubmit(form, handler, {
+  busyLabel = "正在提交…",
+  operation = "提交",
+  statusId = "",
+  successMessage = `${operation}已完成。`,
+} = {}) {
   if (!form) return;
   let busy = false;
   form.addEventListener("submit", async (event) => {
@@ -544,14 +560,28 @@ function bindBusySubmit(form, handler, { busyLabel = "正在提交…" } = {}) {
     const button = form.querySelector?.('button[type="submit"], input[type="submit"]');
     const usesValueLabel = String(button?.tagName || "").toUpperCase() === "INPUT";
     const originalLabel = usesValueLabel ? button.value : button?.textContent;
+    const status = statusId ? document.getElementById(statusId) : form.querySelector?.("[data-form-status]");
     if (button) {
       button.disabled = true;
       button.setAttribute("aria-busy", "true");
       if (usesValueLabel) button.value = busyLabel;
       else if ("textContent" in button) button.textContent = busyLabel;
     }
+    if (status) {
+      status.textContent = `${operation}中…`;
+      status.dataset.state = "busy";
+    }
     try {
       await handler(event);
+      if (status && status.dataset.state === "busy") {
+        status.textContent = successMessage;
+        status.dataset.state = "success";
+      }
+    } catch (error) {
+      if (status) {
+        status.textContent = formatAdminSubmitError(error, operation);
+        status.dataset.state = "error";
+      }
     } finally {
       busy = false;
       if (button) {
@@ -1583,8 +1613,14 @@ bindBusySubmit(loginForm, async (event) => {
       method: "POST",
       body: JSON.stringify({ password: document.getElementById("adminPasswordInput").value }),
     });
-  } catch {
-    loginError.textContent = "密码错误";
+  } catch (error) {
+    loginError.textContent = error?.status === 401
+      ? "密码错误"
+      : error?.status === 429
+        ? "登录尝试过于频繁，请稍后再试。"
+        : error?.status >= 500 || !error?.status
+          ? "登录服务暂时不可用，请检查网络后重试。"
+          : `登录请求失败：${String(error.message || "请检查输入后重试。")}`;
     loginError.hidden = false;
     return;
   }
@@ -1615,8 +1651,9 @@ bindBusySubmit(document.getElementById("settingsForm"), async (event) => {
   }
   document.getElementById("customerPasswordAdminInput").value = "";
   document.getElementById("settingsStatus").textContent = "已保存";
+  document.getElementById("settingsStatus").dataset.state = "success";
   await loadSettings();
-});
+}, { operation: "保存设置", statusId: "settingsStatus" });
 
 bindBusySubmit(document.getElementById("partnerForm"), async (event) => {
   event.preventDefault();
@@ -1632,7 +1669,7 @@ bindBusySubmit(document.getElementById("partnerForm"), async (event) => {
   resetAdminCreateForm(event.target);
   document.getElementById("partnerActiveInput").checked = true;
   await loadPartners();
-});
+}, { operation: "新增合作方", statusId: "partnerFormStatus" });
 
 bindBusySubmit(document.getElementById("sectionForm"), async (event) => {
   event.preventDefault();
@@ -1648,7 +1685,7 @@ bindBusySubmit(document.getElementById("sectionForm"), async (event) => {
   resetAdminCreateForm(event.target);
   document.getElementById("sectionActiveInput").checked = true;
   await loadSections();
-});
+}, { operation: "新增专栏", statusId: "sectionFormStatus" });
 
 bindBusySubmit(document.getElementById("galleryForm"), async (event) => {
   event.preventDefault();
@@ -1664,7 +1701,7 @@ bindBusySubmit(document.getElementById("galleryForm"), async (event) => {
   resetAdminCreateForm(event.target);
   document.getElementById("galleryVisibleInput").checked = true;
   await loadGalleryAlbums();
-});
+}, { operation: "新增相册", statusId: "galleryFormStatus" });
 
 bindBusySubmit(document.getElementById("purchaseStepForm"), async (event) => {
   event.preventDefault();
@@ -1680,7 +1717,7 @@ bindBusySubmit(document.getElementById("purchaseStepForm"), async (event) => {
   resetAdminCreateForm(event.target);
   document.getElementById("purchaseStepVisibleInput").checked = true;
   await loadPurchaseStepsAdmin();
-});
+}, { operation: "新增买前流程", statusId: "purchaseStepFormStatus" });
 
 document.getElementById("backupDatabaseButton")?.addEventListener("click", () => {
   const status = document.getElementById("backupStatus");
@@ -2632,7 +2669,7 @@ retryBulkRecoveryButton?.addEventListener("click", async () => {
 
 updateBulkRecoveryPanel();
 
-document.getElementById("createProductForm").addEventListener("submit", async (event) => {
+bindBusySubmit(document.getElementById("createProductForm"), async (event) => {
   event.preventDefault();
   await requestJson("/api/admin/products", {
     method: "POST",
@@ -2654,7 +2691,7 @@ document.getElementById("createProductForm").addEventListener("submit", async (e
   renderCreateSectionPicker();
   await loadProducts();
   await loadSections();
-});
+}, { operation: "新增商品", statusId: "createProductFormStatus" });
 
 adminProductList.addEventListener("click", async (event) => {
   const row = event.target.closest(".admin-product-row");
