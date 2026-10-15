@@ -92,7 +92,7 @@ python -m moments_inventory.cli showcase-server --showcase-config (Join-Path $ca
 
 ## 验证入口
 
-CCD Python 运行依赖使用 `requirements/ccd-runtime.lock` 锁定直接及传递版本，构建后端 setuptools 固定在 `pyproject.toml`。创建环境时先运行 `python -m pip install -r requirements/ccd-runtime.lock`，再安装项目包。锁文件离线核对了 Python 3.11–3.13 的 Windows/Linux 环境标记；锁文件尚未包含制品哈希，完整依赖集在干净环境的安装仍需后续验证。
+CCD Python 运行依赖使用 `requirements/ccd-runtime.lock` 锁定直接及传递版本，构建后端 setuptools 固定在 `pyproject.toml`。创建环境时先运行 `python -m pip install -r requirements/ccd-runtime.lock`，再安装项目包。锁文件离线核对了 Python 3.11–3.13 的 Windows/Linux 环境标记；锁文件尚未包含制品哈希，完整依赖集在干净环境的安装仍需后续验证。2026-10-16 尝试在临时虚拟环境中使用 `pip install --no-index` 验证，仅因本机缓存缺少 `annotated-doc==0.0.4` 而停止；该尝试未联网，也不能证明锁文件整体安装成功或失败。获得批准的包源/离线 wheel 后再完成干净安装验收。
 
 本地 wheel 验证记录：2026-10-15 在 Windows 上执行 `python -m pip wheel . --no-deps --no-build-isolation`，随后在临时全新虚拟环境中使用 `--no-deps --no-index` 安装 wheel 成功；从该环境检查到 110 个 `showcase_web/static/` 文件，且 `admin.html`、`index.html`、`product.html` 均存在。这证明 wheel 可离线安装且包含展示网页静态资源；不代表运行依赖已在干净环境安装，也不代表制品哈希已核验。
 
