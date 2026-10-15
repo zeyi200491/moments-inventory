@@ -63,6 +63,8 @@ class OrchestratedRunService:
 
         current_time = self._batch_service.normalize_now(now)
         deduplicated_targets = self._batch_service.deduplicate_targets(self._settings.targets)
+        if not deduplicated_targets:
+            raise RuntimeError("no targets configured")
         priority_targets = [target for target in deduplicated_targets if target.tier == 1]
         secondary_targets = [target for target in deduplicated_targets if target.tier != 1]
         progress = self._load_or_initialize_progress(
@@ -74,26 +76,60 @@ class OrchestratedRunService:
         run_id = str(progress["run_id"])
         processed_usernames = set(str(item) for item in progress.get("processed_usernames", []))
         failed_targets: list[FailedTarget] = []
+        priority_retry_batches = {
+            str(item) for item in progress.get("priority_failed_batches", [])
+        } if resume else set()
         if resume:
             progress["failed_targets"] = []
+            progress["priority_failed_batches"] = []
             progress["secondary_failed_batches"] = []
+            if priority_retry_batches:
+                progress["priority_export_done"] = False
             self._write_progress(progress)
 
         try:
-            if not progress["priority_done"]:
+            if not progress["priority_done"] or priority_retry_batches:
                 priority_batches = self._batch_service.chunk_targets(
                     priority_targets,
                     self._settings.orchestrator.batch_size,
                 )
+                completed_priority_batches = set(
+                    str(item) for item in progress.get("priority_completed_batches", [])
+                )
                 for batch_offset, batch_targets in enumerate(priority_batches):
-                    result = self._batch_service.stage_batch(
-                        run_id=run_id,
-                        batch_index=batch_offset,
-                        batch_targets=batch_targets,
-                        current_time=current_time,
-                        processed_usernames=processed_usernames,
-                    )
-                    processed_usernames.update(result.usernames)
+                    batch_label = f"p1-{batch_offset + 1:02d}"
+                    if resume and batch_label not in priority_retry_batches and (
+                        progress["priority_done"] or batch_label in completed_priority_batches
+                    ):
+                        continue
+                    try:
+                        result = self._batch_service.stage_batch(
+                            run_id=run_id,
+                            batch_index=batch_offset,
+                            batch_targets=batch_targets,
+                            current_time=current_time,
+                            processed_usernames=processed_usernames,
+                        )
+                        processed_usernames.update(result.usernames)
+                        progress["priority_completed_batches"] = progress.get(
+                            "priority_completed_batches",
+                            [],
+                        ) + [batch_label]
+                        progress["processed_usernames"] = sorted(processed_usernames)
+                        self._write_progress(progress)
+                    except Exception as exc:
+                        failed_targets.extend(
+                            self._failed_targets_for_batch(batch_targets, batch_label, str(exc))
+                        )
+                        progress["failed_targets"] = [asdict(item) for item in failed_targets]
+                        progress["priority_failed_batches"] = progress.get(
+                            "priority_failed_batches",
+                            [],
+                        ) + [batch_label]
+                        self._write_progress(progress)
+                        self._write_failed_targets(failed_targets)
+                        if self._settings.batch_run.stop_on_batch_failure:
+                            raise
                 progress["priority_done"] = True
                 progress["processed_usernames"] = sorted(processed_usernames)
                 self._write_progress(progress)
@@ -101,6 +137,10 @@ class OrchestratedRunService:
             if (
                 self._settings.orchestrator.export_priority_after_p1
                 and not progress["priority_export_done"]
+                and not (
+                    failed_targets
+                    and self._settings.batch_run.export_only_when_all_batches_succeed
+                )
             ):
                 staged_records = self._batch_service.list_staged_records(run_id)
                 priority_records = self._filter_records_for_targets(staged_records, priority_targets)
@@ -114,9 +154,21 @@ class OrchestratedRunService:
             if selected_mode == "priority_only":
                 staged_records = self._batch_service.list_staged_records(run_id)
                 priority_records = self._filter_records_for_targets(staged_records, priority_targets)
+                if (
+                    failed_targets
+                    and self._settings.batch_run.export_only_when_all_batches_succeed
+                ):
+                    LOGGER.warning(
+                        "priority-only run finished with failures, skipped final export",
+                        extra={"run_id": run_id, "failure_count": len(failed_targets)},
+                    )
+                    self._write_failed_targets(failed_targets)
+                    return priority_records
                 self._batch_service.clear_run(run_id)
                 progress["completed"] = True
                 self._write_progress(progress)
+                if self._settings.orchestrator.write_failed_targets:
+                    self._write_failed_targets(failed_targets)
                 return priority_records
 
             secondary_batches = self._batch_service.chunk_targets(
@@ -208,6 +260,8 @@ class OrchestratedRunService:
             if not progress_path.exists():
                 raise RuntimeError("progress file missing for resume")
             progress = json.loads(progress_path.read_text(encoding="utf-8"))
+            if progress.get("completed") is True:
+                raise RuntimeError("completed run cannot be resumed")
             stored_mode = progress.get("mode")
             if stored_mode != mode:
                 raise RuntimeError(
@@ -226,6 +280,8 @@ class OrchestratedRunService:
             "mode": mode,
             "priority_done": False,
             "priority_export_done": False,
+            "priority_completed_batches": [],
+            "priority_failed_batches": [],
             "secondary_next_batch": 0,
             "secondary_completed_batches": [],
             "secondary_failed_batches": [],

@@ -200,6 +200,30 @@ def test_priority_only_raises_when_targets_are_empty() -> None:
         shutil.rmtree(temp_root, ignore_errors=True)
 
 
+def test_full_mode_raises_when_targets_are_empty() -> None:
+    temp_root = _make_temp_root(f"pytest-orchestrator-full-empty-targets-{uuid.uuid4().hex}-")
+
+    try:
+        settings = _build_settings(temp_root, [], batch_size=1)
+        store = InventoryStore(settings.paths.sqlite_db)
+        store.initialize()
+        service = OrchestratedRunService(
+            settings=settings,
+            store=store,
+            client=FakeClient({}),
+            warmup_runner=None,
+            export_func=_fake_export,
+        )
+
+        with pytest.raises(RuntimeError, match="no targets configured"):
+            service.run(
+                mode="full",
+                now=datetime.fromisoformat("2026-04-21T12:00:00+08:00"),
+            )
+    finally:
+        shutil.rmtree(temp_root, ignore_errors=True)
+
+
 def test_full_mode_exports_priority_then_full_and_commits_union() -> None:
     temp_root = _make_temp_root(f"pytest-orchestrator-full-{uuid.uuid4().hex}-")
 
@@ -238,6 +262,50 @@ def test_full_mode_exports_priority_then_full_and_commits_union() -> None:
         assert (Path(settings.task.output_dir) / "priority.xlsx").read_text(encoding="utf-8") == "wxid_1"
         assert (Path(settings.task.output_dir) / "full.xlsx").read_text(encoding="utf-8") == "wxid_1\nwxid_2\nwxid_3"
         assert _staging_count(Path(settings.paths.sqlite_db)) == 0
+    finally:
+        shutil.rmtree(temp_root, ignore_errors=True)
+
+
+def test_resume_rejects_completed_run_without_touching_current_inventory() -> None:
+    temp_root = _make_temp_root(f"pytest-orchestrator-resume-completed-{uuid.uuid4().hex}-")
+
+    try:
+        targets = [TargetContact(remark_name="Priority User", wxid="wxid_1", tier=1)]
+        settings = _build_settings(temp_root, targets, batch_size=1)
+        store = InventoryStore(settings.paths.sqlite_db)
+        store.initialize()
+        client = FakeClient({
+            "wxid_1": [_build_moment("wxid_1", "m1", "ixus 95 100 A1", 1)],
+        })
+        service = OrchestratedRunService(
+            settings=settings,
+            store=store,
+            client=client,
+            warmup_runner=None,
+            export_func=_fake_export,
+        )
+        expected_records = service.run(
+            mode="full",
+            now=datetime.fromisoformat("2026-04-21T12:00:00+08:00"),
+        )
+
+        resumed_service = OrchestratedRunService(
+            settings=settings,
+            store=store,
+            client=client,
+            warmup_runner=None,
+            export_func=_fake_export,
+        )
+        with pytest.raises(RuntimeError, match="completed run cannot be resumed"):
+            resumed_service.run(
+                mode="full",
+                resume=True,
+                now=datetime.fromisoformat("2026-04-21T12:00:00+08:00"),
+            )
+
+        assert [record.record_key for record in store.list_all_records()] == [
+            record.record_key for record in expected_records
+        ]
     finally:
         shutil.rmtree(temp_root, ignore_errors=True)
 
@@ -291,6 +359,69 @@ def test_full_mode_continues_after_failed_priority_batch_when_allowed() -> None:
         assert progress["priority_done"] is True
         assert progress["priority_export_done"] is True
         assert progress["full_export_done"] is True
+        assert progress["completed"] is True
+    finally:
+        shutil.rmtree(temp_root, ignore_errors=True)
+
+
+def test_full_mode_resume_retries_failed_priority_batch_before_finalizing() -> None:
+    temp_root = _make_temp_root(f"pytest-orchestrator-resume-priority-{uuid.uuid4().hex}-")
+
+    try:
+        targets = [
+            TargetContact(remark_name="Priority User A", wxid="wxid_1", tier=1),
+            TargetContact(remark_name="Priority User B", wxid="wxid_2", tier=1),
+            TargetContact(remark_name="Secondary User", wxid="wxid_3", tier=2),
+        ]
+        settings = _build_settings(
+            temp_root,
+            targets,
+            batch_size=1,
+            stop_on_batch_failure=False,
+            export_only_when_all_batches_succeed=True,
+        )
+        store = InventoryStore(settings.paths.sqlite_db)
+        store.initialize()
+        moments = {
+            "wxid_1": [_build_moment("wxid_1", "m1", "ixus 95 100 A1", 1)],
+            "wxid_2": [_build_moment("wxid_2", "m2", "ixus 95 200 A2", 2)],
+            "wxid_3": [_build_moment("wxid_3", "m3", "x100 300 A3", 3)],
+        }
+        first_service = OrchestratedRunService(
+            settings=settings,
+            store=store,
+            client=FakeClient(moments, failing_username="wxid_1"),
+            warmup_runner=None,
+            export_func=_fake_export,
+        )
+
+        first_service.run(
+            mode="full",
+            now=datetime.fromisoformat("2026-04-21T12:00:00+08:00"),
+        )
+
+        progress = json.loads((Path(settings.task.output_dir) / "progress.json").read_text(encoding="utf-8"))
+        assert progress["priority_done"] is True
+        assert progress["priority_failed_batches"] == ["p1-01"]
+        assert progress["completed"] is False
+
+        resumed_service = OrchestratedRunService(
+            settings=settings,
+            store=store,
+            client=FakeClient(moments),
+            warmup_runner=None,
+            export_func=_fake_export,
+        )
+        records = resumed_service.run(
+            mode="full",
+            resume=True,
+            now=datetime.fromisoformat("2026-04-21T12:00:00+08:00"),
+        )
+
+        assert [record.wxid for record in records] == ["wxid_1", "wxid_2", "wxid_3"]
+        progress = json.loads((Path(settings.task.output_dir) / "progress.json").read_text(encoding="utf-8"))
+        assert progress["priority_failed_batches"] == []
+        assert progress["failed_targets"] == []
         assert progress["completed"] is True
     finally:
         shutil.rmtree(temp_root, ignore_errors=True)
