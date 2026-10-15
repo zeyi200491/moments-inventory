@@ -98,6 +98,46 @@ def test_admin_login_sets_session_cookie(tmp_path: Path) -> None:
     assert "showcase_admin_session" in response.cookies
 
 
+def test_admin_operations_retention_runs_only_for_authenticated_history_reads(
+    authenticated_client: TestClient,
+    repo: SQLiteShowcaseRepository,
+) -> None:
+    from datetime import datetime, timedelta, timezone
+
+    old = (datetime.now(timezone.utc) - timedelta(days=91)).isoformat()
+    conn = repo._get_connection()
+    conn.execute(
+        """insert into showcase_admin_operation_logs
+           (operation_id,operation_type,summary,filter_text,updated_count,created_at,undone_at,parent_operation_id)
+           values ('expired-history','price','expired','',1,?,'','')""",
+        (old,),
+    )
+    conn.execute(
+        """insert into showcase_admin_operation_items
+           (item_id,operation_id,product_id,old_price,new_price)
+           values ('expired-history-item','expired-history','deleted-product',100,150)"""
+    )
+    conn.commit()
+    anonymous = TestClient(create_showcase_app(repository=repo))
+
+    denied = anonymous.get("/api/admin/operations")
+    assert denied.status_code == 401
+    assert conn.execute(
+        "select count(*) from showcase_admin_operation_logs where operation_id='expired-history'"
+    ).fetchone()[0] == 1
+
+    response = authenticated_client.get("/api/admin/operations")
+
+    assert response.status_code == 200
+    assert "expired-history" not in {item["operationId"] for item in response.json()["operations"]}
+    assert conn.execute(
+        "select count(*) from showcase_admin_operation_logs where operation_id='expired-history'"
+    ).fetchone()[0] == 0
+    assert conn.execute(
+        "select count(*) from showcase_admin_operation_items where item_id='expired-history-item'"
+    ).fetchone()[0] == 0
+
+
 def test_admin_product_listing_rejects_deep_offset_before_repository_query(
     authenticated_client: TestClient,
     repo: SQLiteShowcaseRepository,

@@ -6,7 +6,7 @@ import json
 import threading
 from contextlib import contextmanager
 from dataclasses import replace
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from uuid import uuid4
 
@@ -1053,6 +1053,131 @@ class SQLiteShowcaseRepository:
             )
             for row in rows
         ]
+
+    def cleanup_expired_admin_operations(
+        self,
+        *,
+        now: datetime | None = None,
+        limit: int = 500,
+    ) -> dict[str, int]:
+        """按 90 天保留期分批清理过期操作族，不触碰商品当前值。"""
+        current = now or datetime.now(timezone.utc)
+        if current.tzinfo is None:
+            current = current.replace(tzinfo=timezone.utc)
+        cutoff = (current.astimezone(timezone.utc) - timedelta(days=90)).isoformat()
+        batch_limit = max(1, min(int(limit), 500))
+        family_cte = """
+            with eligible_roots as (
+              select root.operation_id
+              from showcase_admin_operation_logs root
+              where root.parent_operation_id = '' and root.created_at < ?
+                and not exists (
+                  select 1 from showcase_admin_operation_logs child
+                  where child.parent_operation_id = root.operation_id
+                    and child.created_at >= ?
+                )
+              order by root.created_at, root.operation_id
+              limit ?
+            ), family_operations as (
+              select operation_id from eligible_roots
+              union all
+              select child.operation_id
+              from showcase_admin_operation_logs child
+              join eligible_roots root on child.parent_operation_id = root.operation_id
+            )
+        """
+        with self._lock:
+            conn = self._get_connection()
+            conn.execute("begin immediate")
+            try:
+                conn.execute(
+                    family_cte + """
+                    delete from showcase_admin_operation_items
+                    where item_id in (
+                      select item.item_id
+                      from showcase_admin_operation_items item
+                      where item.operation_id in (select operation_id from family_operations)
+                      order by item.operation_id, item.item_id
+                      limit ?
+                    )
+                    """,
+                    (cutoff, cutoff, batch_limit, batch_limit),
+                )
+                items_deleted = int(conn.execute("select changes()").fetchone()[0])
+                remaining_budget = batch_limit - items_deleted
+                eligible_families = []
+                if remaining_budget > 0:
+                    eligible_families = conn.execute(
+                        """
+                        select root.operation_id, root.created_at,
+                               count(member.operation_id) as family_size
+                        from showcase_admin_operation_logs root
+                        join showcase_admin_operation_logs member
+                          on member.operation_id = root.operation_id
+                          or member.parent_operation_id = root.operation_id
+                        where root.parent_operation_id = '' and root.created_at < ?
+                          and not exists (
+                            select 1 from showcase_admin_operation_logs child
+                            where child.parent_operation_id = root.operation_id
+                              and child.created_at >= ?
+                          )
+                          and not exists (
+                            select 1
+                            from showcase_admin_operation_items item
+                            join showcase_admin_operation_logs family_member
+                              on family_member.operation_id = item.operation_id
+                            where family_member.operation_id = root.operation_id
+                               or family_member.parent_operation_id = root.operation_id
+                          )
+                        group by root.operation_id, root.created_at
+                        order by root.created_at, root.operation_id
+                        limit ?
+                        """,
+                        (cutoff, cutoff, batch_limit),
+                    ).fetchall()
+                selected_operation_ids: list[str] = []
+                for family in eligible_families:
+                    family_size = int(family[2])
+                    if family_size > remaining_budget:
+                        continue
+                    selected_operation_ids.append(str(family[0]))
+                    member_ids = conn.execute(
+                        """select operation_id from showcase_admin_operation_logs
+                           where operation_id = ? or parent_operation_id = ?""",
+                        (str(family[0]), str(family[0])),
+                    ).fetchall()
+                    selected_operation_ids.extend(str(row[0]) for row in member_ids if str(row[0]) != str(family[0]))
+                    remaining_budget -= family_size
+                    if remaining_budget <= 0:
+                        break
+                operations_deleted = 0
+                if selected_operation_ids:
+                    placeholders = ",".join("?" for _ in selected_operation_ids)
+                    conn.execute(
+                        f"delete from showcase_admin_operation_logs where operation_id in ({placeholders})",
+                        selected_operation_ids,
+                    )
+                    operations_deleted = int(conn.execute("select changes()").fetchone()[0])
+                idempotency_deleted = 0
+                if remaining_budget > 0:
+                    conn.execute(
+                        """delete from showcase_idempotency
+                           where idempotency_key in (
+                             select idempotency_key from showcase_idempotency
+                             where created_at < ? order by created_at, idempotency_key limit ?
+                           )""",
+                        (cutoff, remaining_budget),
+                    )
+                    idempotency_deleted = int(conn.execute("select changes()").fetchone()[0])
+                conn.commit()
+            except Exception:
+                conn.rollback()
+                raise
+        return {
+            "items": int(items_deleted),
+            "operations": int(operations_deleted),
+            "idempotency": int(idempotency_deleted),
+        }
 
     def undo_admin_price_operation(self, operation_id: str, undone_at: str) -> int:
         with self._lock:

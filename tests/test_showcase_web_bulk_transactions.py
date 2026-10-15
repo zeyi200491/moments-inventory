@@ -1,10 +1,31 @@
 from dataclasses import replace
+from datetime import datetime, timedelta, timezone
+import sqlite3
 
 import pytest
 from fastapi.testclient import TestClient
 
 from moments_inventory.showcase_web import api as showcase_api
 from test_showcase_web_api_admin import repo, authenticated_client, _product
+
+
+def _seed_retention_operation(repo, operation_id, created_at, *, parent_operation_id="", product_id, item_count=1):
+    conn = repo._get_connection()
+    operation_type = "undo" if parent_operation_id else "price"
+    conn.execute(
+        """insert into showcase_admin_operation_logs
+           (operation_id,operation_type,summary,filter_text,updated_count,created_at,undone_at,parent_operation_id)
+           values (?,?,?,?,?,?,?,?)""",
+        (operation_id, operation_type, operation_id, "", item_count, created_at, "", parent_operation_id),
+    )
+    for index in range(item_count):
+        conn.execute(
+            """insert into showcase_admin_operation_items
+               (item_id,operation_id,product_id,old_price,new_price,old_visible,new_visible,old_version,new_version)
+               values (?,?,?,?,?,?,?,?,?)""",
+            (f"{operation_id}-item-{index}", operation_id, product_id, 100, 150, 1, 0, 1, 2),
+        )
+    conn.commit()
 
 
 def test_bulk_applies_entire_snapshot_and_retries_once(repo, authenticated_client):
@@ -53,6 +74,114 @@ def test_undo_refuses_overwriting_later_edit(repo, authenticated_client):
                                          json={'idempotencyKey': 'undo'})
     assert response.status_code == 409
     assert repo.get_product('a').display_price == 999
+
+
+def test_operation_history_retention_prunes_only_fully_expired_families(repo):
+    now = datetime(2026, 10, 16, 12, tzinfo=timezone.utc)
+    cutoff = now - timedelta(days=90)
+    expired = (cutoff - timedelta(seconds=1)).isoformat()
+    recent = (now - timedelta(days=89)).isoformat()
+    for product_id in ("old-family-product", "recent-undo-product", "boundary-product"):
+        repo.upsert_product(_product(product_id, display_price=777, visible=True))
+
+    _seed_retention_operation(repo, "old-root", expired, product_id="old-family-product")
+    _seed_retention_operation(
+        repo, "old-undo", (cutoff - timedelta(days=2)).isoformat(),
+        parent_operation_id="old-root", product_id="old-family-product",
+    )
+    _seed_retention_operation(repo, "recent-root", expired, product_id="recent-undo-product")
+    _seed_retention_operation(
+        repo, "recent-undo", recent, parent_operation_id="recent-root",
+        product_id="recent-undo-product",
+    )
+    _seed_retention_operation(repo, "boundary-root", cutoff.isoformat(), product_id="boundary-product")
+    repo._get_connection().execute(
+        """insert into showcase_idempotency
+           (idempotency_key,owner,request_hash,response_json,created_at)
+           values ('expired-key','shared-admin','hash','{}',?)""",
+        (expired,),
+    )
+    repo._get_connection().commit()
+
+    counts = repo.cleanup_expired_admin_operations(now=now)
+
+    assert counts == {"items": 2, "operations": 2, "idempotency": 1}
+    remaining = {
+        row[0] for row in repo._get_connection().execute(
+            "select operation_id from showcase_admin_operation_logs"
+        )
+    }
+    assert remaining == {"recent-root", "recent-undo", "boundary-root"}
+    for product_id in ("old-family-product", "recent-undo-product", "boundary-product"):
+        current = repo.get_product(product_id)
+        assert (current.display_price, current.visible, current.row_version) == (777, True, 0)
+
+
+def test_operation_history_retention_is_bounded_and_repeatable(repo):
+    now = datetime(2026, 10, 16, 12, tzinfo=timezone.utc)
+    old = (now - timedelta(days=91)).isoformat()
+    repo.upsert_product(_product("large-old-family", display_price=777, visible=True))
+    _seed_retention_operation(repo, "large-old-root", old, product_id="large-old-family", item_count=3)
+
+    first = repo.cleanup_expired_admin_operations(now=now, limit=2)
+    assert first == {"items": 2, "operations": 0, "idempotency": 0}
+    assert repo._get_connection().execute(
+        "select count(*) from showcase_admin_operation_items where operation_id='large-old-root'"
+    ).fetchone()[0] == 1
+
+    second = repo.cleanup_expired_admin_operations(now=now, limit=2)
+    assert second == {"items": 1, "operations": 1, "idempotency": 0}
+    assert repo.cleanup_expired_admin_operations(now=now, limit=2) == {
+        "items": 0, "operations": 0, "idempotency": 0,
+    }
+    assert repo.get_product("large-old-family").display_price == 777
+
+
+def test_operation_history_retention_limit_caps_total_deleted_rows(repo):
+    now = datetime(2026, 10, 16, 12, tzinfo=timezone.utc)
+    old = (now - timedelta(days=91)).isoformat()
+    repo.upsert_product(_product("bounded-family", display_price=777, visible=True))
+    _seed_retention_operation(repo, "bounded-root", old, product_id="bounded-family")
+    _seed_retention_operation(
+        repo, "bounded-undo", old, parent_operation_id="bounded-root",
+        product_id="bounded-family", item_count=0,
+    )
+    repo._get_connection().execute(
+        """insert into showcase_idempotency
+           (idempotency_key,owner,request_hash,response_json,created_at)
+           values ('bounded-key','shared-admin','hash','{}',?)""",
+        (old,),
+    )
+    repo._get_connection().commit()
+
+    counts = repo.cleanup_expired_admin_operations(now=now, limit=3)
+
+    assert counts == {"items": 1, "operations": 2, "idempotency": 0}
+    assert sum(counts.values()) <= 3
+    assert repo.get_product("bounded-family").display_price == 777
+
+
+def test_operation_history_retention_rolls_back_a_failed_batch(repo):
+    now = datetime(2026, 10, 16, 12, tzinfo=timezone.utc)
+    old = (now - timedelta(days=91)).isoformat()
+    repo.upsert_product(_product("rollback-old-family", display_price=777, visible=True))
+    _seed_retention_operation(repo, "rollback-old-root", old, product_id="rollback-old-family")
+    repo._get_connection().execute(
+        """create trigger reject_retention_log_delete before delete on showcase_admin_operation_logs
+           begin select raise(abort, 'retention test failure'); end"""
+    )
+    repo._get_connection().commit()
+
+    with pytest.raises(sqlite3.IntegrityError, match="retention test failure"):
+        repo.cleanup_expired_admin_operations(now=now)
+
+    assert repo._get_connection().execute(
+        "select count(*) from showcase_admin_operation_logs where operation_id='rollback-old-root'"
+    ).fetchone()[0] == 1
+    assert repo._get_connection().execute(
+        "select count(*) from showcase_admin_operation_items where operation_id='rollback-old-root'"
+    ).fetchone()[0] == 1
+    assert repo.get_product("rollback-old-family").display_price == 777
 
 
 def test_public_id_patch_returns_new_version_and_detects_conflict(repo, authenticated_client):

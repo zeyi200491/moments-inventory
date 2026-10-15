@@ -1745,6 +1745,7 @@ def create_admin_router(
     def list_admin_operations(
         repo: SQLiteShowcaseRepository = Depends(get_repository),
     ) -> AdminOperationsResponse:
+        repo.cleanup_expired_admin_operations()
         return AdminOperationsResponse(
             operations=[
                 AdminOperationResponse(

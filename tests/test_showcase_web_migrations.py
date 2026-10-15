@@ -154,7 +154,7 @@ def test_import_review_migration_adds_constrained_tables_and_is_repeatable(tmp_p
     } <= tables
     assert conn.execute(
         "select version from showcase_schema_migrations order by version desc limit 1"
-    ).fetchone()[0] == 13
+    ).fetchone()[0] == 14
     batch_columns = {
         row[1] for row in conn.execute("pragma table_info(showcase_import_review_batches)")
     }
@@ -260,7 +260,7 @@ def test_import_review_migration_adds_constrained_tables_and_is_repeatable(tmp_p
     assert after == before
     assert conn.execute(
         "select version from showcase_schema_migrations order by version desc limit 1"
-    ).fetchone()[0] == 13
+    ).fetchone()[0] == 14
 
     conn.execute("delete from showcase_products where product_id='p1'")
     deleted_target = conn.execute(
@@ -283,7 +283,7 @@ def test_migration_13_moves_legacy_bulk_preview_and_idempotency_to_shared_admin(
         values ('legacy-preview','old-session','{}','[]','2099-01-01T00:00:00+00:00','')"""
     )
     conn.execute(
-        "insert into showcase_idempotency values ('legacy-key','old-session','fingerprint','{}')"
+        "insert into showcase_idempotency (idempotency_key,owner,request_hash,response_json) values ('legacy-key','old-session','fingerprint','{}')"
     )
     conn.execute("delete from showcase_schema_migrations where version=13")
 
@@ -292,6 +292,38 @@ def test_migration_13_moves_legacy_bulk_preview_and_idempotency_to_shared_admin(
 
     assert conn.execute("select owner from showcase_bulk_previews where preview_id='legacy-preview'").fetchone()[0] == "shared-admin"
     assert conn.execute("select owner from showcase_idempotency where idempotency_key='legacy-key'").fetchone()[0] == "shared-admin"
+
+
+def test_migration_14_adds_idempotency_created_at_for_existing_cache_rows(tmp_path):
+    from moments_inventory.showcase_web.migrations import migrate
+
+    conn = sqlite3.connect(tmp_path / "idempotency-retention.db")
+    conn.execute("create table showcase_schema_migrations (version integer primary key, applied_at text not null default '')")
+    conn.executemany("insert into showcase_schema_migrations(version) values (?)", [(version,) for version in range(1, 14)])
+    conn.execute("create table showcase_admin_operation_logs (operation_id text primary key, created_at text not null, parent_operation_id text not null default '')")
+    conn.execute("create table showcase_idempotency (idempotency_key text primary key, owner text not null, request_hash text not null, response_json text not null)")
+    conn.execute("insert into showcase_idempotency values ('legacy-key','shared-admin','fingerprint','{}')")
+
+    migrate(conn)
+
+    columns = {row[1] for row in conn.execute("pragma table_info(showcase_idempotency)")}
+    created_at = conn.execute(
+        "select created_at from showcase_idempotency where idempotency_key='legacy-key'"
+    ).fetchone()[0]
+    assert "created_at" in columns
+    assert created_at
+    indexes = {
+        row[0] for row in conn.execute(
+            "select name from sqlite_master where type='index'"
+        )
+    }
+    assert {
+        "idx_showcase_admin_operation_logs_created",
+        "idx_showcase_admin_operation_logs_parent",
+        "idx_showcase_idempotency_created",
+    } <= indexes
+    assert conn.execute("select max(version) from showcase_schema_migrations").fetchone()[0] == 14
+    conn.close()
 
 
 def test_public_ids_work_for_image_and_product_changes():

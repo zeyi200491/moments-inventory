@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import sqlite3
+from datetime import datetime, timezone
 from uuid import uuid4
 
 
@@ -493,4 +494,24 @@ def migrate(conn: sqlite3.Connection) -> bool:
         conn.execute("update showcase_bulk_previews set owner='shared-admin'")
         conn.execute("update showcase_idempotency set owner='shared-admin'")
         conn.execute("insert into showcase_schema_migrations(version) values (13)")
+    if 14 not in applied:
+        _ensure_column(conn, "showcase_idempotency", "created_at", "text not null default ''")
+        migrated_at = datetime.now(timezone.utc).isoformat()
+        conn.execute(
+            "update showcase_idempotency set created_at=? where created_at=''",
+            (migrated_at,),
+        )
+        conn.execute(
+            "create index if not exists idx_showcase_admin_operation_logs_created "
+            "on showcase_admin_operation_logs(created_at,operation_id)"
+        )
+        conn.execute(
+            "create index if not exists idx_showcase_admin_operation_logs_parent "
+            "on showcase_admin_operation_logs(parent_operation_id,created_at)"
+        )
+        conn.execute(
+            "create index if not exists idx_showcase_idempotency_created "
+            "on showcase_idempotency(created_at,idempotency_key)"
+        )
+        conn.execute("insert into showcase_schema_migrations(version) values (14)")
     return fresh

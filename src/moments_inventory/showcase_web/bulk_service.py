@@ -164,7 +164,12 @@ def execute(repo, owner, key, reference, *, undo=False):
         else:
             conn.execute('UPDATE showcase_bulk_previews SET operation_id=? WHERE preview_id=?', (operation_id, reference))
         result = dict(ok=True, operationId=operation_id, updatedCount=len(changed))
-        conn.execute('INSERT INTO showcase_idempotency VALUES (?,?,?,?)', (key, owner, fingerprint, json.dumps(result)))
+        conn.execute(
+            '''INSERT INTO showcase_idempotency
+               (idempotency_key,owner,request_hash,response_json,created_at)
+               VALUES (?,?,?,?,?)''',
+            (key, owner, fingerprint, json.dumps(result), now),
+        )
         return result
 
 
