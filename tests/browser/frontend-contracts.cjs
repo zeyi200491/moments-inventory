@@ -398,6 +398,9 @@ test('登录成功但管理模块加载失败时不误报密码错误，并允�
 
 test('登录成功后自动恢复导入身份复核 pending 队列', async () => {
   const c = pageContext('admin.js');
+  c.fetch = async () => ({ ok: false, status: 401, text: async () => 'Unauthorized' });
+  await vm.runInContext('loadImportReviewBatches()', c);
+  assert.match(c.nodes.get('importReviewStatus').textContent, /读取待处理批次失败/);
   const requests = [];
   c.fetch = async (url) => {
     requests.push(url);
@@ -407,6 +410,7 @@ test('登录成功后自动恢复导入身份复核 pending 队列', async () =>
   };
   await c.nodes.get('loginForm').listeners.submit({ preventDefault() {} });
   assert.equal(requests.filter((url) => url === '/api/admin/import-review/batches').length, 1);
+  assert.equal(c.nodes.get('importReviewStatus').textContent, '待处理列表已刷新。');
 });
 
 test('批量价格段转换为包含边界且默认排除隐藏和已售商品', () => {

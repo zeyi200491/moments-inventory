@@ -350,7 +350,7 @@ async function loadImportReviewBatches() {
     if (activeId && adminState.importReviewBatches.some((batch) => batch.batchId === activeId)) {
       await openImportReviewBatch(activeId, { quiet: true });
     }
-    if (importReviewStatus && !importReviewStatus.textContent) {
+    if (importReviewStatus) {
       importReviewStatus.textContent = adminState.importReviewBatches.length
         ? `已恢复 ${adminState.importReviewBatches.length} 个待处理批次。`
         : "待处理列表已刷新。";
