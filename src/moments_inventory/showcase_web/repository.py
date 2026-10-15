@@ -6,6 +6,7 @@ import json
 import threading
 from contextlib import contextmanager
 from dataclasses import replace
+from datetime import datetime, timezone
 from pathlib import Path
 from uuid import uuid4
 
@@ -2047,6 +2048,141 @@ class SQLiteShowcaseRepository:
                     (item_id,),
                 )
                 return cursor.rowcount > 0
+
+    def create_import_review_batch(self, batch: dict[str, object], rows: list[dict[str, object]]) -> None:
+        """原子保存待复核批次及解析行，不写商品或正式导入日志。"""
+        with self._lock:
+            with self._get_connection() as conn:
+                conn.execute(
+                    """insert into showcase_import_review_batches
+                    (batch_id,source_scope,mode,complete,source_path,source_label,source_fingerprint,
+                     parsed_row_count,missing_count,idempotency_key,result_json,status,created_at,completed_at)
+                    values (?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
+                    tuple(batch.get(key) for key in (
+                        "batch_id", "source_scope", "mode", "complete", "source_path", "source_label",
+                        "source_fingerprint", "parsed_row_count", "missing_count", "idempotency_key",
+                        "result_json", "status", "created_at", "completed_at",
+                    )),
+                )
+                conn.executemany(
+                    """insert into showcase_import_review_rows
+                    (review_row_id,batch_id,row_number,source_key,status,decision,product_id,
+                     target_row_version,snapshot_json,created_at,updated_at)
+                    values (?,?,?,?,?,?,?,?,?,?,?)""",
+                    [tuple(row.get(key) for key in (
+                        "review_row_id", "batch_id", "row_number", "source_key", "status", "decision",
+                        "product_id", "target_row_version", "snapshot_json", "created_at", "updated_at",
+                    )) for row in rows],
+                )
+
+    def get_import_review_batch(self, batch_id: str) -> dict[str, object] | None:
+        with self._read_connection() as conn:
+            cursor = conn.execute(
+                "select * from showcase_import_review_batches where batch_id=?", (batch_id,)
+            )
+            row = cursor.fetchone()
+            if row is None:
+                return None
+            return dict(zip((item[0] for item in cursor.description), row))
+
+    def list_import_review_rows(self, batch_id: str) -> list[dict[str, object]]:
+        with self._read_connection() as conn:
+            cursor = conn.execute(
+                "select * from showcase_import_review_rows where batch_id=? order by row_number,review_row_id",
+                (batch_id,),
+            )
+            rows = [dict(zip((item[0] for item in cursor.description), row)) for row in cursor.fetchall()]
+        for row in rows:
+            snapshot = json.loads(str(row["snapshot_json"]))
+            row["snapshot"] = snapshot.get("record", snapshot.get("raw", {}))
+            row["errors"] = snapshot.get("errors", [])
+            row["recommendation"] = snapshot.get("recommendation")
+            row["candidates"] = snapshot.get("candidates", [])
+        return rows
+
+    def save_import_review_decision(
+        self, batch_id: str, review_row_id: str, *, decision: str, product_id: str | None = None
+    ) -> dict[str, object]:
+        if decision not in ("link", "create", "skip"):
+            raise ValueError("复核决定无效")
+        if decision == "link" and not product_id:
+            raise ValueError("link 决定必须选择商品")
+        if decision != "link" and product_id:
+            raise ValueError("create/skip 决定不能关联商品")
+        now = datetime.now(timezone.utc).isoformat()
+        with self._lock:
+            with self._get_connection() as conn:
+                conn.execute("BEGIN IMMEDIATE")
+                batch = conn.execute(
+                    "select status,source_scope from showcase_import_review_batches where batch_id=?",
+                    (batch_id,),
+                ).fetchone()
+                if batch is None or batch[0] != "pending":
+                    raise ValueError("批次必须处于 pending 状态")
+                row = conn.execute(
+                    "select status from showcase_import_review_rows where batch_id=? and review_row_id=?",
+                    (batch_id, review_row_id),
+                ).fetchone()
+                if row is None or row[0] != "pending":
+                    raise ValueError("复核记录必须处于 pending 状态")
+                target_version = None
+                if decision == "link":
+                    target = conn.execute(
+                        "select row_version,source_scope from showcase_products where product_id=?",
+                        (product_id,),
+                    ).fetchone()
+                    if target is None:
+                        raise ValueError("选择的商品不存在")
+                    if target[1] != batch[1]:
+                        raise ValueError("不能关联到其他来源范围的商品")
+                    duplicate = conn.execute(
+                        "select 1 from showcase_import_review_rows where batch_id=? and review_row_id<>? and decision='link' and product_id=?",
+                        (batch_id, review_row_id, product_id),
+                    ).fetchone()
+                    if duplicate:
+                        raise ValueError("批次中已有其他行关联该商品")
+                    target_version = int(target[0])
+                if decision == "link":
+                    conn.execute(
+                        """update showcase_import_review_rows
+                        set decision=?,product_id=?,target_row_version=?,updated_at=?
+                        where batch_id=? and review_row_id=?""",
+                        (decision, product_id, target_version, now, batch_id, review_row_id),
+                    )
+                else:
+                    # null product_id 可能触发清理触发器；只在原来有目标时先清空，
+                    # 再单独保存 create/skip 决定，避免触发器把决定一并清掉。
+                    conn.execute(
+                        "update showcase_import_review_rows set product_id=null where batch_id=? and review_row_id=? and product_id is not null",
+                        (batch_id, review_row_id),
+                    )
+                    conn.execute(
+                        """update showcase_import_review_rows
+                        set decision=?,target_row_version=null,updated_at=?
+                        where batch_id=? and review_row_id=?""",
+                        (decision, now, batch_id, review_row_id),
+                    )
+        return next(item for item in self.list_import_review_rows(batch_id) if item["review_row_id"] == review_row_id)
+
+    def discard_import_review_batch(self, batch_id: str) -> dict[str, object]:
+        now = datetime.now(timezone.utc).isoformat()
+        with self._lock:
+            with self._get_connection() as conn:
+                conn.execute("BEGIN IMMEDIATE")
+                status = conn.execute(
+                    "select status from showcase_import_review_batches where batch_id=?", (batch_id,)
+                ).fetchone()
+                if status is None or status[0] != "pending":
+                    raise ValueError("批次必须处于 pending 状态")
+                conn.execute(
+                    "update showcase_import_review_batches set status='discarded',completed_at=? where batch_id=?",
+                    (now, batch_id),
+                )
+                conn.execute(
+                    "update showcase_import_review_rows set status='discarded',updated_at=? where batch_id=? and status='pending'",
+                    (now, batch_id),
+                )
+        return self.get_import_review_batch(batch_id)
 
 
 def _ensure_column(
