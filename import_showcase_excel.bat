@@ -13,6 +13,13 @@ if exist "%~dp0config\showcase.local.yaml" set "SHOWCASE_CONFIG=%~dp0config\show
 
 
 echo [INFO] Importing manual showcase Excel into database...
+"%PYTHON_EXE%" scripts\verify_showcase_environment.py --config "%SHOWCASE_CONFIG%"
+if errorlevel 1 (
+  echo [错误] 为保护正式数据，拒绝导入到非权威 CCD 数据库。
+  pause
+  exit /b 1
+)
+
 "%PYTHON_EXE%" -m moments_inventory.cli showcase-db-import --yes --showcase-config "%SHOWCASE_CONFIG%"
 if errorlevel 1 (
   echo [ERROR] Import failed.

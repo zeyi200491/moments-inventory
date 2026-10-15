@@ -11,6 +11,13 @@ set "PYTHONPATH=%CD%\src"
 set "SHOWCASE_CONFIG=%~dp0config\showcase.yaml"
 if exist "%~dp0config\showcase.local.yaml" set "SHOWCASE_CONFIG=%~dp0config\showcase.local.yaml"
 
+"%PYTHON_EXE%" scripts\verify_showcase_environment.py --config "%SHOWCASE_CONFIG%"
+if errorlevel 1 (
+  echo [错误] 为保护正式数据，拒绝修改非权威 CCD 数据库的管理员口令。
+  pause
+  exit /b 1
+)
+
 "%PYTHON_EXE%" -m moments_inventory.cli showcase-admin-password-reset --showcase-config "%SHOWCASE_CONFIG%"
 if errorlevel 1 (
   echo [ERROR] Admin password reset failed.

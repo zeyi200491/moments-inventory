@@ -22,3 +22,7 @@ def test_showcase_batch_script_prefers_local_config_and_passes_selected_path(scr
         'set "SHOWCASE_CONFIG=%~dp0config\\showcase.local.yaml"'
     ) in script
     assert '--showcase-config "%SHOWCASE_CONFIG%"' in script
+    authority_check = 'scripts\\verify_showcase_environment.py --config "%SHOWCASE_CONFIG%"'
+    assert authority_check in script
+    first_database_command = script.index("moments_inventory.cli showcase-")
+    assert script.index(authority_check) < first_database_command

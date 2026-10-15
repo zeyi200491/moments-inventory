@@ -11,10 +11,18 @@ set "PYTHONPATH=%CD%\src"
 set "SHOWCASE_CONFIG=%~dp0config\showcase.yaml"
 if exist "%~dp0config\showcase.local.yaml" set "SHOWCASE_CONFIG=%~dp0config\showcase.local.yaml"
 
+"%PYTHON_EXE%" scripts\verify_showcase_environment.py --config "%SHOWCASE_CONFIG%"
+if errorlevel 1 (
+  echo [错误] 为保护正式数据，拒绝连接非权威 CCD 数据库。
+  pause
+  exit /b 1
+)
+
 echo [INFO] Starting Xingxing CCD database showcase.
 echo [INFO] Customer page: http://127.0.0.1:8899/
 echo [INFO] Admin page:    http://127.0.0.1:8899/admin-xingxing
 echo.
+
 "%PYTHON_EXE%" -m moments_inventory.cli showcase-db-init --showcase-config "%SHOWCASE_CONFIG%"
 
 if errorlevel 1 (
