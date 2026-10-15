@@ -107,7 +107,7 @@ test('商品管理包含明确的批量作用范围和价格段控件', () => {
   assert.match(html, /id="bulkPreviewStatus"[^>]*aria-live="polite"/);
   assert.match(html, /id="bulkConfirmStatus"[^>]*role="alert"/);
   assert.match(html, /showcase\.css\?v=20260925-bulk-price-workflow/);
-  assert.match(html, /admin\.js\?v=20261015-filter-validation/);
+  assert.match(html, /admin\.js\?v=20261015-import-review-ui/);
   assert.match(fs.readFileSync(path.join(root, 'index.html'), 'utf8'), /showcase\.js\?v=20261015-access-feedback/);
   assert.match(fs.readFileSync(path.join(root, 'product.html'), 'utf8'), /showcase\.js\?v=20261015-access-feedback/);
 });
@@ -1000,4 +1000,110 @@ test('上传旧图片期间选择的新文件保留，上传成功后不允许�
   assert.equal(fileInput.value, '');
   await click({ target: uploadButton });
   assert.equal(uploadCount, 2);
+});
+
+test('CCD身份复核工作区声明上传、pending恢复、决定与确认控件', () => {
+  const html = fs.readFileSync(path.join(root, 'admin.html'), 'utf8');
+  for (const id of [
+    'importReviewUploadForm', 'importReviewFileInput', 'importReviewScopeInput',
+    'importReviewModeInput', 'importReviewCompleteInput', 'importReviewBatchList',
+    'importReviewBatchDetail', 'importReviewPendingCount', 'importReviewStatus',
+    'importReviewConfirmDialog', 'importReviewConfirmMessage', 'confirmImportReviewAction',
+  ]) assert.match(html, new RegExp(`id="${id}"`));
+  assert.match(html, /CCD导入身份复核/);
+  assert.match(html, /value="incremental"/);
+  assert.match(html, /value="full"/);
+  assert.match(html, /name="file"/);
+  assert.match(html, /aria-live="polite"/);
+  assert.match(html, /admin\.js\?v=20261015-import-review-ui/);
+});
+
+test('导入身份复核可恢复 pending 批次并渲染来源范围与未决定数量', async () => {
+  const c = pageContext('admin.js');
+  assert.equal(vm.runInContext('typeof loadImportReviewBatches', c), 'function');
+  assert.equal(vm.runInContext('typeof openImportReviewBatch', c), 'function');
+  c.fetch = async (url) => {
+    assert.equal(url, '/api/admin/import-review/batches');
+    return { ok: true, json: async () => [{
+      batchId: 'batch-1', sourceScope: 'feed-a', sourceLabel: 'today.xlsx', mode: 'full',
+      complete: true, missingCount: 2, parsedRowCount: 3, status: 'pending', createdAt: 'now',
+    }] };
+  };
+  await vm.runInContext('loadImportReviewBatches()', c);
+  assert.match(c.nodes.get('importReviewBatchList').innerHTML, /today\.xlsx/);
+  c.fetch = async (url) => {
+    assert.equal(url, '/api/admin/import-review/batches/batch-1');
+    return { ok: true, json: async () => ({
+      batchId: 'batch-1', sourceScope: 'feed-a', sourceLabel: 'today.xlsx', mode: 'full',
+      complete: true, parsedRowCount: 3, missingCount: 2, status: 'pending',
+      result: {warnings:['范围完整，需要检查'], missing_items:[{product_id:'gone-1',model:'X',brand:'B'}]},
+      rows: [
+        {reviewRowId:'r1',batchId:'batch-1',rowNumber:2,sourceKey:'key-1',decision:null,status:'pending',snapshot:{model:'IXUS',brand:'佳能'},errors:['重复候选'],recommendation:{product_id:'p1',model:'IXUS',brand:'佳能',reason:'source_key'},candidates:[]},
+        {reviewRowId:'r2',batchId:'batch-1',rowNumber:3,sourceKey:'',decision:'skip',status:'pending',snapshot:{model:'A'},errors:[],candidates:[]},
+      ],
+    }) };
+  };
+  await vm.runInContext("openImportReviewBatch('batch-1')", c);
+  assert.match(c.nodes.get('importReviewBatchDetail').innerHTML, /IXUS/);
+  assert.match(c.nodes.get('importReviewBatchDetail').innerHTML, /key-1/);
+  assert.match(c.nodes.get('importReviewBatchDetail').innerHTML, /范围完整，需要检查/);
+  assert.match(c.nodes.get('importReviewPendingCount').textContent, /1/);
+});
+
+test('复核决定使用Excel行号，提交保存同一幂等键且409时刷新批次', async () => {
+  const c = pageContext('admin.js');
+  assert.equal(vm.runInContext('typeof saveImportReviewDecision', c), 'function');
+  assert.equal(vm.runInContext('typeof commitImportReviewBatch', c), 'function');
+  vm.runInContext("adminState.importReviewActiveBatch = {batchId:'batch-1',status:'pending'}", c);
+  const requests = [];
+  c.fetch = async (url, options = {}) => {
+    requests.push({url, options});
+    if (options.method === 'PUT') return { ok: true, json: async () => ({ reviewRowId:'row-1', rowNumber:8, decision:'link', productId:'p2' }) };
+    if (url.endsWith('/commit')) return { ok: false, status: 409, text: async () => 'stale' };
+    if (url.endsWith('/batches/batch-1')) return { ok: true, json: async () => ({ batchId:'batch-1',status:'pending',rows:[] }) };
+    return { ok: true, json: async () => [] };
+  };
+  await vm.runInContext("saveImportReviewDecision(8, {decision:'link',productId:'p2'})", c);
+  assert.equal(requests[0].url, '/api/admin/import-review/batches/batch-1/rows/8');
+  assert.deepEqual(JSON.parse(requests[0].options.body), {decision:'link',productId:'p2'});
+  await vm.runInContext("commitImportReviewBatch('batch-1')", c);
+  const commit = requests.find((request) => request.url.endsWith('/commit'));
+  assert.equal(commit.options.headers['Content-Type'], 'application/json');
+  assert.match(commit.options.body, /idempotencyKey/);
+  assert.equal(requests.some((request) => request.url.endsWith('/batches/batch-1')), true);
+  assert.match(c.nodes.get('importReviewStatus').textContent, /冲突|已刷新/);
+  await vm.runInContext("commitImportReviewBatch('batch-1')", c);
+  const retries = requests.filter((request) => request.url.endsWith('/commit'));
+  assert.equal(JSON.parse(retries[0].options.body).idempotencyKey, JSON.parse(retries[1].options.body).idempotencyKey);
+});
+
+test('复核批次和商品用户文本经escapeHtml后再写入页面', () => {
+  const c = pageContext('admin.js');
+  vm.runInContext(`renderImportReviewBatch({
+    batchId:'batch-<1>',sourceScope:'<feed>',sourceLabel:'<file>.xlsx',mode:'incremental',
+    status:'pending',parsedRowCount:1,missingCount:0,complete:false,result:{},
+    rows:[{reviewRowId:'r1',batchId:'batch-1',rowNumber:2,sourceKey:'<script>',status:'pending',
+      snapshot:{model:'<img src=x>',brand:'佳能'},errors:['<bad>'],candidates:[]}]
+  })`, c);
+  const html = c.nodes.get('importReviewBatchDetail').innerHTML;
+  assert.doesNotMatch(html, /<script>|<img src=x>|<bad>/);
+  assert.match(html, /&lt;script&gt;/);
+});
+
+test('放弃批次先打开二次确认，确认后才发送DELETE', async () => {
+  const c = pageContext('admin.js');
+  vm.runInContext("adminState.importReviewBatches = [{batchId:'discard-1',sourceLabel:'today.xlsx',status:'pending'}]", c);
+  const requests = [];
+  c.fetch = async (url, options = {}) => {
+    requests.push({url, options});
+    if (options.method === 'DELETE') return {ok:true,json:async () => ({batchId:'discard-1',status:'discarded'})};
+    if (url.endsWith('/batches/discard-1')) return {ok:true,json:async () => ({batchId:'discard-1',sourceLabel:'today.xlsx',sourceScope:'feed-a',mode:'incremental',status:'discarded',rows:[]})};
+    return {ok:true,json:async () => []};
+  };
+  vm.runInContext("openImportReviewConfirmation({kind:'discard',batch:adminState.importReviewBatches[0]})", c);
+  assert.equal(c.nodes.get('importReviewConfirmDialog').open, true);
+  assert.match(c.nodes.get('importReviewConfirmMessage').textContent, /today\.xlsx/);
+  assert.equal(requests.length, 0);
+  await c.nodes.get('confirmImportReviewAction').listeners.click();
+  assert.equal(requests.some((request) => request.options.method === 'DELETE'), true);
 });

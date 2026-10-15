@@ -6,6 +6,43 @@
   <title>星星CCD 管理后台</title>
   <link rel="icon" href="data:,">
   <link rel="stylesheet" href="/static/showcase.css?v=20260925-bulk-price-workflow">
+  <style>
+    .import-review-workbench { border-color: #eac7d3; background: linear-gradient(145deg, #fffdfd 0%, #fff5f8 64%, #fffaf5 100%); }
+    .import-review-heading { display: flex; align-items: flex-start; justify-content: space-between; gap: 1rem; }
+    .import-review-heading h2 { margin-bottom: .35rem; }
+    .import-review-kicker { margin: 0; color: #9a516b; font-size: .76rem; font-weight: 800; letter-spacing: .13em; text-transform: uppercase; }
+    .import-review-upload { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); align-items: end; gap: .8rem; margin: 1rem 0; padding: 1rem; border: 1px solid #f0dce3; border-radius: 16px; background: rgba(255,255,255,.72); }
+    .import-review-workspace { display: grid; grid-template-columns: minmax(230px, .34fr) minmax(0, 1fr); gap: 1rem; align-items: start; }
+    .import-review-rail, .import-review-detail { min-width: 0; padding: 1rem; border: 1px solid #f0dce3; border-radius: 16px; background: rgba(255,255,255,.82); }
+    .import-review-rail h3, .import-review-detail h3 { margin-top: 0; }
+    .import-review-batch-list { display: grid; gap: .55rem; }
+    .import-review-batch-card { display: grid; gap: .22rem; width: 100%; padding: .75rem; border: 1px solid #efdde3; border-radius: 12px; color: #4f3440; background: #fffafb; text-align: left; cursor: pointer; }
+    .import-review-batch-card[aria-current="true"] { border-color: #c45d7c; box-shadow: inset 3px 0 #c45d7c; background: #fff2f6; }
+    .import-review-batch-card small, .import-review-muted { color: #806b74; }
+    .import-review-summary { display: flex; flex-wrap: wrap; gap: .5rem; margin: .8rem 0; }
+    .import-review-chip { padding: .3rem .58rem; border: 1px solid #f0d3de; border-radius: 999px; color: #87455e; background: #fff5f8; font-size: .82rem; }
+    .import-review-warning { margin: .55rem 0; padding: .7rem .85rem; border-left: 3px solid #d29250; border-radius: 6px; color: #684a2d; background: #fff8ed; }
+    .import-review-missing { display: grid; gap: .25rem; margin: .6rem 0 1rem; padding-left: 1.2rem; color: #64545b; }
+    .import-review-row { margin-top: .8rem; padding: .95rem; border: 1px solid #efdee4; border-radius: 14px; background: #fff; }
+    .import-review-row-head { display: flex; flex-wrap: wrap; justify-content: space-between; gap: .5rem; }
+    .import-review-row-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: .6rem; margin-top: .65rem; }
+    .import-review-row-grid .field { min-width: 0; }
+    .import-review-raw { max-height: 8rem; overflow: auto; padding: .65rem; border-radius: 9px; color: #5a4850; background: #faf5f7; white-space: pre-wrap; overflow-wrap: anywhere; }
+    .import-review-errors { color: #9d3e55; }
+    .import-review-row-actions, .import-review-search { display: flex; flex-wrap: wrap; gap: .5rem; align-items: end; margin-top: .65rem; }
+    .import-review-search .field { flex: 1 1 200px; }
+    .import-review-candidates { margin: .45rem 0; color: #76656c; font-size: .88rem; }
+    .import-review-confirm { width: min(34rem, calc(100vw - 2rem)); padding: 1.2rem; border: 1px solid #e8c4d0; border-radius: 18px; color: #48323b; box-shadow: 0 24px 70px rgba(76, 35, 51, .22); }
+    .import-review-confirm::backdrop { background: rgba(53, 34, 43, .42); backdrop-filter: blur(3px); }
+    .import-review-confirm-actions { display: flex; justify-content: flex-end; gap: .6rem; margin-top: 1rem; }
+    .import-review-status { min-height: 1.4rem; }
+    @media (max-width: 760px) {
+      .import-review-upload { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+      .import-review-workspace { grid-template-columns: 1fr; }
+      .import-review-row-grid { grid-template-columns: 1fr; }
+    }
+    @media (max-width: 460px) { .import-review-upload { grid-template-columns: 1fr; } }
+  </style>
 </head>
 <body>
   <main class="page-shell admin-shell">
@@ -36,6 +73,52 @@
       <section class="admin-panel" aria-live="polite">
         <p id="adminStartupStatus" class="access-error" hidden></p>
         <button id="retryAdminStartupButton" class="secondary-button" type="button" hidden>重试加载管理模块</button>
+      </section>
+      <section class="admin-panel import-review-workbench" aria-labelledby="importReviewHeading">
+        <div class="import-review-heading">
+          <div>
+            <p class="import-review-kicker">身份校对 · 安全导入</p>
+            <h2 id="importReviewHeading">CCD导入身份复核</h2>
+            <p class="status-text">先核对来源键与库存目标，再提交变更。未提交的复核批次会保留在待处理列表，可随时恢复。</p>
+          </div>
+          <button id="refreshImportReviewBatchesButton" class="secondary-button" type="button">刷新待处理</button>
+        </div>
+        <form id="importReviewUploadForm" class="import-review-upload">
+          <label class="field field-wide">
+            <span>库存工作簿</span>
+            <input id="importReviewFileInput" name="file" type="file" accept=".xlsx,application/vnd.openxmlformats-officedocument.spreadsheetml.sheet" required>
+          </label>
+          <label class="field">
+            <span>来源范围</span>
+            <input id="importReviewScopeInput" name="sourceScope" required maxlength="160" placeholder="例如：朋友圈库存">
+          </label>
+          <label class="field">
+            <span>导入模式</span>
+            <select id="importReviewModeInput" name="mode">
+              <option value="incremental">增量</option>
+              <option value="full">全量快照</option>
+            </select>
+          </label>
+          <label id="importReviewCompleteField" class="check-field" hidden>
+            <input id="importReviewCompleteInput" name="complete" type="checkbox" value="true">
+            <span>确认此表为完整快照</span>
+          </label>
+          <label class="field">
+            <span>全量缺失阈值</span>
+            <input id="importReviewMissingFractionInput" name="maxMissingFraction" type="number" min="0" max="1" step="0.05" value="0.3">
+          </label>
+          <button id="uploadImportReviewButton" class="access-button" type="submit">上传并开始复核</button>
+        </form>
+        <p id="importReviewStatus" class="status-text import-review-status" role="status" aria-live="polite"></p>
+        <div class="import-review-workspace">
+          <aside class="import-review-rail" aria-labelledby="importReviewQueueHeading">
+            <h3 id="importReviewQueueHeading">待处理批次 <span id="importReviewPendingCount" class="import-review-chip">0</span></h3>
+            <div id="importReviewBatchList" class="import-review-batch-list"><p class="import-review-muted">正在读取待处理批次…</p></div>
+          </aside>
+          <section id="importReviewBatchDetail" class="import-review-detail" aria-live="polite">
+            <p class="import-review-muted">选择左侧批次，继续之前的身份复核。</p>
+          </section>
+        </div>
       </section>
       <section class="admin-panel">
         <h2>访问与声明</h2>
@@ -437,12 +520,24 @@
             </div>
           </form>
         </dialog>
+        <dialog id="importReviewConfirmDialog" class="import-review-confirm" aria-labelledby="importReviewConfirmHeading">
+          <form method="dialog">
+            <p class="import-review-kicker">请再次核对</p>
+            <h3 id="importReviewConfirmHeading">确认复核操作</h3>
+            <p id="importReviewConfirmMessage"></p>
+            <p id="importReviewConfirmStatus" class="access-error" role="alert" hidden></p>
+            <div class="import-review-confirm-actions">
+              <button id="cancelImportReviewAction" class="secondary-button" type="submit" value="cancel">返回检查</button>
+              <button id="confirmImportReviewAction" class="access-button" type="button">确认执行</button>
+            </div>
+          </form>
+        </dialog>
         <div id="adminProductList" class="admin-product-list"></div>
         <button id="adminLoadMoreButton" class="load-more-button" type="button" hidden>显示更多商品</button>
       </section>
     </section>
   </main>
   <script src="/static/shared/product-utils.js?v=20260921"></script>
-  <script src="/static/admin.js?v=20261015-filter-validation"></script>
+  <script src="/static/admin.js?v=20261015-import-review-ui"></script>
 </body>
 </html>

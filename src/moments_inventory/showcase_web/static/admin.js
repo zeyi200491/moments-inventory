@@ -27,6 +27,13 @@ const sampleMatchProductList = document.getElementById("sampleMatchProductList")
 const sampleMatchGroupList = document.getElementById("sampleMatchGroupList");
 const sampleAssetSearchResults = document.getElementById("sampleAssetSearchResults");
 const sampleMatchingStatus = document.getElementById("sampleMatchingStatus");
+const importReviewBatchList = document.getElementById("importReviewBatchList");
+const importReviewBatchDetail = document.getElementById("importReviewBatchDetail");
+const importReviewStatus = document.getElementById("importReviewStatus");
+const importReviewConfirmDialog = document.getElementById("importReviewConfirmDialog");
+const importReviewConfirmMessage = document.getElementById("importReviewConfirmMessage");
+const importReviewConfirmStatus = document.getElementById("importReviewConfirmStatus");
+const confirmImportReviewAction = document.getElementById("confirmImportReviewAction");
 const adminState = {
   products: [],
   sections: [],
@@ -71,6 +78,11 @@ const adminState = {
   undoKeys: new Map(),
   pendingImageFiles: new Map(),
   imageUploads: new Set(),
+  importReviewBatches: [],
+  importReviewActiveBatch: null,
+  importReviewTargetOptions: new Map(),
+  importReviewConfirmAction: null,
+  importReviewBusy: false,
 };
 
 const ADMIN_PRODUCT_PAGE_SIZE = 80;
@@ -200,6 +212,288 @@ function escapeHtml(value) {
     .replaceAll(">", "&gt;")
     .replaceAll('"', "&quot;")
     .replaceAll("'", "&#039;");
+}
+
+function renderImportReviewBatches() {
+  const batches = Array.isArray(adminState.importReviewBatches) ? adminState.importReviewBatches : [];
+  const count = document.getElementById("importReviewPendingCount");
+  if (count) count.textContent = String(batches.length);
+  if (!importReviewBatchList) return;
+  if (!batches.length) {
+    importReviewBatchList.innerHTML = '<p class="import-review-muted">当前没有待处理批次。上传工作簿后会出现在这里。</p>';
+    return;
+  }
+  const activeId = adminState.importReviewActiveBatch?.batchId || "";
+  importReviewBatchList.innerHTML = batches.map((batch) => `
+    <article class="import-review-batch-card" aria-current="${batch.batchId === activeId ? "true" : "false"}">
+      <button class="import-review-open-batch" data-batch-id="${escapeHtml(batch.batchId)}" type="button">
+        <strong>${escapeHtml(batch.sourceLabel || batch.sourcePath || "未命名工作簿")}</strong>
+        <small>${escapeHtml(batch.sourceScope)} · ${batch.mode === "full" ? "全量" : "增量"} · ${Number(batch.parsedRowCount) || 0} 行</small>
+        <small>${escapeHtml(batch.createdAt || "")}</small>
+      </button>
+      <button class="secondary-button import-review-discard-batch" data-batch-id="${escapeHtml(batch.batchId)}" type="button">放弃批次</button>
+    </article>
+  `).join("");
+}
+
+function importReviewRowTargetOptions(row) {
+  const saved = adminState.importReviewTargetOptions.get(row.reviewRowId) || [];
+  const byId = new Map();
+  for (const product of [
+    ...(Array.isArray(row.candidates) ? row.candidates : []),
+    ...(row.recommendation ? [row.recommendation] : []),
+    ...saved,
+  ]) {
+    const id = String(product.product_id || product.productId || "");
+    if (id) byId.set(id, product);
+  }
+  if (row.productId && !byId.has(String(row.productId))) {
+    byId.set(String(row.productId), { product_id: row.productId, model: "当前关联目标", brand: "" });
+  }
+  return [...byId.values()];
+}
+
+function renderImportReviewBatch(batch) {
+  adminState.importReviewActiveBatch = batch || null;
+  renderImportReviewBatches();
+  if (!importReviewBatchDetail) return;
+  if (!batch) {
+    importReviewBatchDetail.innerHTML = '<p class="import-review-muted">选择左侧批次，继续之前的身份复核。</p>';
+    return;
+  }
+  const rows = Array.isArray(batch.rows) ? batch.rows : [];
+  const undecided = rows.filter((row) => !row.decision).length;
+  const result = batch.result && typeof batch.result === "object" ? batch.result : {};
+  const warnings = Array.isArray(result.warnings) ? result.warnings : [];
+  const missingItems = Array.isArray(result.missing_items) ? result.missing_items : [];
+  const isPending = batch.status === "pending";
+  const completeLabel = batch.complete ? "已声明完整" : "未声明完整";
+  const summary = `
+    <div class="import-review-summary">
+      <span class="import-review-chip">${batch.mode === "full" ? "全量快照" : "增量导入"}</span>
+      <span class="import-review-chip">来源范围：${escapeHtml(batch.sourceScope)}</span>
+      <span class="import-review-chip">${escapeHtml(completeLabel)}</span>
+      <span class="import-review-chip">待决定 ${undecided} / ${rows.length}</span>
+      <span class="import-review-chip">全量缺失 ${Number(batch.missingCount) || 0} 项</span>
+    </div>
+    ${warnings.map((warning) => `<p class="import-review-warning">${escapeHtml(warning)}</p>`).join("")}
+    ${missingItems.length ? `<div><strong>范围内未出现在工作簿的商品</strong><ul class="import-review-missing">${missingItems.slice(0, 20).map((item) => `<li>${escapeHtml(item.brand)} ${escapeHtml(item.model)} <span class="import-review-muted">${escapeHtml(item.product_id)}</span></li>`).join("")}${missingItems.length > 20 ? `<li>另有 ${missingItems.length - 20} 项</li>` : ""}</ul></div>` : ""}
+  `;
+  const rowHtml = rows.map((row) => {
+    const snapshot = row.snapshot && typeof row.snapshot === "object" ? row.snapshot : {};
+    const candidates = importReviewRowTargetOptions(row);
+    const chosen = String(row.productId || "");
+    const errors = Array.isArray(row.errors) ? row.errors : [];
+    const candidateSummary = candidates.length
+      ? candidates.map((item) => `${item.reason ? `${item.reason} · ` : ""}${item.brand || ""} ${item.model || ""} (${item.product_id || item.productId})`).join("；")
+      : "没有现成候选，可搜索库存后选择目标。";
+    const rawText = snapshot.raw_copy || snapshot.source_display_copy || snapshot.display_copy || "";
+    return `
+      <article class="import-review-row" data-review-row-id="${escapeHtml(row.reviewRowId)}" data-row-number="${Number(row.rowNumber) || 0}">
+        <div class="import-review-row-head">
+          <strong>Excel 第 ${Number(row.rowNumber) || 0} 行 · ${escapeHtml(snapshot.brand)} ${escapeHtml(snapshot.model)}</strong>
+          <span class="import-review-chip">${row.decision ? `已决定：${escapeHtml(row.decision)}` : "待决定"}</span>
+        </div>
+        <p class="import-review-muted">来源商品键：<code>${escapeHtml(row.sourceKey || "（空）")}</code></p>
+        ${rawText ? `<details><summary>查看原文</summary><div class="import-review-raw">${escapeHtml(rawText)}</div></details>` : ""}
+        ${errors.length ? `<ul class="import-review-errors">${errors.map((error) => `<li>${escapeHtml(error)}</li>`).join("")}</ul>` : ""}
+        <p class="import-review-candidates">候选：${escapeHtml(candidateSummary)}</p>
+        <div class="import-review-row-grid">
+          <label class="field">
+            <span>复核决定</span>
+            <select class="import-review-decision" ${isPending ? "" : "disabled"}>
+              <option value="" ${row.decision ? "" : "selected"}>选择决定</option>
+              <option value="link" ${row.decision === "link" ? "selected" : ""}>关联现有商品</option>
+              <option value="create" ${row.decision === "create" ? "selected" : ""}>创建新商品</option>
+              <option value="skip" ${row.decision === "skip" ? "selected" : ""}>跳过此行</option>
+            </select>
+          </label>
+          <label class="field import-review-target-field" ${row.decision === "link" || !row.decision ? "" : "hidden"}>
+            <span>关联目标商品</span>
+            <select class="import-review-target" ${isPending ? "" : "disabled"}>
+              <option value="">选择商品</option>
+              ${candidates.map((item) => {
+                const id = String(item.product_id || item.productId || "");
+                return `<option value="${escapeHtml(id)}" ${chosen === id ? "selected" : ""}>${escapeHtml(item.brand || "")} ${escapeHtml(item.model || id)} · ${escapeHtml(id)}</option>`;
+              }).join("")}
+            </select>
+          </label>
+        </div>
+        <div class="import-review-search">
+          <label class="field"><span>搜索现有商品</span><input class="import-review-product-query" type="search" placeholder="商品ID、型号或品牌" ${isPending ? "" : "disabled"}></label>
+          <button class="secondary-button import-review-search-products" type="button" ${isPending ? "" : "disabled"}>搜索目标</button>
+          <button class="access-button import-review-save-decision" type="button" ${isPending ? "" : "disabled"}>保存本行决定</button>
+        </div>
+      </article>
+    `;
+  }).join("");
+  importReviewBatchDetail.innerHTML = `
+    <div class="import-review-heading">
+      <div><p class="import-review-kicker">${isPending ? "复核进行中" : "批次已结束"}</p><h3>${escapeHtml(batch.sourceLabel || batch.sourcePath || "导入批次")}</h3><p class="import-review-muted">${escapeHtml(batch.sourcePath || "")} · 创建于 ${escapeHtml(batch.createdAt || "")}</p></div>
+      <div class="import-review-row-actions">
+        ${isPending ? `<button class="access-button import-review-commit-batch" type="button" ${undecided ? "disabled" : ""}>提交已复核批次</button><button class="secondary-button import-review-discard-active" type="button">放弃批次</button>` : ""}
+      </div>
+    </div>
+    ${summary}
+    ${isPending && undecided ? `<p class="status-text">还有 ${undecided} 行需要选择“关联现有商品 / 创建新商品 / 跳过”。完成决定后才可提交。</p>` : ""}
+    ${rowHtml || '<p class="import-review-muted">工作簿没有可复核的商品行。</p>'}
+    ${batch.status === "committed" ? `<p class="import-review-warning">已提交：新增 ${Number(result.inserted_count) || 0}，更新 ${Number(result.updated_count) || 0}，全量缺失 ${Number(result.missing_count) || 0}。</p>` : ""}
+  `;
+}
+
+async function loadImportReviewBatches() {
+  try {
+    const data = await requestJson("/api/admin/import-review/batches");
+    adminState.importReviewBatches = Array.isArray(data) ? data : [];
+    renderImportReviewBatches();
+    const activeId = adminState.importReviewActiveBatch?.batchId;
+    if (activeId && adminState.importReviewBatches.some((batch) => batch.batchId === activeId)) {
+      await openImportReviewBatch(activeId, { quiet: true });
+    }
+    if (importReviewStatus && !importReviewStatus.textContent) {
+      importReviewStatus.textContent = adminState.importReviewBatches.length
+        ? `已恢复 ${adminState.importReviewBatches.length} 个待处理批次。`
+        : "待处理列表已刷新。";
+    }
+  } catch (error) {
+    if (importReviewStatus) importReviewStatus.textContent = `读取待处理批次失败：${String(error.message || "请重试").slice(0, 180)}`;
+  }
+}
+
+async function openImportReviewBatch(batchId, { quiet = false } = {}) {
+  try {
+    const batch = await requestJson(`/api/admin/import-review/batches/${encodeURIComponent(batchId)}`);
+    renderImportReviewBatch(batch);
+    if (!quiet && importReviewStatus) importReviewStatus.textContent = `已恢复批次：${batch.sourceLabel || batch.batchId}`;
+    return batch;
+  } catch (error) {
+    if (importReviewStatus) importReviewStatus.textContent = `打开复核批次失败：${String(error.message || "请重试").slice(0, 180)}`;
+    throw error;
+  }
+}
+
+async function saveImportReviewDecision(rowNumber, decisionPayload) {
+  const batchId = adminState.importReviewActiveBatch?.batchId;
+  if (!batchId) return;
+  const decision = decisionPayload?.decision || "";
+  const productId = decisionPayload?.productId || "";
+  if (!decision || (decision === "link" && !productId)) {
+    if (importReviewStatus) importReviewStatus.textContent = "请先选择复核决定；关联现有商品时还要选择目标商品。";
+    return;
+  }
+  try {
+    await requestJson(`/api/admin/import-review/batches/${encodeURIComponent(batchId)}/rows/${Number(rowNumber)}`, {
+      method: "PUT",
+      body: JSON.stringify({ decision, ...(decision === "link" ? { productId } : {}) }),
+    });
+    await openImportReviewBatch(batchId, { quiet: true });
+    if (importReviewStatus) importReviewStatus.textContent = `Excel 第 ${Number(rowNumber)} 行的决定已保存。`;
+  } catch (error) {
+    if (error.status === 409) {
+      await openImportReviewBatch(batchId, { quiet: true }).catch(() => {});
+      await loadImportReviewBatches();
+      if (importReviewStatus) importReviewStatus.textContent = "批次或目标商品已变化，复核内容已刷新，请重新检查后再保存。";
+      return;
+    }
+    if (importReviewStatus) importReviewStatus.textContent = `保存决定失败：${String(error.message || "请重试").slice(0, 180)}`;
+  }
+}
+
+function importReviewIdempotencyKey(batchId) {
+  const storageKey = `ccd-import-review-commit:${batchId}`;
+  try {
+    let key = window.localStorage.getItem(storageKey);
+    if (!key) {
+      key = typeof crypto?.randomUUID === "function" ? crypto.randomUUID() : `review-${Date.now()}-${Math.random().toString(16).slice(2)}`;
+      window.localStorage.setItem(storageKey, key);
+    }
+    return key;
+  } catch {
+    let key = adminState.importReviewCommitKey;
+    if (!key) key = adminState.importReviewCommitKey = `review-${Date.now()}-${Math.random().toString(16).slice(2)}`;
+    return key;
+  }
+}
+
+async function commitImportReviewBatch(batchId) {
+  if (adminState.importReviewBusy) return;
+  adminState.importReviewBusy = true;
+  const idempotencyKey = importReviewIdempotencyKey(batchId);
+  if (importReviewStatus) importReviewStatus.textContent = "正在提交复核批次…";
+  try {
+    const result = await requestJson(`/api/admin/import-review/batches/${encodeURIComponent(batchId)}/commit`, {
+      method: "POST",
+      body: JSON.stringify({ idempotencyKey }),
+    });
+    await openImportReviewBatch(batchId, { quiet: true });
+    await loadImportReviewBatches();
+    if (importReviewStatus) {
+      importReviewStatus.textContent = `提交已确认：新增 ${Number(result.inserted_count) || 0}，更新 ${Number(result.updated_count) || 0}，缺失 ${Number(result.missing_count) || 0}。`;
+    }
+  } catch (error) {
+    if (error.status === 409) {
+      await openImportReviewBatch(batchId, { quiet: true }).catch(() => {});
+      await loadImportReviewBatches();
+      if (importReviewStatus) importReviewStatus.textContent = "库存或批次版本已变化，复核详情已刷新。请检查未决定行和目标版本后再提交；重试会沿用原幂等键。";
+    } else if (importReviewStatus) {
+      importReviewStatus.textContent = `提交结果尚未确认，可用同一幂等键重试：${String(error.message || "网络或服务异常").slice(0, 150)}`;
+    }
+  } finally {
+    adminState.importReviewBusy = false;
+    renderImportReviewBatch(adminState.importReviewActiveBatch);
+  }
+}
+
+async function discardImportReviewBatch(batchId) {
+  try {
+    await requestJson(`/api/admin/import-review/batches/${encodeURIComponent(batchId)}`, { method: "DELETE" });
+    if (adminState.importReviewActiveBatch?.batchId === batchId) {
+      await openImportReviewBatch(batchId, { quiet: true });
+    }
+    await loadImportReviewBatches();
+    if (importReviewStatus) importReviewStatus.textContent = "复核批次已放弃。";
+  } catch (error) {
+    if (error.status === 409) {
+      await openImportReviewBatch(batchId, { quiet: true }).catch(() => {});
+      await loadImportReviewBatches();
+      if (importReviewStatus) importReviewStatus.textContent = "批次状态已变化，列表与详情已刷新。";
+    } else if (importReviewStatus) {
+      importReviewStatus.textContent = `放弃批次失败：${String(error.message || "请重试").slice(0, 180)}`;
+    }
+  }
+}
+
+function openImportReviewConfirmation(action) {
+  adminState.importReviewConfirmAction = action;
+  const batch = action.batch || adminState.importReviewActiveBatch || {};
+  importReviewConfirmMessage.textContent = action.kind === "commit"
+    ? `即将按“${batch.sourceScope || "未知来源"}”范围提交此批次。确认前请核对行决定、全量缺失摘要与完整性声明。提交使用可重试的幂等键。`
+    : `将放弃“${batch.sourceLabel || "此复核批次"}”并关闭所有待复核行。放弃后不能继续提交。`;
+  importReviewConfirmStatus.textContent = "";
+  importReviewConfirmStatus.hidden = true;
+  confirmImportReviewAction.textContent = action.kind === "commit" ? "确认提交" : "确认放弃";
+  importReviewConfirmDialog.showModal();
+}
+
+async function searchImportReviewProducts(rowElement) {
+  const rowId = rowElement.dataset.reviewRowId;
+  const query = rowElement.querySelector(".import-review-product-query")?.value.trim() || "";
+  if (!query) {
+    if (importReviewStatus) importReviewStatus.textContent = "输入商品ID、型号或品牌后再搜索。";
+    return;
+  }
+  const button = rowElement.querySelector(".import-review-search-products");
+  if (button) button.disabled = true;
+  try {
+    const data = await requestJson(`/api/admin/products?query=${encodeURIComponent(query)}&limit=25&offset=0`);
+    adminState.importReviewTargetOptions.set(rowId, Array.isArray(data.products) ? data.products : []);
+    await openImportReviewBatch(adminState.importReviewActiveBatch.batchId, { quiet: true });
+    if (importReviewStatus) importReviewStatus.textContent = `找到 ${Array.isArray(data.products) ? data.products.length : 0} 个目标候选。`;
+  } catch (error) {
+    if (importReviewStatus) importReviewStatus.textContent = `搜索商品失败：${String(error.message || "请重试").slice(0, 150)}`;
+  } finally {
+    if (button) button.disabled = false;
+  }
 }
 
 const inFlightMutationRequests = new Map();
@@ -2166,3 +2460,127 @@ adminProductList.addEventListener("click", async (event) => {
     await loadImages(row);
   }
 });
+
+const importReviewUploadForm = document.getElementById("importReviewUploadForm");
+const importReviewModeInput = document.getElementById("importReviewModeInput");
+const importReviewCompleteField = document.getElementById("importReviewCompleteField");
+const importReviewConfirmDialogNode = document.getElementById("importReviewConfirmDialog");
+
+function updateImportReviewModeFields() {
+  const isFull = importReviewModeInput?.value === "full";
+  if (importReviewCompleteField) importReviewCompleteField.hidden = !isFull;
+}
+
+importReviewModeInput?.addEventListener("change", updateImportReviewModeFields);
+updateImportReviewModeFields();
+
+importReviewUploadForm?.addEventListener("submit", async (event) => {
+  event.preventDefault();
+  if (adminState.importReviewBusy) return;
+  const button = document.getElementById("uploadImportReviewButton");
+  adminState.importReviewBusy = true;
+  if (button) {
+    button.disabled = true;
+    button.textContent = "正在解析工作簿…";
+  }
+  if (importReviewStatus) importReviewStatus.textContent = "正在上传并建立复核批次；库存不会在此步骤变更。";
+  try {
+    const response = await fetch("/api/admin/import-review/batches", {
+      method: "POST",
+      body: new FormData(importReviewUploadForm),
+    });
+    if (response.status === 401) {
+      adminApp.hidden = true;
+      loginPanel.hidden = false;
+      loginError.textContent = "登录已过期，请重新登录；工作簿需要重新选择后再上传";
+      loginError.hidden = false;
+    }
+    if (!response.ok) {
+      const error = new Error(await response.text());
+      error.status = response.status;
+      throw error;
+    }
+    const batch = await response.json();
+    adminState.importReviewTargetOptions.clear();
+    renderImportReviewBatch(batch);
+    await loadImportReviewBatches();
+    if (importReviewStatus) importReviewStatus.textContent = `工作簿已暂存：${batch.sourceLabel || "复核批次"}。完成逐行决定后再提交。`;
+    importReviewUploadForm.querySelector("input[type=file]").value = "";
+  } catch (error) {
+    if (importReviewStatus) {
+      importReviewStatus.textContent = error.status === 400
+        ? `工作簿无法解析：${String(error.message || "请检查表头与数据").slice(0, 180)}`
+        : `上传失败：${String(error.message || "网络或服务异常").slice(0, 180)}`;
+    }
+  } finally {
+    adminState.importReviewBusy = false;
+    if (button) {
+      button.disabled = false;
+      button.textContent = "上传并开始复核";
+    }
+  }
+});
+
+document.getElementById("refreshImportReviewBatchesButton")?.addEventListener("click", loadImportReviewBatches);
+importReviewBatchList?.addEventListener("click", async (event) => {
+  const openButton = event.target.closest?.(".import-review-open-batch");
+  const discardButton = event.target.closest?.(".import-review-discard-batch");
+  if (openButton) await openImportReviewBatch(openButton.dataset.batchId);
+  if (discardButton) {
+    const batch = adminState.importReviewBatches.find((item) => item.batchId === discardButton.dataset.batchId);
+    if (batch) openImportReviewConfirmation({ kind: "discard", batch });
+  }
+});
+
+importReviewBatchDetail?.addEventListener("change", (event) => {
+  if (!event.target.classList.contains("import-review-decision")) return;
+  const row = event.target.closest(".import-review-row");
+  const targetField = row?.querySelector(".import-review-target-field");
+  if (targetField) targetField.hidden = event.target.value !== "link";
+});
+
+importReviewBatchDetail?.addEventListener("click", async (event) => {
+  const row = event.target.closest?.(".import-review-row");
+  if (event.target.closest?.(".import-review-commit-batch")) {
+    const batch = adminState.importReviewActiveBatch;
+    if (batch) openImportReviewConfirmation({ kind: "commit", batch });
+    return;
+  }
+  if (event.target.closest?.(".import-review-discard-active")) {
+    const batch = adminState.importReviewActiveBatch;
+    if (batch) openImportReviewConfirmation({ kind: "discard", batch });
+    return;
+  }
+  if (!row) return;
+  if (event.target.closest?.(".import-review-search-products")) {
+    await searchImportReviewProducts(row);
+    return;
+  }
+  if (event.target.closest?.(".import-review-save-decision")) {
+    const decision = row.querySelector(".import-review-decision")?.value || "";
+    const productId = row.querySelector(".import-review-target")?.value || "";
+    await saveImportReviewDecision(row.dataset.rowNumber, { decision, productId });
+  }
+});
+
+confirmImportReviewAction?.addEventListener("click", async () => {
+  const action = adminState.importReviewConfirmAction;
+  if (!action || adminState.importReviewBusy) return;
+  const batch = action.batch || adminState.importReviewActiveBatch;
+  if (!batch?.batchId) return;
+  confirmImportReviewAction.disabled = true;
+  try {
+    importReviewConfirmDialogNode.close("confirm");
+    if (action.kind === "commit") await commitImportReviewBatch(batch.batchId);
+    else await discardImportReviewBatch(batch.batchId);
+  } finally {
+    confirmImportReviewAction.disabled = false;
+    adminState.importReviewConfirmAction = null;
+  }
+});
+
+importReviewConfirmDialog?.addEventListener("close", () => {
+  if (importReviewConfirmDialog.returnValue !== "confirm") adminState.importReviewConfirmAction = null;
+});
+
+loadImportReviewBatches();
