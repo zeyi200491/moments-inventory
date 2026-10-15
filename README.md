@@ -9,6 +9,8 @@
 
 这套工具通过 WeFlow HTTP API 抓取指定联系人的朋友圈内容，识别 CCD 商品信息，并导出为 Excel。
 
+CCD 展示网页从本地 SQLite 到 Cloudflare 快照的统一操作流程见 [CCD 展示网页全流程命令](docs/ccd-python-pipeline.md)；正式数据边界和发布安全要求见 [CCD 发布与回滚手册](docs/ccd-release-runbook.md)。
+
 当前已经落地的关键能力：
 
 - 只保留“当前在售”语义，不再导出历史总库

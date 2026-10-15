@@ -2093,6 +2093,17 @@ class SQLiteShowcaseRepository:
             )
             return [dict(zip((item[0] for item in cursor.description), row)) for row in cursor.fetchall()]
 
+    def find_import_review_batches_by_source_label(self, source_label: str) -> list[dict[str, object]]:
+        """按调用方稳定标签找回任意状态的导入批次，供中断后安全恢复。"""
+        if not source_label.strip():
+            return []
+        with self._read_connection() as conn:
+            cursor = conn.execute(
+                "select * from showcase_import_review_batches where source_label=? order by created_at,batch_id",
+                (source_label,),
+            )
+            return [dict(zip((item[0] for item in cursor.description), row)) for row in cursor.fetchall()]
+
     def list_import_review_rows(self, batch_id: str) -> list[dict[str, object]]:
         with self._read_connection() as conn:
             cursor = conn.execute(

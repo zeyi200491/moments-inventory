@@ -2,6 +2,8 @@
 
 ## 正式运行边界
 
+统一刷新、人工复核、媒体包检查和 Cloudflare 快照同步流程入口见 [CCD Python 全流程命令](ccd-python-pipeline.md)。全流程命令不绕过本手册下述的 SQLite 权威源与维护状态门禁。
+
 正式管理与库存维护只写入本地 FastAPI 和 SQLite：
 
 - 本机配置：若存在则使用 `config/showcase.local.yaml`，否则使用仓库示例 `config/showcase.yaml`；首次配置见 `docs/ccd-local-configuration.md`。

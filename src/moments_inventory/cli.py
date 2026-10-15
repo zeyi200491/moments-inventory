@@ -6,6 +6,7 @@ import getpass
 import json
 import os
 from pathlib import Path
+import sys
 
 import uvicorn
 
@@ -193,6 +194,25 @@ def build_parser() -> argparse.ArgumentParser:
     ):
         showcase_parser.add_argument("--showcase-config", help="展示系统配置文件路径")
 
+    pipeline_parser = subparsers.add_parser(
+        "ccd-pipeline",
+        help="编排 CCD 库存刷新、人工复核、发布包检查与 Cloudflare 快照同步",
+    )
+    pipeline_commands = pipeline_parser.add_subparsers(dest="pipeline_command", required=True)
+    pipeline_run = pipeline_commands.add_parser("run", help="开始一次新的 CCD 更新流程")
+    pipeline_run.add_argument("--cloud-repo", required=True, help="Cloudflare 展示仓库的明确路径")
+    pipeline_run.add_argument("--showcase-config", help="CCD 展示 SQLite 与媒体配置文件")
+    pipeline_run.add_argument("--cloud-config", help="仓库内 Wrangler 配置文件，默认 wrangler.toml")
+    pipeline_run.add_argument("--apply", action="store_true", help="记录发布意图；复核完成后仍需 resume --apply")
+    pipeline_status = pipeline_commands.add_parser("status", help="只读查看某次运行的阶段状态")
+    pipeline_status.add_argument("--run-id", required=True)
+    pipeline_resume = pipeline_commands.add_parser("resume", help="从人工复核或安全断点继续流程")
+    pipeline_resume.add_argument("--run-id", required=True)
+    pipeline_resume.add_argument("--cloud-repo", required=True, help="与原运行相同的 Cloudflare 仓库路径")
+    pipeline_resume.add_argument("--showcase-config", help="与原运行相同的 CCD 展示配置文件")
+    pipeline_resume.add_argument("--cloud-config", help="与原运行相同的 Wrangler 配置文件")
+    pipeline_resume.add_argument("--apply", action="store_true", help="明确授权本次续跑写入 Cloudflare D1/R2")
+
     import_knowledge_parser = subparsers.add_parser(
         "import-knowledge",
         help="import text knowledge into AI kefu knowledge storage",
@@ -329,13 +349,26 @@ def main(argv: list[str] | None = None) -> int:
     parser = build_parser()
     args = parser.parse_args(argv)
 
-    if hasattr(args, "showcase_config"):
-        settings = load_showcase_settings(
-            args.showcase_config,
-            **{key: getattr(args, key, None) for key in ("database", "storage_dir", "sample_images_dir", "manual_xlsx", "backup_dir", "host", "port")},
-        )
-        for key, value in vars(settings).items():
-            setattr(args, key, value)
+    try:
+        if hasattr(args, "showcase_config"):
+            showcase_config_path = args.showcase_config
+            if args.command == "ccd-pipeline" and not showcase_config_path:
+                local_config = Path.cwd() / "config" / "showcase.local.yaml"
+                showcase_config_path = str(
+                    local_config if local_config.is_file() else Path.cwd() / "config" / "showcase.yaml"
+                )
+                args.showcase_config = showcase_config_path
+            settings = load_showcase_settings(
+                showcase_config_path,
+                **{key: getattr(args, key, None) for key in ("database", "storage_dir", "sample_images_dir", "manual_xlsx", "backup_dir", "host", "port")},
+            )
+            for key, value in vars(settings).items():
+                setattr(args, key, value)
+    except (OSError, ValueError) as exc:
+        if args.command == "ccd-pipeline":
+            print(f"CCD 流程配置预检失败：{type(exc).__name__}", file=sys.stderr)
+            return 2
+        raise
 
     if args.command == "build-model-index":
         index = build_model_catalog_index(args.excel)
@@ -445,6 +478,48 @@ def main(argv: list[str] | None = None) -> int:
 
     if args.command == "showcase-db-restore":
         print(str(restore_showcase(args.snapshot, args.destination)))
+        return 0
+
+    if args.command == "ccd-pipeline":
+        from moments_inventory.ccd_pipeline import PipelineError, PipelineRunner
+        from moments_inventory.ccd_pipeline_commands import PipelinePreflightError
+        from moments_inventory.ccd_pipeline_state import PipelineStateError
+
+        project_root = Path.cwd().resolve()
+        try:
+            if args.pipeline_command == "status":
+                runner = PipelineRunner(
+                    project_root=project_root,
+                    cloud_repo=project_root,
+                )
+                state = runner.status(args.run_id)
+            else:
+                runner = PipelineRunner(
+                    project_root=project_root,
+                    cloud_repo=args.cloud_repo,
+                    config_path=args.showcase_config,
+                    cloud_config_path=args.cloud_config,
+                )
+                if args.pipeline_command == "run":
+                    state = runner.run()
+                    if args.apply:
+                        state["apply_requested"] = True
+                        runner.state_store.save_run(state)
+                else:
+                    state = runner.resume(args.run_id, apply=args.apply)
+        except (PipelineError, PipelinePreflightError, PipelineStateError, OSError, ValueError) as exc:
+            print(f"CCD 流程未继续：{exc}", file=sys.stderr)
+            return 2
+        print(json.dumps({
+            "run_id": state.get("run_id"),
+            "status": state.get("status"),
+            "current_stage": state.get("current_stage"),
+            "stages": {name: value.get("status") for name, value in state.get("stages", {}).items()},
+            "next_action": runner.next_action(state),
+        }, ensure_ascii=False, indent=2))
+        if state.get("status") == "paused" and state.get("current_stage") == "import_review":
+            review_output = state["stages"]["import_review"]["output"]
+            print(f"请在管理页逐条完成复核后续跑：{review_output.get('admin_url', '本机 CCD 管理页面')}\n复核批次：{review_output['batch_id']}")
         return 0
 
     if args.command == "import-knowledge":

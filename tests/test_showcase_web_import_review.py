@@ -64,6 +64,23 @@ def test_create_review_batch_stages_rows_without_changing_products_or_import_log
     assert batch['idempotency_key'] == ''
 
 
+def test_review_batches_can_be_recovered_by_pipeline_source_label_after_commit(tmp_path):
+    repo = SQLiteShowcaseRepository(tmp_path / 'showcase.db')
+    payload = _workbook_bytes(tmp_path, [{'商品ID': 'recover-1', '型号': 'ixus80', '品牌': '佳能', '成本价': 100, '展示价': 200, '是否展示': '是'}])
+    batch = create_import_review_batch(
+        repo, payload, source_scope='source-a', source_label='CCD pipeline run-123'
+    )
+
+    pending = repo.find_import_review_batches_by_source_label('CCD pipeline run-123')
+    staged = _row(repo, batch['batch_id'], 2)
+    save_import_review_decision(repo, batch['batch_id'], staged['review_row_id'], decision='create')
+    commit_import_review_batch(repo, batch['batch_id'], 'recover-key')
+    committed = repo.find_import_review_batches_by_source_label('CCD pipeline run-123')
+
+    assert [item['batch_id'] for item in pending] == [batch['batch_id']]
+    assert [item['status'] for item in committed] == ['committed']
+
+
 def test_exact_source_key_and_confirmed_alias_are_suggestions_only(tmp_path):
     repo = SQLiteShowcaseRepository(tmp_path / 'showcase.db')
     _seed_product(repo)
