@@ -463,10 +463,11 @@ def migrate(conn: sqlite3.Connection) -> bool:
         conn.execute(
             """create trigger if not exists showcase_import_review_rows_clear_target_version
             after update of product_id on showcase_import_review_rows
-            when new.product_id is null and new.target_row_version is not null
+            when new.product_id is null and new.status='pending'
+              and (new.target_row_version is not null or new.decision is not null)
             begin
               update showcase_import_review_rows
-              set target_row_version=null
+              set target_row_version=null, decision=null
               where review_row_id=new.review_row_id;
             end"""
         )

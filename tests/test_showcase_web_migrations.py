@@ -194,6 +194,20 @@ def test_import_review_migration_adds_constrained_tables_and_is_repeatable(tmp_p
     assert conn.execute(
         "select target_row_version from showcase_import_review_rows where review_row_id='row-1'"
     ).fetchone()[0] == 7
+    conn.execute(
+        """insert into showcase_import_review_rows
+        (review_row_id, batch_id, row_number, source_key, status, snapshot_json, created_at)
+        values ('row-duplicate-source','batch-1',2,'item-1','pending','{}','now')"""
+    )
+    assert conn.execute(
+        "select count(*) from showcase_import_review_rows where batch_id='batch-1' and source_key='item-1'"
+    ).fetchone()[0] == 2
+    conn.execute(
+        """insert into showcase_import_review_rows
+        (review_row_id, batch_id, row_number, source_key, status, decision,
+         product_id, target_row_version, snapshot_json, created_at)
+        values ('row-committed','batch-1',3,'item-3','committed','link','p1',8,'{}','now')"""
+    )
     with pytest.raises(sqlite3.IntegrityError):
         conn.execute(
             """insert into showcase_import_review_rows
@@ -220,13 +234,13 @@ def test_import_review_migration_adds_constrained_tables_and_is_repeatable(tmp_p
         conn.execute(
             """insert into showcase_import_review_rows
             (review_row_id, batch_id, row_number, source_key, status, decision, snapshot_json, created_at)
-            values ('row-2','batch-1',2,'item-2','waiting','skip','{}','now')"""
+            values ('row-2','batch-1',4,'item-2','waiting','skip','{}','now')"""
         )
     with pytest.raises(sqlite3.IntegrityError):
         conn.execute(
             """insert into showcase_import_review_rows
             (review_row_id, batch_id, row_number, source_key, status, decision, snapshot_json, created_at)
-            values ('row-3','batch-1',3,'item-3','pending','merge','{}','now')"""
+            values ('row-3','batch-1',5,'item-3','pending','merge','{}','now')"""
         )
     before = {
         table: conn.execute(f"select * from {table} order by 1").fetchall()
@@ -250,9 +264,13 @@ def test_import_review_migration_adds_constrained_tables_and_is_repeatable(tmp_p
 
     conn.execute("delete from showcase_products where product_id='p1'")
     deleted_target = conn.execute(
-        "select product_id,target_row_version from showcase_import_review_rows where review_row_id='row-1'"
+        "select product_id,target_row_version,decision from showcase_import_review_rows where review_row_id='row-1'"
     ).fetchone()
-    assert tuple(deleted_target) == (None, None)
+    assert tuple(deleted_target) == (None, None, None)
+    committed_audit = conn.execute(
+        "select product_id,target_row_version,decision from showcase_import_review_rows where review_row_id='row-committed'"
+    ).fetchone()
+    assert tuple(committed_audit) == (None, 8, "link")
 
 
 def test_public_ids_work_for_image_and_product_changes():
