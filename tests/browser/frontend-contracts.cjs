@@ -108,20 +108,18 @@ test('商品管理包含明确的批量作用范围和价格段控件', () => {
   assert.match(html, /id="bulkConfirmStatus"[^>]*role="alert"/);
   assert.match(html, /showcase\.css\?v=20261015-bulk-recovery/);
   assert.match(html, /admin\.js\?v=20261015-bulk-recovery/);
-  assert.match(fs.readFileSync(path.join(root, 'index.html'), 'utf8'), /showcase\.js\?v=20261015-list-append/);
-  assert.match(fs.readFileSync(path.join(root, 'product.html'), 'utf8'), /showcase\.js\?v=20261015-list-append/);
+  assert.match(fs.readFileSync(path.join(root, 'index.html'), 'utf8'), /showcase\.js\?v=20261015-list-memory/);
+  assert.match(fs.readFileSync(path.join(root, 'product.html'), 'utf8'), /showcase\.js\?v=20261015-list-memory/);
 });
 
-test('客户列表加载更多只追加新卡片，筛选重置清理旧商品登记', async () => {
+test('客户列表加载更多只追加新卡片且不保留重复商品登记表', async () => {
   const c = pageContext('showcase.js');
   const grid = c.document.getElementById('productGrid');
   const appended = [];
   grid.insertAdjacentHTML = (position, html) => appended.push({ position, html });
   grid.innerHTML = '<article class="existing-card"></article>';
-  vm.runInContext(`state.products = [
-    {publicId:'p1', model:'旧商品', displayPrice:100, brand:'佳能'},
-  ];
-  state.productRegistry.set('p1', state.products[0]);`, c);
+  vm.runInContext("state.products = [{publicId:'p1', model:'旧商品', displayPrice:100, brand:'佳能'}]", c);
+  const firstPageProducts = vm.runInContext('state.products', c);
   c.fetch = async () => ({
     ok: true,
     json: async () => ({
@@ -142,11 +140,12 @@ test('客户列表加载更多只追加新卡片，筛选重置清理旧商品�
   assert.equal(appended[0].position, 'beforeend');
   assert.match(appended[0].html, /新商品/);
   assert.doesNotMatch(appended[0].html, /旧商品/);
+  assert.strictEqual(vm.runInContext('state.products', c), firstPageProducts, '追加分页应复用现有商品数组，避免每页复制全部旧条目');
 
   c.fetch = async () => ({
     ok: true,
     json: async () => ({
-      products: [{publicId:'p3', model:'筛选商品', displayPrice:300, brand:'理光'}],
+      products: [{publicId:'p3', productId:'source-p3', model:'筛选商品', displayPrice:300, brand:'理光'}],
       total: 1,
       hasMore: false,
       catalogRevision: 'r2',
@@ -154,8 +153,9 @@ test('客户列表加载更多只追加新卡片，筛选重置清理旧商品�
   });
   await vm.runInContext('loadProductPage({reset:true})', c);
   assert.equal(appended.length, 1, '筛选重置使用整体替换而不追加旧结果');
-  assert.deepEqual(Array.from(vm.runInContext('[...state.productRegistry.keys()]', c)), ['p3']);
   assert.equal(vm.runInContext('state.products.length', c), 1);
+  assert.equal(vm.runInContext('state.productRegistry', c), undefined, '商品列表只保留分页数组，不再额外登记每个商品');
+  assert.equal(vm.runInContext("findProductForCopy('p3')?.productId", c), 'source-p3', '复制按钮按公开商品身份从分页数据中找到商品');
 });
 
 test('旧静态站发布入口明确停止，避免继续构建与当前 SQLite 系统并行的旧站点', () => {

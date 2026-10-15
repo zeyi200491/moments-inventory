@@ -93,7 +93,7 @@ CCD Python 运行依赖使用 `requirements/ccd-runtime.lock` 锁定直接及传
 
 本地 wheel 验证记录：2026-10-15 在 Windows 上执行 `python -m pip wheel . --no-deps --no-build-isolation`，随后在临时全新虚拟环境中使用 `--no-deps --no-index` 安装 wheel 成功；从该环境检查到 110 个 `showcase_web/static/` 文件，且 `admin.html`、`index.html`、`product.html` 均存在。这证明 wheel 可离线安装且包含展示网页静态资源；不代表运行依赖已在干净环境安装，也不代表制品哈希已核验。
 
-客户页移动视口合成检查记录：2026-10-15 使用隔离静态服务、模拟公开 API 和 160 条合成商品，在 Chromium 桌面浏览器的 320/375/768 像素视口检查，`documentElement.scrollWidth` 与视口宽度相同；加载下一页后首张商品卡片 DOM 节点保持不变，未见页面脚本错误。该检查证明本次列表追加路径及这些模拟视口未出现横向溢出；不代表微信内置浏览器、iOS Safari、真实设备性能或无障碍读屏验收通过。
+客户页移动视口合成检查记录：2026-10-15 使用隔离静态服务、模拟公开 API 和 160 条合成商品，在 Chromium 桌面浏览器的 320/375/768 像素视口检查，`documentElement.scrollWidth` 与视口宽度相同；加载下一页后首张商品卡片 DOM 节点保持不变、商品数组原地追加且未保留重复的商品登记 Map，按公开商品 ID 的咨询文案查找也能返回对应商品，未见页面脚本错误。该检查证明本次列表追加路径及这些模拟视口未出现横向溢出；不代表微信内置浏览器、iOS Safari、真实设备性能或无障碍读屏验收通过。
 
 ```powershell
 $showcaseTests = Get-ChildItem -LiteralPath tests -Filter 'test_showcase_web*.py' | ForEach-Object { $_.FullName }

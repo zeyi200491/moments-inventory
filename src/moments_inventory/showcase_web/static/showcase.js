@@ -22,7 +22,6 @@ const state = {
     pricePresets: [],
   },
   currentDetailProduct: null,
-  productRegistry: new Map(),
   copyButtonTimers: new WeakMap(),
   productRequestController: null,
   productRequestId: 0,
@@ -249,6 +248,13 @@ async function ensureCustomerAccess(onUnlocked) {
   return true;
 }
 
+function findProductForCopy(productId) {
+  if (state.currentDetailProduct && productKey(state.currentDetailProduct) === productId) {
+    return state.currentDetailProduct;
+  }
+  return state.products.find((product) => productKey(product) === productId) || null;
+}
+
 function renderBrands() {
   const brandTarget = document.getElementById("brandFilterButtons");
   if (!brandTarget) return;
@@ -356,7 +362,6 @@ async function loadProductPage({ reset = false, restoreToken = null } = {}) {
   if (reset && restoreToken !== "revision-refresh") state.loadNotice = "";
   if (reset) syncFilterUrl();
   if (reset) {
-    state.productRegistry.clear();
     state.products = [];
     state.total = 0;
     state.hasMore = false;
@@ -383,7 +388,11 @@ async function loadProductPage({ reset = false, restoreToken = null } = {}) {
     const products = Array.isArray(data.products) ? data.products : [];
     const known = new Set(state.products.map(productKey));
     const added = products.filter((product) => !known.has(productKey(product)));
-    state.products = reset ? products : [...state.products, ...added];
+    if (reset) {
+      state.products = products;
+    } else {
+      for (const product of added) state.products.push(product);
+    }
     state.total = Number(data.total || 0);
     state.catalogRevision = String(data.catalogRevision || "");
     state.hasMore = Boolean(data.hasMore) && (reset ? products.length > 0 : added.length > 0);
@@ -485,7 +494,6 @@ function clearFilters() {
 }
 
 function renderProductCard(product) {
-  state.productRegistry.set(productKey(product), product);
   const detailUrl = `/product?id=${encodeURIComponent(productKey(product))}`;
   const copyButtonLabel = "\u590d\u5236\u54a8\u8be2\u6587\u6848\uff08\u70b9\u4e00\u4e0b\u590d\u5236\u8fd9\u53f0\u5b8c\u6574\u6587\u6848\uff0c\u56de\u5fae\u4fe1\u53d1\u7ed9\u6211\uff09";
   const copyButtonShortLabel = "\u590d\u5236\u54a8\u8be2\u6587\u6848";
@@ -874,7 +882,6 @@ function renderDetail(product) {
   const target = document.getElementById("productDetail");
   if (!target) return;
   state.currentDetailProduct = product;
-  state.productRegistry.set(productKey(product), product);
   const images = Array.isArray(product.images) ? product.images : [];
   const bodyImages = images.filter((image) => image.imageType !== "sample");
   const sampleImages = images.filter((image) => image.imageType === "sample");
@@ -964,9 +971,7 @@ document.addEventListener("click", async (event) => {
     const originalText = copyButton.dataset.defaultLabel || copyButton.textContent;
     const originalShortText = copyButton.dataset.shortLabel || originalText;
     const productId = copyButton.dataset.productId;
-    const product = state.productRegistry.get(productId)
-      || state.products.find((item) => item.productId === productId)
-      || (state.currentDetailProduct && state.currentDetailProduct.productId === productId ? state.currentDetailProduct : null);
+    const product = findProductForCopy(productId);
     if (!product) return;
     const copyToken = String(++copyActionId);
     copyButton.dataset.copyToken = copyToken;
