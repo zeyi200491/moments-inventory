@@ -206,7 +206,14 @@ def create_import_review_batch(
         "missing_count": missing_count,
         # 幂等键属于最终提交请求；上传暂存批次固定留空。
         "idempotency_key": "",
-        "result_json": json.dumps({"warnings": warnings, "missing_items": missing_items}, ensure_ascii=False),
+        "result_json": json.dumps({
+            "warnings": warnings,
+            "missing_items": missing_items,
+            "scope_snapshot": ([
+                {"product_id": str(product["product_id"]), "row_version": int(product["row_version"])}
+                for product in products if str(product["source_scope"]) == source_scope
+            ] if mode == "full" else []),
+        }, ensure_ascii=False),
         "status": "pending",
         "created_at": now,
         "completed_at": "",
@@ -248,3 +255,230 @@ def _product_summary(product: dict[str, object], reason: str) -> dict[str, objec
         "row_version": int(product["row_version"]),
         "reason": reason,
     }
+
+
+class ImportReviewConflictError(ValueError):
+    """提交前快照或库存身份发生冲突；调用层可映射为 HTTP 409。"""
+
+
+def commit_import_review_batch(repository, batch_id: str, idempotency_key: str) -> dict[str, object]:
+    """在单个 BEGIN IMMEDIATE 事务中提交已复核的库存批次。"""
+    if not idempotency_key or not idempotency_key.strip():
+        raise ValueError("提交幂等键不能为空")
+    now = datetime.now(timezone.utc).isoformat()
+    with repository._lock:
+        conn = repository._get_connection()
+        conn.execute("BEGIN IMMEDIATE")
+        try:
+            batch = _fetch_dict(conn, "select * from showcase_import_review_batches where batch_id=?", (batch_id,))
+            if batch is None:
+                raise ValueError("复核批次不存在")
+            if batch["status"] == "committed":
+                if batch["idempotency_key"] != idempotency_key:
+                    raise ImportReviewConflictError("该批次已使用其他幂等键提交")
+                result = json.loads(str(batch["result_json"]))
+                conn.rollback()
+                return result
+            if batch["status"] != "pending":
+                raise ImportReviewConflictError("批次必须处于 pending 状态")
+            if batch["mode"] == "full" and not batch["complete"]:
+                raise ImportReviewConflictError("全量批次缺少完整性声明")
+
+            rows = _fetch_all_dict(conn,
+                "select * from showcase_import_review_rows where batch_id=? order by row_number,review_row_id",
+                (batch_id,))
+            if len(rows) != int(batch["parsed_row_count"]):
+                raise ImportReviewConflictError("复核行数量与批次快照不一致")
+            if any(row["status"] != "pending" or row["decision"] not in ("link", "create", "skip") for row in rows):
+                raise ImportReviewConflictError("所有复核行都必须先作出决定")
+            if any(
+                (row["decision"] == "link" and (not row["product_id"] or row["target_row_version"] is None))
+                or (row["decision"] != "link" and (row["product_id"] is not None or row["target_row_version"] is not None))
+                for row in rows
+            ):
+                raise ImportReviewConflictError("复核决定与关联目标信息不一致")
+
+            staged_result = json.loads(str(batch["result_json"] or "{}"))
+            products = _fetch_all_dict(conn, "select * from showcase_products")
+            by_id = {str(item["product_id"]): item for item in products}
+            scope = str(batch["source_scope"])
+            current_scope = {key: item for key, item in by_id.items() if item["source_scope"] == scope}
+            scope_snapshot = {str(item["product_id"]): int(item["row_version"])
+                              for item in staged_result.get("scope_snapshot", [])}
+            if batch["mode"] == "full":
+                if set(scope_snapshot) != set(current_scope):
+                    raise ImportReviewConflictError("全量批次来源范围已增删商品")
+                for product_id, expected in scope_snapshot.items():
+                    if int(current_scope[product_id]["row_version"]) != expected:
+                        raise ImportReviewConflictError(f"全量批次商品版本已变化：{product_id}")
+
+            alias_rows = conn.execute("select source_scope,source_key,product_id from showcase_source_identity_aliases").fetchall()
+            aliases = {(str(a_scope), str(key)): str(product_id) for a_scope, key, product_id in alias_rows}
+            key_owners: dict[str, set[str]] = {}
+            for product in products:
+                key = str(product.get("source_product_key") or "")
+                if key:
+                    key_owners.setdefault(key, set()).add(str(product["source_scope"]))
+            for alias_scope, key in aliases:
+                key_owners.setdefault(key, set()).add(alias_scope)
+
+            decoded = []
+            for row in rows:
+                snapshot = json.loads(str(row["snapshot_json"]))
+                record = snapshot.get("record")
+                if row["decision"] != "skip" and not isinstance(record, dict):
+                    raise ImportReviewConflictError(f"第 {row['row_number']} 行没有可提交的解析记录")
+                decoded.append((row, record if isinstance(record, dict) else {}))
+
+            writers_by_key: dict[str, list[dict]] = {}
+            writers_by_target: dict[str, list[dict]] = {}
+            created_ids: set[str] = set()
+            creates: list[tuple[dict, dict]] = []
+            links: list[tuple[dict, dict]] = []
+            for row, record in decoded:
+                if row["decision"] == "skip":
+                    continue
+                key = str(row["source_key"] or record.get("source_product_key") or "")
+                if key:
+                    writers_by_key.setdefault(key, []).append(row)
+                    if any(owner != scope for owner in key_owners.get(key, set())):
+                        raise ImportReviewConflictError(f"来源商品键已属于其他来源范围：{key}")
+                if row["decision"] == "link":
+                    product_id = str(row["product_id"] or "")
+                    target = by_id.get(product_id)
+                    if not target or target["source_scope"] != scope:
+                        raise ImportReviewConflictError(f"关联目标不存在或不属于来源范围：{product_id}")
+                    if row["target_row_version"] is None or int(target["row_version"]) != int(row["target_row_version"]):
+                        raise ImportReviewConflictError(f"关联目标版本已变化：{product_id}")
+                    writers_by_target.setdefault(product_id, []).append(row)
+                    links.append((row, record))
+                else:
+                    product_id = str(record.get("product_id") or "")
+                    if not product_id or product_id in by_id:
+                        raise ImportReviewConflictError(f"create 商品ID无效或已存在：{product_id}")
+                    if product_id in created_ids:
+                        raise ImportReviewConflictError(f"本批次多个 create 行使用同一商品ID：{product_id}")
+                    created_ids.add(product_id)
+                    creates.append((row, record))
+            for key, writers in writers_by_key.items():
+                if len(writers) > 1:
+                    raise ImportReviewConflictError(f"本批次来源商品键仍有多个写入行：{key}")
+            for product_id, writers in writers_by_target.items():
+                if len(writers) > 1:
+                    raise ImportReviewConflictError(f"本批次多个导入行认领同一商品：{product_id}")
+
+            for row, record in [*links, *creates]:
+                key = str(row["source_key"] or record.get("source_product_key") or "")
+                if not key:
+                    continue
+                product_id = str(row["product_id"] if row["decision"] == "link" else record["product_id"])
+                exact = next((str(p["product_id"]) for p in products
+                              if p["source_scope"] == scope and p.get("source_product_key") == key), None)
+                alias_owner = aliases.get((scope, key))
+                if exact and exact != product_id:
+                    raise ImportReviewConflictError(f"当前来源商品键已属于其他商品：{key}")
+                if alias_owner and alias_owner != product_id:
+                    raise ImportReviewConflictError(f"来源商品键已属于其他商品：{key}")
+                if row["decision"] == "create" and (exact or alias_owner):
+                    raise ImportReviewConflictError(f"新商品来源键已存在：{key}")
+
+            missing_ids = []
+            if batch["mode"] == "full":
+                represented = {str(row["product_id"] if row["decision"] == "link" else record.get("product_id", ""))
+                               for row, record in decoded if row["decision"] != "skip"}
+                missing_ids = sorted(set(current_scope) - represented)
+                for product_id in missing_ids:
+                    if int(current_scope[product_id]["row_version"]) != scope_snapshot[product_id]:
+                        raise ImportReviewConflictError(f"全量缺失商品版本已变化：{product_id}")
+
+            rev = conn.execute("select setting_value from showcase_settings where setting_key='catalog_revision'").fetchone()
+            base_revision = int(rev[0]) if rev else 0
+            import_id = uuid4().hex
+            inserted, updated = 0, 0
+            for row, record in [*links, *creates]:
+                previous = by_id.get(str(row["product_id"])) if row["decision"] == "link" else None
+                product_id = str(previous["product_id"] if previous else record["product_id"])
+                inserted += int(previous is None)
+                updated += int(previous is not None)
+                values = dict(previous) if previous else dict(
+                    public_id=uuid4().hex, row_version=0, created_at=now, sold=False,
+                    short_selling_point="", recommend_tags="", price_override=None,
+                    copy_override=None, visibility_override=None, override_origin="", last_verified_at="")
+                values.update({name: value for name, value in record.items()
+                               if (name == "source_product_key" and value) or name not in ("source_product_key", "body_image_paths", "product_id")})
+                source_key = str(row["source_key"] or record.get("source_product_key") or "")
+                if source_key:
+                    values["source_product_key"] = source_key
+                if previous and not record.get("cover_image_path"):
+                    values["cover_image_path"] = previous["cover_image_path"]
+                values.update(source_scope=scope, source_available=True, last_seen_at=now,
+                              review_state="", updated_at=now, last_seen_import_id=import_id)
+                values["display_price"] = values["price_override"] if values["price_override"] is not None else values["source_display_price"]
+                values["display_copy"] = values["copy_override"] if values["copy_override"] is not None else values["source_display_copy"]
+                values["visible"] = bool(values["visibility_override"] if values["visibility_override"] is not None else values["source_visible"]) and not values["sold"]
+                columns = tuple(values)
+                if previous:
+                    updates = [name for name in columns if name not in ("product_id", "row_version")]
+                    conn.execute("UPDATE showcase_products SET " + ",".join(f"{name}=?" for name in updates) + ",row_version=row_version+1 WHERE product_id=? AND row_version=?",
+                                 [values[name] for name in updates] + [product_id, int(row["target_row_version"])])
+                    if conn.execute("select changes()").fetchone()[0] != 1:
+                        raise ImportReviewConflictError(f"关联目标版本已变化：{product_id}")
+                else:
+                    conn.execute("INSERT INTO showcase_products (product_id," + ",".join(columns) + ") VALUES (" + ",".join("?" for _ in range(len(columns)+1)) + ")",
+                                 [product_id] + [values[name] for name in columns])
+                paths = record.get("body_image_paths") or []
+                if paths:
+                    conn.execute("delete from showcase_product_images where product_id=? and image_type='body' and (source='inventory_import' or (image_id=? and source='legacy_unknown'))",
+                                 (product_id, f"{product_id}|body|0"))
+                    conn.executemany("""insert into showcase_product_images
+                        (image_id,product_id,image_path,image_type,sort_order,is_cover,source)
+                        values (?,?,?,'body',?,?, 'inventory_import') on conflict(image_id) do update set
+                        image_path=excluded.image_path,image_type=excluded.image_type,sort_order=excluded.sort_order,
+                        is_cover=excluded.is_cover,source=excluded.source
+                        where showcase_product_images.product_id=excluded.product_id
+                        and showcase_product_images.source in ('inventory_import','legacy_unknown')""",
+                        [(f"{product_id}|body|{i}", product_id, path, i, int(i == 0)) for i, path in enumerate(paths)])
+                if previous and source_key and source_key != str(previous.get("source_product_key") or ""):
+                    owner = aliases.get((scope, source_key))
+                    if owner and owner != product_id:
+                        raise ImportReviewConflictError(f"来源别名已属于其他商品：{source_key}")
+                    if not owner:
+                        conn.execute("insert into showcase_source_identity_aliases values (?,?,?,?,?)",
+                                     (uuid4().hex, scope, source_key, product_id, now))
+                        aliases[(scope, source_key)] = product_id
+
+            for product_id in missing_ids:
+                conn.execute("update showcase_products set source_available=0,review_state='missing',updated_at=?,row_version=row_version+1 where product_id=? and row_version=?",
+                             (now, product_id, int(current_scope[product_id]["row_version"])))
+                if conn.execute("select changes()").fetchone()[0] != 1:
+                    raise ImportReviewConflictError(f"全量缺失商品版本已变化：{product_id}")
+
+            missing_count = len(missing_ids)
+            conn.execute("""insert into showcase_import_logs
+                (import_id,source_path,imported_at,inserted_count,updated_count,missing_count,mode,scope,status,started_at,committed_at,source_fingerprint)
+                values (?,?,?,?,?,?,?,?,?,?,?,?)""",
+                (import_id, batch["source_path"], now, inserted, updated, missing_count, batch["mode"], scope,
+                 "committed", now, now, batch["source_fingerprint"]))
+            conn.execute("insert into showcase_settings(setting_key,setting_value) values ('inventory_updated_at',?) on conflict(setting_key) do update set setting_value=excluded.setting_value", (now,))
+            conn.execute("insert into showcase_settings(setting_key,setting_value) values ('catalog_revision',?) on conflict(setting_key) do update set setting_value=excluded.setting_value", (str(base_revision + 1),))
+            result = {"import_id": import_id, "inserted_count": inserted, "updated_count": updated, "missing_count": missing_count}
+            conn.execute("update showcase_import_review_rows set status='committed',updated_at=? where batch_id=? and status='pending'", (now, batch_id))
+            conn.execute("update showcase_import_review_batches set status='committed',idempotency_key=?,result_json=?,completed_at=? where batch_id=? and status='pending'",
+                         (idempotency_key, json.dumps(result, ensure_ascii=False, separators=(",", ":")), now, batch_id))
+            conn.commit()
+            return result
+        except Exception:
+            conn.rollback()
+            raise
+
+
+def _fetch_dict(conn, sql: str, params=()):
+    cursor = conn.execute(sql, params)
+    row = cursor.fetchone()
+    return dict(zip((column[0] for column in cursor.description), row)) if row else None
+
+
+def _fetch_all_dict(conn, sql: str, params=()):
+    cursor = conn.execute(sql, params)
+    columns = [column[0] for column in cursor.description]
+    return [dict(zip(columns, row)) for row in cursor.fetchall()]
