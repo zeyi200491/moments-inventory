@@ -137,6 +137,85 @@ def test_stable_product_key_migration_is_optional_and_unique_per_scope(tmp_path)
     assert repo.list_product_ids() == {"p1"}  # 迁移本身不擅自回填或删除旧记录。
 
 
+def test_import_review_migration_adds_constrained_tables_and_is_repeatable(tmp_path):
+    repo = SQLiteShowcaseRepository(tmp_path / "import-review.db")
+    repo.initialize()
+    conn = repo._get_connection()
+    tables = {
+        row[0]
+        for row in conn.execute(
+            "select name from sqlite_master where type='table'"
+        )
+    }
+    assert {
+        "showcase_import_review_batches",
+        "showcase_import_review_rows",
+        "showcase_source_identity_aliases",
+    } <= tables
+    assert conn.execute(
+        "select version from showcase_schema_migrations order by version desc limit 1"
+    ).fetchone()[0] == 12
+
+    conn.execute(
+        """insert into showcase_import_review_batches
+        (batch_id, source_scope, status, created_at) values ('batch-1','scope-a','pending','now')"""
+    )
+    repo.upsert_product(product("p1"))
+    conn.execute(
+        """insert into showcase_import_review_rows
+        (review_row_id, batch_id, source_key, status, decision, product_id, snapshot_json, created_at)
+        values ('row-1','batch-1','item-1','pending','link','p1','{}','now')"""
+    )
+    conn.execute(
+        """insert into showcase_source_identity_aliases
+        (alias_id, source_scope, source_key, product_id, created_at)
+        values ('alias-1','scope-a','item-1','p1','now')"""
+    )
+    with pytest.raises(sqlite3.IntegrityError):
+        conn.execute(
+            """insert into showcase_source_identity_aliases
+            (alias_id, source_scope, source_key, product_id, created_at)
+            values ('alias-2','scope-a','item-1','p1','now')"""
+        )
+    conn.execute(
+        """insert into showcase_source_identity_aliases
+        (alias_id, source_scope, source_key, product_id, created_at)
+        values ('alias-3','scope-b','item-1','p1','now')"""
+    )
+    with pytest.raises(sqlite3.IntegrityError):
+        conn.execute(
+            """insert into showcase_import_review_rows
+            (review_row_id, batch_id, source_key, status, decision, snapshot_json, created_at)
+            values ('row-2','batch-1','item-2','waiting','skip','{}','now')"""
+        )
+    with pytest.raises(sqlite3.IntegrityError):
+        conn.execute(
+            """insert into showcase_import_review_rows
+            (review_row_id, batch_id, source_key, status, decision, snapshot_json, created_at)
+            values ('row-3','batch-1','item-3','pending','merge','{}','now')"""
+        )
+
+    before = {
+        table: conn.execute(f"select * from {table} order by 1").fetchall()
+        for table in (
+            "showcase_import_review_batches",
+            "showcase_import_review_rows",
+            "showcase_source_identity_aliases",
+        )
+    }
+    from moments_inventory.showcase_web.migrations import migrate
+
+    migrate(conn)
+    after = {
+        table: conn.execute(f"select * from {table} order by 1").fetchall()
+        for table in before
+    }
+    assert after == before
+    assert conn.execute(
+        "select version from showcase_schema_migrations order by version desc limit 1"
+    ).fetchone()[0] == 12
+
+
 def test_public_ids_work_for_image_and_product_changes():
     repo = SQLiteShowcaseRepository(":memory:")
     repo.upsert_product(product())

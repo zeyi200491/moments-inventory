@@ -412,4 +412,58 @@ def migrate(conn: sqlite3.Connection) -> bool:
             "on showcase_import_logs(scope,mode,status,committed_at)"
         )
         conn.execute("insert into showcase_schema_migrations(version) values (11)")
+    if 12 not in applied:
+        conn.execute(
+            """create table if not exists showcase_import_review_batches (
+              batch_id text primary key,
+              source_scope text not null,
+              source_label text not null default '',
+              source_fingerprint text not null default '',
+              status text not null default 'pending'
+                check(status in ('pending','committed','discarded')),
+              created_at text not null,
+              completed_at text not null default ''
+            )"""
+        )
+        conn.execute(
+            """create table if not exists showcase_import_review_rows (
+              review_row_id text primary key,
+              batch_id text not null,
+              source_key text not null default '',
+              status text not null default 'pending'
+                check(status in ('pending','committed','discarded')),
+              decision text
+                check(decision is null or decision in ('link','create','skip')),
+              product_id text,
+              snapshot_json text not null,
+              created_at text not null,
+              updated_at text not null default '',
+              check(decision is null or decision <> 'link' or product_id is not null),
+              foreign key(batch_id) references showcase_import_review_batches(batch_id)
+                on delete cascade,
+              foreign key(product_id) references showcase_products(product_id)
+                on delete set null
+            )"""
+        )
+        conn.execute(
+            "create index if not exists idx_showcase_import_review_rows_batch_status "
+            "on showcase_import_review_rows(batch_id,status,review_row_id)"
+        )
+        conn.execute(
+            """create table if not exists showcase_source_identity_aliases (
+              alias_id text primary key,
+              source_scope text not null,
+              source_key text not null,
+              product_id text not null,
+              created_at text not null,
+              unique(source_scope,source_key),
+              foreign key(product_id) references showcase_products(product_id)
+                on delete cascade
+            )"""
+        )
+        conn.execute(
+            "create index if not exists idx_showcase_source_identity_aliases_product "
+            "on showcase_source_identity_aliases(product_id)"
+        )
+        conn.execute("insert into showcase_schema_migrations(version) values (12)")
     return fresh

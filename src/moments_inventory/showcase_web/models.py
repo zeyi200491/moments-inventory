@@ -1,6 +1,56 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+from enum import Enum
+
+
+class ShowcaseImportReviewStatus(str, Enum):
+    """导入身份复核批次或记录的持久化状态。"""
+
+    PENDING = "pending"
+    COMMITTED = "committed"
+    DISCARDED = "discarded"
+
+
+class ShowcaseImportReviewDecision(str, Enum):
+    """复核记录的身份处理决定。"""
+
+    LINK = "link"
+    CREATE = "create"
+    SKIP = "skip"
+
+
+@dataclass(slots=True)
+class ShowcaseImportReviewBatch:
+    batch_id: str
+    source_scope: str
+    status: ShowcaseImportReviewStatus
+    created_at: str
+    source_label: str = ""
+    source_fingerprint: str = ""
+    completed_at: str = ""
+
+
+@dataclass(slots=True)
+class ShowcaseImportReviewRow:
+    review_row_id: str
+    batch_id: str
+    source_key: str
+    status: ShowcaseImportReviewStatus
+    snapshot_json: str
+    created_at: str
+    decision: ShowcaseImportReviewDecision | None = None
+    product_id: str | None = None
+    updated_at: str = ""
+
+
+@dataclass(slots=True)
+class ShowcaseSourceIdentityAlias:
+    alias_id: str
+    source_scope: str
+    source_key: str
+    product_id: str
+    created_at: str
 
 
 @dataclass(slots=True)
